@@ -1,0 +1,118 @@
+-- A calculator's syntax, from its ungrammar: a lossless tree for any input.
+--
+-- `meadow run` parses a small program and prints its tree; `meadow test`
+-- checks that every input -- right, wrong or empty -- comes back byte for
+-- byte, and that errors land where they belong.
+
+use Scythe (lexer!)
+use Lingua (syntax!)
+use Lingua.Green (Green, dump, text)
+use Std.Collections.Vector as V
+use Std.String as S
+
+-- Whitespace and comments are tokens here -- no `@skip` -- so the tree keeps
+-- them.
+@derive(Lexer)
+data Token
+  = @regex("[ \t\r\n]+") Whitespace
+  | @regex("//[^\n]*") Comment
+  | @token("let") Let
+  | @token("=") Equals
+  | @token(";") Semi
+  | @token("(") LParen
+  | @token(")") RParen
+  | @token(",") Comma
+  | @token("+") Plus
+  | @token("-") Minus
+  | @token("*") Star
+  | @token("/") Slash
+  | @regex("[0-9]+") Number String
+  | @regex("[a-zA-Z_][a-zA-Z0-9_]*") Ident String
+
+syntax! {
+  pub Calc
+  lexer Token
+  trivia { Whitespace, Comment }
+  tokens {
+    "let" = Let, "=" = Equals, ";" = Semi, "(" = LParen, ")" = RParen, "," = Comma,
+    "+" = Plus, "-" = Minus, "*" = Star, "/" = Slash,
+    "ident" = Ident _, "int_number" = Number _
+  }
+  precedence Expr { left "+" "-", left "*" "/", postfix CallExpr }
+  grammar r#"
+    File = Stmt*
+
+    Stmt = LetStmt | ExprStmt
+    LetStmt  = 'let' name:Name '=' value:Expr ';'
+    ExprStmt = Expr ';'
+
+    Expr = Literal | NameRef | ParenExpr | BinExpr | CallExpr
+    Literal   = 'int_number'
+    NameRef   = 'ident'
+    ParenExpr = '(' Expr ')'
+    BinExpr   = lhs:Expr op:('+' | '-' | '*' | '/') rhs:Expr
+    CallExpr  = callee:Expr ArgList
+    ArgList   = '(' args:(Expr (',' Expr)*)? ')'
+
+    Name = 'ident'
+  "#
+}
+
+-- The tree of `input`, drawn.
+@pub fun drawn (input : String) : String ! { Mut | e } =
+  match parseCalc input with
+  | (g, errs) -> dump display g
+
+def main =
+  let input = "let rate = 2 * (x + 40); // how much\nf(rate, 1);\n" in
+  println (drawn input)
+
+-- --- tests -------------------------------------------------------------------
+
+use Std.Test (assertEq)
+
+fun roundTrips input =
+  match parseCalc input with
+  | (g, errs) -> assertEq (text g) input "every byte, back"
+
+@test fun everyInputComesBackByteForByte () =
+  let a = roundTrips "let x = 1 + 2 * 3;\n" in
+  let b = roundTrips "" in
+  let c = roundTrips "   // only a comment\n" in
+  let d = roundTrips "let = ;;; ) ( 1 2 +" in
+  roundTrips "f(1, (2), g(3))(4);"
+
+@test fun multiplicationBindsTighter () =
+  assertEq
+    (drawn "1 + 2 * 3;")
+    "File\n  ExprStmt\n    BinExpr\n      Literal\n        Number \"1\"\n      Whitespace \" \"\n      Plus \"+\"\n      Whitespace \" \"\n      BinExpr\n        Literal\n          Number \"2\"\n        Whitespace \" \"\n        Star \"*\"\n        Whitespace \" \"\n        Literal\n          Number \"3\"\n    Semi \";\""
+    "2 * 3 is the right side"
+
+@test fun subtractionAssociatesLeft () =
+  match parseCalc "1 - 2 - 3;" with
+  | (g, errs) ->
+      let a = assertEq errs [] "no errors" in
+      assertEq
+        (V.len (V.filter (\l -> l == "      BinExpr") (lines (dump display g))))
+        1
+        "(1 - 2) - 3: the left side is the nested one"
+
+fun lines (s : String) : [String] = S.split "\n" s
+
+@test fun aCallIsReadAfterWhatItCalls () =
+  match parseCalc "f(1)(2);" with
+  | (g, errs) ->
+      let a = assertEq errs [] "no errors" in
+      assertEq (V.len (V.filter (\l -> l == "    CallExpr") (lines (dump display g)))) 1 "one call at the top, holding the other"
+
+@test fun aMissingPieceIsSaidWhereItWouldBe () =
+  match parseCalc "let x = ;\nlet y = 2;" with
+  | (g, errs) ->
+      let a = assertEq (text g) "let x = ;\nlet y = 2;" "still every byte" in
+      assertEq errs [(8, "expected Expr")] "at the `;`, and the next statement still parses"
+
+@test fun aStrayTokenIsAnErrorAndTheRestParses () =
+  match parseCalc ") 1;" with
+  | (g, errs) ->
+      let a = assertEq (V.len errs) 1 "one error" in
+      assertEq (V.any (\l -> l == "  ExprStmt") (lines (dump display g))) True "the `1;` after it"

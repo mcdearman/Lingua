@@ -1,0 +1,191 @@
+-- Ungrammar, read.
+--
+-- rust-analyzer's notation for the shape of a syntax tree
+-- (https://rust-analyzer.github.io/blog/2020/10/24/introducing-ungrammar.html):
+--
+--   LetStmt = 'let' name:Name '=' value:Expr ';'
+--   Expr    = Literal | BinExpr
+--   BinExpr = lhs:Expr op:('+' | '*') rhs:Expr
+--
+-- A rule is `UpperCamel = rule`; `'…'` is a token, `\'` and `\\` escaping in
+-- it; juxtaposition is a sequence, `|` alternation, `*` and `?` repetition,
+-- `( )` grouping, `label:` names what follows; `//` runs to the end of the
+-- line. A rule ends where the next `Name =` begins.
+--
+-- Every piece keeps the byte it was written at, so what is wrong with a grammar
+-- is said at the place it is wrong.
+
+use Std.Collections.Vector as V
+use Std.String as S
+use Rule.*
+use Piece.*
+
+-- A rule's body.
+@pub data Rule
+  = Tok String Int
+  | Ref String Int
+  | Seq [Rule]
+  | Alt [Rule]
+  | Opt Rule
+  | Rep Rule
+  | Label String Rule
+
+-- A rule: its name, the byte it was written at, and its body.
+@pub data Def = Def String Int Rule
+
+@pub fun defName (d : Def) : String = match d with | Def n _ _ -> n
+
+@pub fun defAt (d : Def) : Int = match d with | Def _ at _ -> at
+
+@pub fun defBody (d : Def) : Rule = match d with | Def _ _ b -> b
+
+-- --- the lexer -----------------------------------------------------------------
+
+data Piece
+  = LName String Int
+  | LTok String Int
+  | LPunct String Int
+
+fun lexAt l = match l with | LName _ at -> at | LTok _ at -> at | LPunct _ at -> at
+
+fun byteAt (s : String) (i : Int) : Int = if i < stringByteLength s then toInt (stringByteAt s i) else 0 - 1
+
+fun isNameByte b = (b >= 97 and b <= 122) or (b >= 65 and b <= 90) or (b >= 48 and b <= 57) or b == 95
+
+fun isSpace b = b == 32 or b == 9 or b == 10 or b == 13
+
+-- The grammar's tokens, or the byte where one could not be read.
+fun lexAll (s : String) (i : Int) (acc : [Piece]) : Result (Int, String) [Piece] =
+  let b = byteAt s i in
+  if b < 0 then Ok acc
+  else if isSpace b then lexAll s (i + 1) acc
+  else if b == 47 and byteAt s (i + 1) == 47 then lexAll s (lineEnd s i) acc
+  else if isNameByte b then
+    let j = nameEnd s i in
+    lexAll s j (V.pushBack acc (LName (stringSlice s i j) i))
+  else if b == 39 then
+    (match quotedEnd s (i + 1) "" with
+     | Ok (text, j) -> lexAll s j (V.pushBack acc (LTok text i))
+     | Err e -> Err e)
+  else if V.elem b [61, 124, 42, 63, 40, 41, 58] then lexAll s (i + 1) (V.pushBack acc (LPunct (stringSlice s i (i + 1)) i))
+  else Err (i, "`${stringSlice s i (i + 1)}` is not ungrammar")
+
+fun lineEnd s i = if byteAt s i < 0 or byteAt s i == 10 then i else lineEnd s (i + 1)
+
+fun nameEnd s i = if isNameByte (byteAt s i) then nameEnd s (i + 1) else i
+
+-- The text of a quoted token from just past its `'`, and the byte after it.
+fun quotedEnd (s : String) (i : Int) (acc : String) : Result (Int, String) (String, Int) =
+  let b = byteAt s i in
+  if b < 0 then Err (i, "a token with no closing `'`")
+  else if b == 39 then Ok (acc, i + 1)
+  else if b == 92 then quotedEnd s (i + 2) (acc ++ stringSlice s (i + 1) (i + 2))
+  else quotedEnd s (i + 1) (acc ++ stringSlice s i (i + 1))
+
+-- --- the parser ------------------------------------------------------------------
+
+-- Every rule of `text`, or the byte where it went wrong and why.
+@pub fun parseGrammar (text : String) : Result (Int, String) [Def] =
+  match lexAll text 0 [] with
+  | Err e -> Err e
+  | Ok ls -> defs ls 0 [] (stringByteLength text)
+
+fun defs ls i acc stop =
+  match (V.get ls i, V.get ls (i + 1)) with
+  | (None, _) -> Ok acc
+  | (Just (LName n at), Just (LPunct "=" _)) ->
+      (match alt ls (i + 2) stop with
+       | Ok (body, j) -> defs ls j (V.pushBack acc (Def n at body)) stop
+       | Err e -> Err e)
+  | (Just l, _) -> Err (lexAt l, "a rule starts with `Name =`")
+
+-- Where a rule's body stops: the end, a `)`, or the next `Name =`.
+fun stops ls i =
+  match (V.get ls i, V.get ls (i + 1)) with
+  | (None, _) -> True
+  | (Just (LPunct ")" _), _) -> True
+  | (Just (LName _ _), Just (LPunct "=" _)) -> True
+  | _ -> False
+
+fun alt ls i stop =
+  let j = match V.get ls i with | Just (LPunct "|" _) -> i + 1 | _ -> i in
+  altLoop ls j stop []
+
+fun altLoop ls i stop acc =
+  match sq ls i stop with
+  | Err e -> Err e
+  | Ok (s, j) ->
+      let acc2 = V.pushBack acc s in
+      (match V.get ls j with
+       | Just (LPunct "|" _) -> altLoop ls (j + 1) stop acc2
+       | _ -> Ok (if V.len acc2 == 1 then (V.getOr (Seq []) acc2 0, j) else (Alt acc2, j)))
+
+fun sq ls i stop = seqLoop ls i stop []
+
+fun seqLoop ls i stop acc =
+  let bar = match V.get ls i with | Just (LPunct "|" _) -> True | _ -> False in
+  if stops ls i or bar then Ok (if V.len acc == 1 then (V.getOr (Seq []) acc 0, i) else (Seq acc, i))
+  else
+    match atom ls i stop with
+    | Err e -> Err e
+    | Ok (a, j) -> seqLoop ls j stop (V.pushBack acc a)
+
+fun atom ls i stop =
+  match (V.get ls i, V.get ls (i + 1)) with
+  | (Just (LName l _), Just (LPunct ":" _)) ->
+      (match atom ls (i + 2) stop with
+       | Ok (a, j) -> Ok (Label l a, j)
+       | Err e -> Err e)
+  | _ ->
+      match base ls i stop with
+      | Err e -> Err e
+      | Ok (b, j) -> Ok (postfix ls b j)
+
+fun base ls i stop =
+  match V.get ls i with
+  | Just (LName n at) -> Ok (Ref n at, i + 1)
+  | Just (LTok t at) -> Ok (Tok t at, i + 1)
+  | Just (LPunct "(" at) ->
+      (match alt ls (i + 1) stop with
+       | Err e -> Err e
+       | Ok (inner, j) ->
+           match V.get ls j with
+           | Just (LPunct ")" _) -> Ok (inner, j + 1)
+           | Just l -> Err (lexAt l, "expected `)`")
+           | None -> Err (stop, "expected `)`, not the end"))
+  | Just l -> Err (lexAt l, "expected a rule, a `'token'` or `(`")
+  | None -> Err (stop, "expected a rule, not the end")
+
+fun postfix ls b i =
+  match V.get ls i with
+  | Just (LPunct "*" _) -> postfix ls (Rep b) (i + 1)
+  | Just (LPunct "?" _) -> postfix ls (Opt b) (i + 1)
+  | _ -> (b, i)
+
+-- --- tests -------------------------------------------------------------------
+
+use Std.Test (assertEq)
+
+@test fun aRuleIsReadWithItsLabelsAndRepetition () =
+  match parseGrammar "LetStmt = 'let' name:Name ('=' Expr)? ';'\nList = Item*" with
+  | Ok ds ->
+      let a = assertEq (V.map defName ds) ["LetStmt", "List"] "two rules" in
+      assertEq
+        (V.map defBody ds)
+        [Seq [Tok "let" 10, Label "name" (Ref "Name" 21), Opt (Seq [Tok "=" 27, Ref "Expr" 31]), Tok ";" 38], Rep (Ref "Item" 49)]
+        "each with where it was written"
+  | Err e -> assertEq e (0, "") "it reads"
+
+@test fun anAlternationWithALeadingBar () =
+  match parseGrammar "Expr =\n  | Lit // a number\n  | Name" with
+  | Ok ds -> assertEq (V.map defBody ds) [Alt [Ref "Lit" 11, Ref "Name" 31]] "the comment is nothing"
+  | Err e -> assertEq e (0, "") "it reads"
+
+@test fun aTokenMayEscapeItsQuote () =
+  match parseGrammar "Q = '\\'' '\\\\'" with
+  | Ok ds -> assertEq (V.map defBody ds) [Seq [Tok "'" 4, Tok "\\" 9]] "a quote and a backslash"
+  | Err e -> assertEq e (0, "") "it reads"
+
+@test fun aMistakeIsSaidWhereItIs () =
+  let a = assertEq (parseGrammar "A = (B") (Err (6, "expected `)`, not the end")) "at the end" in
+  assertEq (parseGrammar "A = B ; C") (Err (6, "`;` is not ungrammar")) "at the `;`"

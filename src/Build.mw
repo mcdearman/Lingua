@@ -1,0 +1,124 @@
+-- Events and tokens into a green tree, every byte of the file in it.
+--
+-- The parser read only the tokens that are not trivia; the lexer made them
+-- all. Walking the events, each `Advance` takes the next token that is not
+-- trivia, and every trivia token on the way is put back where it was: before
+-- a node opens, into the node around it -- so a comment above a declaration
+-- belongs to what holds the declaration, as rust-analyzer attaches it -- and
+-- otherwise into the node being read. What is left at the end, and any token
+-- the parser never took, goes to the root, so that nothing written is lost.
+
+use Std.Collections.Vector as V
+use Lingua.Green (Green, node, token)
+use Lingua.Parser (Event)
+use Lingua.Parser.Event.*
+
+-- A token the lexer made: its kind, its text, and whether it is trivia.
+use Lexeme.*
+
+@pub data Lexeme k = Lexeme k String Bool
+
+@pub fun lexeme (k : k) (text : String) (trivia : Bool) : Lexeme k = Lexeme k text trivia
+
+@pub fun lexemeKind (l : Lexeme k) : k = match l with | Lexeme k _ _ -> k
+
+@pub fun lexemeTrivia (l : Lexeme k) : Bool = match l with | Lexeme _ _ t -> t
+
+-- The tree the events describe over `lexemes`, and every error with the byte
+-- it was said at. `root` is the kind of the whole file, for the tree of a
+-- parse that said nothing at all.
+@pub fun build (root : k) (events : [Event k]) (lexemes : [Lexeme k]) : (Green k, [(Int, String)]) =
+  let start = { stack = [], cursor = 0, offset = 0, errors = [], done = [] } in
+  let finished = V.foldl (\st e -> step lexemes st e) start events in
+  -- Whatever is still open is closed, the root last, with what is left over
+  -- in it.
+  let closed = closeAll lexemes finished in
+  (V.getOr (node root (V.map green lexemes)) closed.done 0, closed.errors)
+
+fun step lexemes st e =
+  match e with
+  | Open k ->
+      let st2 = if V.isEmpty st.stack then st else trivia lexemes st in
+      { st2 | stack = V.pushBack st2.stack (k, []) }
+  | Advance ->
+      let st2 = trivia lexemes st in
+      (match V.get lexemes st2.cursor with
+       | Just l -> take (append st2 (green l)) l
+       | None -> st2)
+  | Error msg ->
+      let st2 = trivia lexemes st in
+      { st2 | errors = V.pushBack st2.errors (st2.offset, msg) }
+  | Close ->
+      if V.len st.stack <= 1 then closeAll lexemes st
+      else
+        match V.last st.stack with
+        | Just frame -> append { st | stack = V.popBack st.stack } (node (fst frame) (snd frame))
+        | None -> st
+
+-- Put every trivia token from the cursor on into the node being read.
+fun trivia lexemes st =
+  match V.get lexemes st.cursor with
+  | Just l -> if isTrivia l then trivia lexemes (take (append st (green l)) l) else st
+  | None -> st
+
+-- Close every open node, the root last, with every token still unread in it.
+fun closeAll lexemes st =
+  if V.isEmpty st.stack then st
+  else if V.len st.stack == 1 then
+    let rest = remaining lexemes st in
+    match V.last rest.stack with
+    | Just frame -> { rest | stack = [], done = [node (fst frame) (snd frame)] }
+    | None -> rest
+  else
+    match V.last st.stack with
+    | Just frame -> closeAll lexemes (append { st | stack = V.popBack st.stack } (node (fst frame) (snd frame)))
+    | None -> st
+
+fun remaining lexemes st =
+  match V.get lexemes st.cursor with
+  | Just l -> remaining lexemes (take (append st (green l)) l)
+  | None -> st
+
+-- `g` as the last child of the node being read.
+fun append st g =
+  match V.last st.stack with
+  | Just frame -> { st | stack = V.set st.stack (V.len st.stack - 1) (fst frame, V.pushBack (snd frame) g) }
+  | None -> st
+
+-- Past `l`.
+fun take st l = { st | cursor = st.cursor + 1, offset = st.offset + stringByteLength (textOf l) }
+
+fun green l = match l with | Lexeme k t _ -> token k t
+
+fun textOf l = match l with | Lexeme _ t _ -> t
+
+fun isTrivia l = match l with | Lexeme _ _ t -> t
+
+-- --- tests -------------------------------------------------------------------
+
+use Std.Test (assertEq)
+use Lingua.Green (text, dump)
+
+-- `let x` with a space before, between and after.
+def sample : [Lexeme String] =
+  [Lexeme "ws" " " True, Lexeme "let" "let" False, Lexeme "ws" " " True, Lexeme "ident" "x" False, Lexeme "ws" "\n" True]
+
+@test fun everyByteIsInTheTree () =
+  let events = [Open "File", Open "Let", Advance, Advance, Close, Close] in
+  match build "File" events sample with
+  | (g, errs) ->
+      let a = assertEq (text g) " let x\n" "the file, back" in
+      assertEq
+        (dump (\k -> k) g)
+        "File\n  ws \" \"\n  Let\n    let \"let\"\n    ws \" \"\n    ident \"x\"\n  ws \"\\n\""
+        "leading trivia outside the node, trailing trivia at the root"
+
+@test fun anErrorIsAtTheByteItWasSaid () =
+  let events = [Open "File", Advance, Error "expected `=`", Close] in
+  match build "File" events sample with
+  | (g, errs) -> assertEq errs [(5, "expected `=`")] "where the `x` starts, past the space"
+
+@test fun tokensNeverTakenStillBelong () =
+  let events = [Open "File", Advance, Close] in
+  match build "File" events sample with
+  | (g, errs) -> assertEq (text g) " let x\n" "the `x` the parser never read is there too"

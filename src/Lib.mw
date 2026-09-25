@@ -1,0 +1,14 @@
+-- Lingua: compilers written as their specification.
+--
+-- See docs/DESIGN.md. What is here so far is the runtime a generated parser
+-- stands on: the green tree, the red view over it, the event parser, and the
+-- builder that makes one from the other.
+
+@pub mod Green
+@pub mod Red
+@pub mod Parser
+@pub mod Build
+@pub mod Ungrammar
+@pub mod Gen
+
+@pub use Lingua.Gen (syntax)

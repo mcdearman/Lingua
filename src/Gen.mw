@@ -1,0 +1,537 @@
+-- `syntax!`: a parser and a lossless tree, written from an ungrammar.
+--
+--   syntax! {
+--     pub Calc
+--     lexer Token
+--     trivia { Whitespace, Comment }
+--     tokens { "let" = Let, "ident" = Ident _, … }
+--     precedence Expr { left "+" "-", left "*" "/", postfix CallExpr }
+--     grammar r#"
+--       File = Stmt*
+--       …
+--     "#
+--   }
+--
+-- writes, beside the call:
+--
+-- * `CalcKind`, every kind of node and token the tree can hold;
+-- * a parse function for each rule, emitting events over `Lingua.Parser`;
+-- * `parseCalc : String -> (Green CalcKind, [(Int, String)])`, which lexes with
+--   the Scythe lexer `lexToken`, parses, and builds the lossless tree.
+--
+-- See docs/DESIGN.md for what each rule becomes. Every mistake is reported
+-- where it was written: in the tables, at the token; in the grammar, at the
+-- byte inside the string.
+
+use Std.Collections.Vector as V
+use Std.String as S
+use Std.Maybe as M
+use Std.Macro (TokenTree, Delim, Loc, spanOf, text, isWord, isPunct)
+use Std.Macro.TokenTree.*
+use Std.Macro.Loc.*
+use Std.Macro.Delim.*
+use Std.Macro.Parse (Tokens, parseTokens, ident, keyword, punct, group, treesUntil)
+use Std.String.Parse as P
+use Std.String.Parse (Parser)
+use Lingua.Ungrammar (Rule, Def, parseGrammar, defName, defAt, defBody)
+use Lingua.Ungrammar.Rule.*
+
+-- --- reading the call --------------------------------------------------------
+
+-- One section of the call.
+data Section
+  = Lexer String
+  | Trivia [[TokenTree]]
+  | Table [(String, Loc, [TokenTree])]
+  | Precedence String [(String, [String])]
+  | Grammar String Loc Int
+  | Public
+
+use Section.*
+
+-- A string literal, where it is, and where its text starts: for a raw string
+-- `r#"…"#` the text starts past `r`, the hashes and the quote.
+def literal : Parser Tokens (String, Loc, Int) =
+  P.label "a string"
+    (P.token
+      (\t ->
+        match t with
+        | Str s at ->
+            (match at with
+             | At a b -> Just (s, at, a + (b - a - stringByteLength s + 1) / 2)
+             | Nowhere -> Just (s, at, 0))
+        | _ -> None)
+      [])
+
+def stringOnly : Parser Tokens String = P.map (\l -> match l with | (s, _, _) -> s) literal
+
+fun comma p = P.thenSkip p (P.optional (punct ","))
+
+-- A pattern of the lexer's type, up to the next comma or the end of its braces.
+def pattern : Parser Tokens [TokenTree] =
+  comma (P.bind (treesUntil (isPunct ",")) (\ts -> if V.isEmpty ts then P.fail "expected a pattern" else P.pure ts))
+
+def section : Parser Tokens Section =
+  P.choice
+    [ P.skipThen (keyword "lexer") (P.map Lexer ident),
+      P.skipThen (keyword "trivia") (P.map Trivia (group Brace (P.many pattern))),
+      P.skipThen (keyword "tokens") (P.map Table (group Brace (P.many tokenEntry))),
+      P.skipThen (keyword "precedence") (P.bind ident (\e -> P.map (\ls -> Precedence e ls) (group Brace (P.many level)))),
+      P.skipThen (keyword "grammar") (P.map (\l -> match l with | (s, at, start) -> Grammar s at start) literal) ]
+
+def tokenEntry : Parser Tokens (String, Loc, [TokenTree]) =
+  P.bind literal (\l -> P.skipThen (punct "=") (P.map (\pat -> match l with | (s, at, _) -> (s, at, pat)) pattern))
+
+def level : Parser Tokens (String, [String]) =
+  comma
+    (P.choice
+      [ P.skipThen (keyword "left") (P.map (\ops -> ("left", ops)) (P.some stringOnly)),
+        P.skipThen (keyword "right") (P.map (\ops -> ("right", ops)) (P.some stringOnly)),
+        P.skipThen (keyword "postfix") (P.map (\rs -> ("postfix", rs)) (P.some (P.label "a rule" (P.token (\t -> match t with | Word w _ -> (if V.elem w ["left", "right", "postfix"] then None else Just w) | _ -> None) [])))) ])
+
+def call : Parser Tokens (String, [Section]) =
+  P.bind
+    (P.optional (keyword "pub"))
+    (\pub -> P.bind ident (\name -> P.map (\ss -> (name, match pub with | Just _ -> V.pushBack ss Public | None -> ss)) (P.many section)))
+
+-- --- the macro -----------------------------------------------------------------
+
+@macro
+@pub fun syntax (ts : [TokenTree]) : [TokenTree] ! { Mut | e } =
+  match parseTokens call ts with
+  | Err failed -> failed
+  | Ok (name, sections) -> written name sections
+
+fun written name sections =
+  let lexer = V.foldl (\acc s -> match s with | Lexer l -> Just l | _ -> acc) None sections in
+  let grammar = V.foldl (\acc s -> match s with | Grammar g at start -> Just (g, at, start) | _ -> acc) None sections in
+  match (lexer, grammar) with
+  | (None, _) -> [Fail "`syntax!` needs `lexer`, the Scythe token type it reads" Nowhere]
+  | (_, None) -> [Fail "`syntax!` needs a `grammar`, in ungrammar" Nowhere]
+  | (Just lx, Just (g, at, start)) ->
+      match parseGrammar g with
+      | Err (off, why) -> [Fail why (inGrammar start off 1)]
+      | Ok defs ->
+          let spec = {
+          name = name,
+            lexer = lx,
+            public = V.any (\s -> match s with | Public -> True | _ -> False) sections,
+            trivia = V.concatMap (\s -> match s with | Trivia ps -> ps | _ -> []) sections,
+            tokens = V.concatMap (\s -> match s with | Table es -> es | _ -> []) sections,
+            prec = V.foldl (\acc s -> match s with | Precedence e ls -> Just (e, ls) | _ -> acc) None sections,
+            defs = defs,
+            start = start
+          } in
+          match check spec with
+          | Just failed -> failed
+          | None -> generate spec
+
+-- Where byte `off` of the grammar is in the file, `n` bytes of it.
+fun inGrammar (start : Int) (off : Int) (n : Int) : Loc = if start <= 0 then Nowhere else At (start + off) (start + off + n)
+
+-- --- what the grammar says -------------------------------------------------------
+
+fun lookupDef spec n = V.find (\d -> defName d == n) spec.defs
+
+-- An enum: a rule that is only an alternation of other rules.
+fun isEnum (d : Def) : Bool =
+  match defBody d with
+  | Alt alts -> V.all (\a -> match a with | Ref _ _ -> True | _ -> False) alts
+  | _ -> False
+
+fun alternatives (d : Def) : [String] =
+  match defBody d with
+  | Alt alts -> V.concatMap (\a -> match a with | Ref n _ -> [n] | _ -> []) alts
+  | _ -> []
+
+-- The rule a body starts with, if it starts with one.
+fun leading (r : Rule) : Maybe String =
+  match r with
+  | Ref n _ -> Just n
+  | Label _ x -> leading x
+  | Seq xs -> (match V.get xs 0 with | Just x -> leading x | None -> None)
+  | _ -> None
+
+-- What follows the first element of a sequence.
+fun rest (r : Rule) : [Rule] =
+  match r with
+  | Seq xs -> V.drop xs 1
+  | _ -> []
+
+-- The alternatives of enum `e` that start with `e`: read after a left side.
+fun ledAlts spec e =
+  V.filter
+    (\a -> match lookupDef spec a with | Just d -> leading (defBody d) == Just e | None -> False)
+    (match lookupDef spec e with | Just d -> alternatives d | None -> [])
+
+fun prefixAlts spec e =
+  V.filter (\a -> not (V.elem a (ledAlts spec e))) (match lookupDef spec e with | Just d -> alternatives d | None -> [])
+
+-- Every quoted token the grammar writes, with where.
+fun quoted (r : Rule) : [(String, Int)] =
+  match r with
+  | Tok t at -> [(t, at)]
+  | Ref _ _ -> []
+  | Seq xs -> V.concatMap quoted xs
+  | Alt xs -> V.concatMap quoted xs
+  | Opt x -> quoted x
+  | Rep x -> quoted x
+  | Label _ x -> quoted x
+
+fun refs (r : Rule) : [(String, Int)] =
+  match r with
+  | Tok _ _ -> []
+  | Ref n at -> [(n, at)]
+  | Seq xs -> V.concatMap refs xs
+  | Alt xs -> V.concatMap refs xs
+  | Opt x -> refs x
+  | Rep x -> refs x
+  | Label _ x -> refs x
+
+-- --- FIRST sets ----------------------------------------------------------------
+
+-- What a rule can start with, and whether it can be nothing, by rule name.
+fun firsts spec : [(String, ([String], Bool))] = settle spec (V.map (\d -> (defName d, ([], False))) spec.defs) 0
+
+fun settle spec env n =
+  let next = V.map (\d -> (defName d, firstOf env (defBody d))) spec.defs in
+  if next == env or n > 64 then next else settle spec next (n + 1)
+
+fun firstOf env (r : Rule) : ([String], Bool) =
+  match r with
+  | Tok t _ -> ([t], False)
+  | Ref n _ -> (match V.find (\e -> fst e == n) env with | Just e -> snd e | None -> ([], False))
+  | Label _ x -> firstOf env x
+  | Opt x -> (fst (firstOf env x), True)
+  | Rep x -> (fst (firstOf env x), True)
+  | Alt xs -> V.foldl (\acc x -> let f = firstOf env x in (union (fst acc) (fst f), snd acc or snd f)) ([], False) xs
+  | Seq xs -> firstOfSeq env xs 0
+
+fun firstOfSeq env xs i =
+  match V.get xs i with
+  | None -> ([], True)
+  | Just x ->
+      let f = firstOf env x in
+      if snd f then (let more = firstOfSeq env xs (i + 1) in (union (fst f) (fst more), snd more)) else f
+
+fun union (a : [String]) (b : [String]) : [String] = V.foldl (\acc x -> if V.elem x acc then acc else V.pushBack acc x) a b
+
+fun overlap (a : [String]) (b : [String]) : [String] = V.filter (\x -> V.elem x b) a
+
+-- --- checks ---------------------------------------------------------------------
+
+fun check spec : Maybe [TokenTree] =
+  let env = firsts spec in
+  let problems =
+    V.concat
+      [ undefinedRefs spec,
+        unknownTokens spec,
+        duplicateRules spec,
+        precedenceCovers spec env,
+        enumConflicts spec env ] in
+    match V.get problems 0 with
+    | Just (msg, loc) -> Just [Fail msg loc]
+    | None -> None
+
+fun undefinedRefs spec =
+  V.concatMap
+    (\d -> V.concatMap (\r -> match r with | (n, at) -> (match lookupDef spec n with | Just _ -> [] | None -> [("no rule is called `${n}`", inGrammar spec.start at (stringByteLength n))])) (refs (defBody d)))
+    spec.defs
+
+fun unknownTokens spec =
+  V.concatMap
+    (\d -> V.concatMap (\q -> match q with | (t, at) -> (if V.any (\e -> tokName e == t) spec.tokens then [] else [("`'${t}'` is not in `tokens`: say which of the lexer's tokens it is", inGrammar spec.start at (stringByteLength t + 2))])) (quoted (defBody d)))
+    spec.defs
+
+fun duplicateRules spec =
+  V.concatMap
+    (\i -> match V.get spec.defs i with
+           | Just d -> (if V.any (\e -> defName e == defName d) (V.take spec.defs i) then [("`${defName d}` is defined twice", inGrammar spec.start (defAt d) (stringByteLength (defName d)))] else [])
+           | None -> [])
+    (V.range 0 (V.len spec.defs))
+
+-- Every alternative that starts with its own enum has to be read after a
+-- left side: an operator in the table, or a postfix form named there.
+fun precedenceCovers spec env =
+  V.concatMap
+    (\d ->
+      if not (isEnum d) then []
+      else
+        V.concatMap
+          (\a ->
+            let covered =
+              (match spec.prec with
+               | Just (e, ls) -> e == defName d and (postfixes ls a or V.all (\t -> V.elem t (operators ls)) (trigger spec env a))
+               | None -> False) in
+              if covered then []
+              else [("`${a}` starts with `${defName d}`: give its operator a place in `precedence ${defName d}`, or name it `postfix`", whereDef spec a)])
+          (ledAlts spec (defName d)))
+    spec.defs
+
+fun postfixes ls a = V.any (\l -> fst l == "postfix" and V.elem a (snd l)) ls
+
+fun operators ls = V.concatMap (\l -> if fst l == "postfix" then [] else snd l) ls
+
+-- What a left-recursive alternative is recognised by: the start of what
+-- follows its left side.
+fun trigger spec env a =
+  match lookupDef spec a with
+  | Just d -> fst (firstOf env (Seq (rest (defBody d))))
+  | None -> []
+
+fun enumConflicts spec env =
+  V.concatMap
+    (\d ->
+      if not (isEnum d) then []
+      else
+        let alts = prefixAlts spec (defName d) in
+        V.concatMap
+          (\i ->
+            V.concatMap
+              (\j ->
+                match (V.get alts i, V.get alts j) with
+                | (Just a, Just b) ->
+                    let shared = overlap (firstOfName env a) (firstOfName env b) in
+                    if i < j and not (V.isEmpty shared) then
+                      [("`${a}` and `${b}` can both start with `'${V.getOr "" shared 0}'`: an enum's alternatives must start differently", whereDef spec (defName d))]
+                    else []
+                | _ -> [])
+              (V.range 0 (V.len alts)))
+          (V.range 0 (V.len alts)))
+    spec.defs
+
+fun firstOfName env n = match V.find (\e -> fst e == n) env with | Just e -> fst (snd e) | None -> []
+
+fun whereDef spec n = match lookupDef spec n with | Just d -> inGrammar spec.start (defAt d) (stringByteLength n) | None -> Nowhere
+
+-- --- writing the parser ------------------------------------------------------------
+
+fun tokName e = match e with | (t, _, _) -> t
+
+-- The kind a quoted token is: the constructor its pattern starts with.
+fun tokKind spec t =
+  match V.find (\e -> tokName e == t) spec.tokens with
+  | Just (_, _, pat) -> ctorOf pat
+  | None -> "Unknown"
+
+fun ctorOf (pat : [TokenTree]) : String =
+  match V.get pat 0 with
+  | Just (Word w _) -> w
+  | _ -> "Unknown"
+
+fun kindType spec = "${spec.name}Kind"
+
+fun k spec c = "${kindType spec}.${c}"
+
+fun fn spec r = "lingua${spec.name}_${r}"
+
+fun anyOf spec env ts = "LinguaP.atAny p [${S.join ", " (V.map (\t -> k spec (tokKind spec t)) ts)}]"
+
+-- The kinds: every node rule, every token the table names, the trivia, and
+-- the three every tree may need.
+fun kinds spec =
+  let nodes = V.map defName (V.filter (\d -> not (isEnum d)) spec.defs) in
+  let toks = V.map (\e -> match e with | (_, _, pat) -> ctorOf pat) spec.tokens in
+  let triv = V.map ctorOf spec.trivia in
+  union (union (union nodes toks) triv) ["ErrorNode", "Eof", "Unknown"]
+
+fun generate spec : [TokenTree] ! { Mut | e } =
+  let env = firsts spec in
+  let counter = newRef 0 in
+  let root = (match V.get spec.defs 0 with | Just d -> defName d | None -> "File") in
+  let pub = if spec.public then "@pub " else "" in
+  let lx = spec.lexer in
+  V.concat
+    [ [Code (header spec pub)],
+      classify spec,
+      [Code (V.foldl (\acc d -> acc ++ "\n" ++ ruleFun spec env counter root d) "" spec.defs),
+        Code (entry spec pub root lx)] ]
+
+fun header spec pub =
+  "use Lingua.Parser as LinguaP
+use Lingua.Build as LinguaB
+use Lingua.Green as LinguaG
+use Scythe as LinguaScythe
+use Std.Collections.Vector as LinguaV
+
+@derive(Debug, Display, PartialEq)
+${pub}data ${kindType spec} = ${S.join " | " (kinds spec)}
+
+-- How a kind is named in a message: a token as it is written, a node by its rule.
+fun ${fn spec "name"} (x : ${kindType spec}) : String =
+  match x with
+${S.join "\n" (V.map (\e -> match e with | (t, _, pat) -> "  | ${k spec (ctorOf pat)} -> \"`${escape t}`\"") spec.tokens)}
+  | other -> display other
+"
+
+-- The lexer's tokens as kinds, each pattern where the table wrote it; and
+-- which of them are trivia.
+fun classify spec : [TokenTree] =
+  let arm = \pat -> V.concat [[Punct "|" Nowhere], qualify spec pat, [Code "-> ${k spec (ctorOf pat)}"]] in
+  V.concat
+    [ [Code "fun ${fn spec "kindOf"} (t : ${spec.lexer}) : ${kindType spec} =\n  match t with"],
+      V.concatMap (\e -> match e with | (_, _, pat) -> arm pat) spec.tokens,
+      V.concatMap arm spec.trivia,
+      [Code "  | _ -> ${k spec "Unknown"}\n\nfun ${fn spec "isTrivia"} (x : ${kindType spec}) : Bool =\n  match x with"],
+      V.concatMap (\pat -> [Code "| ${k spec (ctorOf pat)} -> True"]) spec.trivia,
+      [Code "| ${k spec "Unknown"} -> True\n  | _ -> False\n"] ]
+
+-- `Ident _` as `Token.Ident _`, still where it was written.
+fun qualify spec pat =
+  match V.get pat 0 with
+  | Just (Word w at) -> V.pushFront (V.drop pat 1) (Word "${spec.lexer}.${w}" at)
+  | _ -> pat
+
+-- `s` as it goes inside a string literal.
+fun escape (s : String) : String =
+  S.join
+    ""
+    (V.map
+      (\i ->
+        let c = stringSlice s i (i + 1) in
+        if c == "\"" then "\\\"" else if c == "\\" then "\\\\" else if c == "$" then "\\$" else c)
+      (V.range 0 (stringByteLength s)))
+
+fun fresh counter = let n = getRef counter in let u = setRef counter (n + 1) in n
+
+-- A rule's parse function: a node opens, reads its body, and closes; an enum
+-- chooses an alternative, then -- if it has left-recursive ones -- reads them
+-- after the left side, Pratt style.
+fun ruleFun spec env counter root d =
+  let name = defName d in
+  if isEnum d then enumFun spec env counter d
+  else if name == root then
+    "fun ${fn spec name} p =
+  let m = LinguaP.open p in
+  let rec go u =
+    let _ = ${body spec env counter "" (defBody d)} in
+    if LinguaP.atEnd p then () else (let _ = LinguaP.advanceWithError p \"unexpected ${escape name} content\" in go ())
+  in
+  let _ = go () in
+  LinguaP.close p m ${k spec name}
+"
+  else
+    "fun ${fn spec name} p =
+  let m = LinguaP.open p in
+  let _ = ${body spec env counter "" (defBody d)} in
+  LinguaP.close p m ${k spec name}
+"
+
+-- The code that reads `r`, answering `()`. `self` is the enum a Pratt tail is
+-- read for: its last element, if it is that enum, is read at a binding power.
+fun body spec env counter self (r : Rule) : String ! { Mut | e } =
+  match r with
+  | Tok t _ -> "LinguaP.expect p ${k spec (tokKind spec t)}"
+  | Ref n _ -> "(let _ = ${fn spec n} p in ())"
+  | Label _ x -> body spec env counter self x
+  | Seq xs -> "(" ++ V.foldl (\acc x -> acc ++ "let _ = ${body spec env counter self x} in ") "" xs ++ "())"
+  | Opt x -> "(if ${anyOf spec env (fst (firstOf env x))} then ${body spec env counter self x} else ())"
+  | Rep x ->
+      let n = fresh counter in
+      "(let rec loop${show n} u = if ${anyOf spec env (fst (firstOf env x))} then (let _ = ${body spec env counter self x} in loop${show n} ()) else () in loop${show n} ())"
+  | Alt xs ->
+      V.foldr
+        (\x acc -> "(if ${anyOf spec env (fst (firstOf env x))} then ${body spec env counter self x} else ${acc})")
+        "LinguaP.error p \"expected one of ${escape (S.join ", " (V.map (\x -> S.join " " (fst (firstOf env x))) xs))}\""
+        xs
+
+fun enumFun spec env counter d =
+  let e = defName d in
+  let alts = prefixAlts spec e in
+  let dispatch =
+    V.foldr
+      (\a acc -> "if ${anyOf spec env (firstOfName env a)} then ${fn spec a} p else ${acc}")
+      "(let _ = LinguaP.error p \"expected ${e}\" in 0 - 1)"
+      alts in
+    if V.isEmpty (ledAlts spec e) then
+      "fun ${fn spec e} p = ${dispatch}
+"
+    else
+      "fun ${fn spec e} p = ${fn spec ("bp" ++ e)} p 0
+
+fun ${fn spec ("bp" ++ e)} p (minBp : Int) : Int ! { Mut | e } =
+  let lhs = ${dispatch} in
+  if lhs < 0 then lhs else ${fn spec ("led" ++ e)} p minBp lhs
+
+fun ${fn spec ("led" ++ e)} p (minBp : Int) (lhs : Int) : Int ! { Mut | e } =
+  ${ledBranches spec env counter e}lhs
+"
+
+-- One branch per level of the table and per postfix form: at its trigger and
+-- binding tighter than what is being read, wrap the left side and read on.
+fun ledBranches spec env counter e =
+  match spec.prec with
+  | None -> ""
+  | Just (_, ls) ->
+      let top = V.len ls + 1 in
+      V.foldl
+        (\acc i ->
+          match V.get ls i with
+          | Just (assoc, items) ->
+              let lbp = 2 * (i + 1) in
+              if assoc == "postfix" then
+                acc ++ V.foldl (\acc2 a -> acc2 ++ branch spec env counter e a (fst (firstOf env (Seq (restOf spec a)))) (2 * top) 0) "" items
+              else
+                let rbp = if assoc == "right" then lbp - 1 else lbp + 1 in
+                acc ++ V.foldl (\acc2 a -> acc2 ++ branch spec env counter e a items lbp rbp) "" (altsFor spec env e items)
+          | None -> acc)
+        ""
+        (V.range 0 (V.len ls))
+
+-- The left-recursive alternatives whose trigger is among `ops`.
+fun altsFor spec env e ops = V.filter (\a -> not (V.isEmpty (overlap (trigger spec env a) ops))) (ledAlts spec e)
+
+fun restOf spec a = match lookupDef spec a with | Just d -> rest (defBody d) | None -> []
+
+fun branch spec env counter e a triggers lbp rbp =
+  "if ${anyOf spec env triggers} and ${show lbp} > minBp then
+    let m = LinguaP.openBefore p lhs in
+    let _ = ${tail spec env counter e (restOf spec a) rbp} in
+    ${fn spec ("led" ++ e)} p minBp (LinguaP.close p m ${k spec a})
+  else "
+
+-- What follows the left side, its last element -- the right side, when it is
+-- the enum again -- read at binding power `rbp`.
+fun tail spec env counter e xs rbp =
+  "(" ++ V.foldl (\acc i -> acc ++ "let _ = ${elementAt spec env counter e xs i rbp} in ") "" (V.range 0 (V.len xs)) ++ "())"
+
+fun elementAt spec env counter e xs i rbp =
+  match V.get xs i with
+  | Just x ->
+      if i == V.len xs - 1 and leading x == Just e and not (isSeq x) then
+        "(let _ = ${fn spec ("bp" ++ e)} p ${show rbp} in ())"
+      else body spec env counter e x
+  | None -> "()"
+
+fun isSeq x = match x with | Seq _ -> True | _ -> False
+
+-- `parseCalc`: lex, parse, build.
+fun entry spec pub root lx =
+  "-- The lexer's tokens, and the text between them it skipped, as trivia: every
+-- byte of `input`, in order.
+fun ${fn spec "lexemes"} (input : String) ts =
+  let n = stringByteLength input in
+  let step = \\acc l ->
+    match acc with
+    | (out, at) ->
+        let s = LinguaScythe.start l in
+        let e = LinguaScythe.stop l in
+        let out2 = if s > at then LinguaV.pushBack out (LinguaB.lexeme ${k spec "Unknown"} (stringSlice input at s) True) else out in
+        let kd = ${fn spec "kindOf"} (LinguaScythe.token l) in
+        (LinguaV.pushBack out2 (LinguaB.lexeme kd (stringSlice input s e) (${fn spec "isTrivia"} kd)), e)
+  in
+  match LinguaV.foldl step ([], 0) ts with
+  | (out, at) -> if at < n then LinguaV.pushBack out (LinguaB.lexeme ${k spec "Unknown"} (stringSlice input at n) True) else out
+
+-- `input` as a lossless tree, and every error with the byte it is at.
+${pub}fun parse${spec.name} (input : String) =
+  match lex${lx} input with
+  | Err err ->
+      (LinguaG.node ${k spec root} [LinguaG.token ${k spec "Unknown"} input], [(LinguaScythe.errorAt err, \"the lexer stopped here\")])
+  | Ok ts ->
+      let lexemes = ${fn spec "lexemes"} input ts in
+      let kinds = LinguaV.toArray (LinguaV.map LinguaB.lexemeKind (LinguaV.filter (\\l -> not (LinguaB.lexemeTrivia l)) lexemes)) in
+      let p = LinguaP.parser kinds ${k spec "Eof"} ${k spec "ErrorNode"} ${fn spec "name"} in
+      let _ = ${fn spec root} p in
+      LinguaB.build ${k spec root} (LinguaP.events p) lexemes
+"

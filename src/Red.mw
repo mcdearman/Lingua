@@ -1,0 +1,105 @@
+-- The red view: a green node seen from where it is.
+--
+-- A `Syntax` is a green node or token with its absolute offset in the file
+-- and the `Syntax` it is a child of. It is made on demand, walking down from
+-- the root, and never stored: the green tree is the data, and this is a
+-- cursor over it. Positions, parents and "what is at this offset" live here.
+
+use Std.Collections.Vector as V
+use Std.String as S
+use Lingua.Green (Green, kind, width, isToken)
+use Lingua.Green as G
+
+use Syntax.*
+
+@pub data Syntax k = Syntax (Green k) Int (Maybe (Syntax k))
+
+-- The whole file, from its green root.
+@pub fun root (g : Green k) : Syntax k = Syntax g 0 None
+
+@pub fun green (s : Syntax k) : Green k = match s with | Syntax g _ _ -> g
+
+@pub fun kindOf (s : Syntax k) : k = kind (green s)
+
+-- Where it starts, in bytes from the start of the file.
+@pub fun offset (s : Syntax k) : Int = match s with | Syntax _ at _ -> at
+
+-- The bytes it covers: from its offset up to, not including, its end.
+@pub fun range (s : Syntax k) : (Int, Int) = (offset s, offset s + width (green s))
+
+@pub fun text (s : Syntax k) : String = G.text (green s)
+
+@pub fun parent (s : Syntax k) : Maybe (Syntax k) = match s with | Syntax _ _ p -> p
+
+-- Its parent, the parent's parent, and so on up to the root.
+@pub fun ancestors (s : Syntax k) : [Syntax k] =
+  match parent s with
+  | Just p -> V.pushFront (ancestors p) p
+  | None -> []
+
+@pub fun isTokenOf (s : Syntax k) : Bool = isToken (green s)
+
+-- Its children -- nodes and tokens, trivia included -- each where it is.
+@pub fun children (s : Syntax k) : [Syntax k] =
+  let cs = G.children (green s) in
+  V.foldl
+    (\acc c ->
+      match acc with
+      | (out, at) -> (V.pushBack out (Syntax c at (Just s)), at + width c))
+    ([], offset s)
+    cs
+    |> fst
+
+-- Its children that are nodes.
+@pub fun nodes (s : Syntax k) : [Syntax k] = V.filter (\c -> not (isTokenOf c)) (children s)
+
+-- Its children that are tokens.
+@pub fun tokens (s : Syntax k) : [Syntax k] = V.filter isTokenOf (children s)
+
+-- Its first child of kind `k`, node or token.
+@pub fun childOfKind (k : k) (s : Syntax k) : Maybe (Syntax k) = V.find (\c -> kindOf c == k) (children s)
+
+-- Every child of kind `k`.
+@pub fun childrenOfKind (k : k) (s : Syntax k) : [Syntax k] = V.filter (\c -> kindOf c == k) (children s)
+
+-- The token covering byte `at`, if any does.
+@pub fun tokenAt (at : Int) (s : Syntax k) : Maybe (Syntax k) =
+  if isTokenOf s then (if inside at s then Just s else None)
+  else
+    match V.find (inside at) (children s) with
+    | Just c -> tokenAt at c
+    | None -> None
+
+-- The innermost node covering byte `at`.
+@pub fun nodeAt (at : Int) (s : Syntax k) : Maybe (Syntax k) =
+  if isTokenOf s or not (inside at s) then None
+  else
+    match V.find (\c -> not (isTokenOf c) and inside at c) (children s) with
+    | Just c -> nodeAt at c
+    | None -> Just s
+
+fun inside at s = match range s with | (from, to) -> at >= from and at < to
+
+-- --- tests -------------------------------------------------------------------
+
+use Std.Test (assertEq)
+use Lingua.Green (node, token)
+use Std.Maybe as M
+
+-- `(1 + 2)`, with its spaces.
+def sample : Green String =
+  node "Paren" [token "(" "(", node "Sum" [token "Num" "1", token "Space" " ", token "+" "+", token "Space" " ", token "Num" "2"], token ")" ")"]
+
+@test fun aChildIsWhereItsElderSiblingsEnd () =
+  let sum = V.getOr (root sample) (nodes (root sample)) 0 in
+  let a = assertEq (range sum) (1, 6) "after the `(`" in
+  assertEq (V.map range (tokens sum)) [(1, 2), (2, 3), (3, 4), (4, 5), (5, 6)] "each token after the last"
+
+@test fun theTokenAtAnOffsetIsFoundFromTheRoot () =
+  match tokenAt 5 (root sample) with
+  | Just t -> assertEq (text t, M.map kindOf (parent t)) ("2", Just "Sum") "the `2`, inside the sum"
+  | None -> assertEq 0 1 "a token covers byte 5"
+
+@test fun theInnermostNodeAtAnOffset () =
+  let a = assertEq (M.map kindOf (nodeAt 3 (root sample))) (Just "Sum") "inside the sum" in
+  assertEq (M.map kindOf (nodeAt 0 (root sample))) (Just "Paren") "the bracket is the paren's"

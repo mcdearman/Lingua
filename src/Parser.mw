@@ -1,0 +1,156 @@
+-- The parser's runtime: what a generated parser reads tokens and says what it
+-- saw with.
+--
+-- After matklad's "Resilient LL Parsing Tutorial". A parser never builds a
+-- tree. It looks at the kinds of the tokens that are not trivia and emits a
+-- flat list of events -- a node opens, a token is taken, a node closes, and
+-- here is what was wrong -- which `Lingua.Build` turns into a green tree with
+-- every token of the file in it. Because a node is a placeholder until it is
+-- closed, what it is can be decided after it is read, and `openBefore` can
+-- wrap a node already closed in a new one: how `a + b` takes the `a` it has
+-- already read as its left side.
+--
+-- `nth` burns fuel and `advance` refills it: a loop that stops moving is
+-- stopped, reported as an error in the tree, and ends at the end of the input
+-- rather than never.
+
+use Std.Collections.Vector as V
+
+use Event.*
+use Parser.*
+
+@pub data Event k
+  = Open k
+  | Close
+  | Advance
+  | Error String
+
+-- The kinds of the tokens to read, where it is, its fuel, what it has said,
+-- the kinds that stand for the end of the input and for a node of errors, and
+-- how a kind is named in a message.
+@pub data Parser k = Parser #[k] (Ref Int) (Ref Int) (Ref [Event k]) k k (k -> String)
+
+def fuelMax : Int = 256
+
+-- A parser over tokens of these kinds.
+@pub fun parser (kinds : #[k]) (eof : k) (errorKind : k) (name : k -> String) : Parser k ! { Mut | e } =
+  Parser kinds (newRef 0) (newRef fuelMax) (newRef []) eof errorKind name
+
+-- The kind `n` tokens ahead; past the end, the end-of-input kind.
+@pub fun nth (p : Parser k) (n : Int) : k ! { Mut | e } =
+  match p with
+  | Parser ks pos fuel evs eofK _ _ ->
+      let f = getRef fuel in
+      if f <= 0 then
+        -- Stuck: said once, and from then on the input has ended, so every
+        -- loop waiting for something else stops.
+        let said = if f == 0 then (let u = setRef fuel (0 - 1) in push p (Error "the parser is stuck here")) else () in
+        eofK
+      else
+        let u = setRef fuel (f - 1) in
+        let i = getRef pos + n in
+        if i < arrayLen ks then arrayGet ks i else eofK
+
+@pub fun at (p : Parser k) (k : k) : Bool ! { Mut | e } = nth p 0 == k
+
+@pub fun atAny (p : Parser k) (ks : [k]) : Bool ! { Mut | e } = V.elem (nth p 0) ks
+
+-- Whether every token has been read.
+@pub fun atEnd (p : Parser k) : Bool ! { Mut | e } =
+  match p with
+  | Parser ks pos _ _ _ _ _ -> getRef pos >= arrayLen ks
+
+-- Open a node whose kind is not known yet; its mark.
+@pub fun open (p : Parser k) : Int ! { Mut | e } =
+  match p with
+  | Parser _ _ _ evs _ errK _ ->
+      let at = V.len (getRef evs) in
+      let u = push p (Open errK) in
+      at
+
+-- Close the node opened at `m`, as a `k`; its mark, for `openBefore`.
+@pub fun close (p : Parser k) (m : Int) (k : k) : Int ! { Mut | e } =
+  match p with
+  | Parser _ _ _ evs _ _ _ ->
+      let u = setRef evs (V.set (getRef evs) m (Open k)) in
+      let v = push p Close in
+      m
+
+-- Open a node before the one closed at `m`, so that it holds it.
+@pub fun openBefore (p : Parser k) (m : Int) : Int ! { Mut | e } =
+  match p with
+  | Parser _ _ _ evs _ errK _ ->
+      let halves = V.splitAt (getRef evs) m in
+      let u = setRef evs (V.append (V.pushBack (fst halves) (Open errK)) (snd halves)) in
+      m
+
+-- Take the next token.
+@pub fun advance (p : Parser k) : () ! { Mut | e } =
+  match p with
+  | Parser _ pos fuel _ _ _ _ ->
+      let u = push p Advance in
+      let v = setRef pos (getRef pos + 1) in
+      if getRef fuel >= 0 then setRef fuel fuelMax else ()
+
+-- Take the next token if it is a `k`.
+@pub fun eat (p : Parser k) (k : k) : Bool ! { Mut | e } =
+  if at p k then (let u = advance p in True) else False
+
+-- Take a `k`, or say one was expected and take nothing.
+@pub fun expect (p : Parser k) (k : k) : () ! { Mut | e } =
+  if eat p k then ()
+  else match p with | Parser _ _ _ _ _ _ name -> error p "expected ${name k}"
+
+-- Say what is wrong here, taking nothing.
+@pub fun error (p : Parser k) (msg : String) : () ! { Mut | e } = push p (Error msg)
+
+-- Take the next token into a node of errors, saying what is wrong with it.
+@pub fun advanceWithError (p : Parser k) (msg : String) : () ! { Mut | e } =
+  match p with
+  | Parser _ _ _ _ _ errK _ ->
+      let m = open p in
+      let u = error p msg in
+      let v = advance p in
+      let w = close p m errK in
+      ()
+
+-- Everything it said.
+@pub fun events (p : Parser k) : [Event k] ! { Mut | e } =
+  match p with
+  | Parser _ _ _ evs _ _ _ -> getRef evs
+
+fun push p e =
+  match p with
+  | Parser _ _ _ evs _ _ _ -> setRef evs (V.pushBack (getRef evs) e)
+
+-- --- tests -------------------------------------------------------------------
+
+use Std.Test (assertEq)
+
+-- `1 + 2` as a sum: the `1` read first, then wrapped once the `+` is seen.
+@test fun aNodeClosedCanBeWrappedInAnother () =
+  let p = parser #["num", "+", "num"] "eof" "error" (\k -> k) in
+  let root = open p in
+  let lit = open p in
+  let a = advance p in
+  let lhs = close p lit "Lit" in
+  let sum = openBefore p lhs in
+  let b = advance p in
+  let c = expect p "num" in
+  let d = close p sum "Sum" in
+  let e = close p root "File" in
+  assertEq
+    (events p)
+    [Open "File", Open "Sum", Open "Lit", Advance, Close, Advance, Advance, Close, Close]
+    "the sum holds the literal"
+
+@test fun whatIsMissingIsSaidAndNothingIsTaken () =
+  let p = parser #["+"] "eof" "error" (\k -> "`${k}`") in
+  let a = expect p "num" in
+  assertEq (events p) [Error "expected `num`"] "an error, and the `+` still there"
+
+@test fun aLoopThatStopsMovingIsStopped () =
+  let p = parser #["x"] "eof" "error" (\k -> k) in
+  let rec spin n = if at p "eof" then n else spin (n + 1) in
+  let n = spin 0 in
+  assertEq (V.last (events p)) (Just (Error "the parser is stuck here")) "stuck, said, and over"

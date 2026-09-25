@@ -1,0 +1,83 @@
+-- The green tree: what a file says, every byte of it, and nothing about where.
+--
+-- A node is a kind, how many bytes it covers, and its children; a token is a
+-- kind and its exact text -- whitespace and comments included, so the tokens
+-- of a tree, in order, are the file. There are no offsets and no parents: a
+-- subtree means the same wherever it sits, so two versions of a file can share
+-- the parts that did not change, and a result computed from one can be
+-- compared with the result from the other by value. Where things are is the
+-- red view's business (`Lingua.Red`).
+--
+-- `k` is the language's kind type, written by `syntax!`.
+
+use Std.Collections.Vector as V
+use Std.String as S
+
+use Green.*
+
+@pub data Green k
+  = Node k Int [Green k]
+  | Token k String
+
+-- A node of kind `k` over `children`, its width theirs.
+@pub fun node (k : k) (children : [Green k]) : Green k = Node k (V.sum (V.map width children)) children
+
+-- A token of kind `k` whose text is `text`.
+@pub fun token (k : k) (text : String) : Green k = Token k text
+
+@pub fun kind (g : Green k) : k =
+  match g with
+  | Node k _ _ -> k
+  | Token k _ -> k
+
+-- How many bytes of the file it covers.
+@pub fun width (g : Green k) : Int =
+  match g with
+  | Node _ w _ -> w
+  | Token _ t -> stringByteLength t
+
+-- Its children; a token has none.
+@pub fun children (g : Green k) : [Green k] =
+  match g with
+  | Node _ _ cs -> cs
+  | Token _ _ -> []
+
+@pub fun isToken (g : Green k) : Bool =
+  match g with
+  | Token _ _ -> True
+  | Node _ _ _ -> False
+
+-- Every token under it, in order.
+@pub fun tokens (g : Green k) : [Green k] =
+  match g with
+  | Token _ _ -> [g]
+  | Node _ _ cs -> V.concatMap tokens cs
+
+-- The text it covers: its tokens' texts, in order. For the root, the file.
+@pub fun text (g : Green k) : String =
+  match g with
+  | Token _ t -> t
+  | Node _ _ _ -> S.join "" (V.map (\t -> match t with | Token _ s -> s | Node _ _ _ -> "") (tokens g))
+
+-- The tree drawn one line per node or token, indented by depth: what a test
+-- compares a parse against.
+@pub fun dump (show : k -> String) (g : Green k) : String = S.join "\n" (dumpLines show 0 g)
+
+fun dumpLines show depth g =
+  let pad = S.join "" (V.replicate depth "  ") in
+  match g with
+  | Token k t -> [pad ++ show k ++ " " ++ debug t]
+  | Node k _ cs -> V.pushFront (V.concatMap (dumpLines show (depth + 1)) cs) (pad ++ show k)
+
+-- --- tests -------------------------------------------------------------------
+
+use Std.Test (assertEq)
+
+@test fun aNodeIsAsWideAsItsChildren () =
+  let g = node "Sum" [token "Num" "12", token "Space" " ", token "Plus" "+"] in
+  let a = assertEq (width g) 4 "two, one and one" in
+  assertEq (text g) "12 +" "its text is its tokens'"
+
+@test fun aTreeIsDrawnByDepth () =
+  let g = node "Sum" [token "Num" "1", node "Rest" [token "Plus" "+"]] in
+  assertEq (dump (\k -> k) g) "Sum\n  Num \"1\"\n  Rest\n    Plus \"+\"" "one line each"

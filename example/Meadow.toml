@@ -4,4 +4,4 @@ version = "0.1.0"
 
 [dependencies]
 Lingua = { path = ".." }
-Scythe = { path = "../../MeadowLogos" }
+Scythe = { git = "https://github.com/mcdearman/Scythe.git", branch = "master" }

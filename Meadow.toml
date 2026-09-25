@@ -3,4 +3,4 @@ name = "Lingua"
 version = "0.1.0"
 
 [dependencies]
-Scythe = { path = "../MeadowLogos" }
+Scythe = { git = "https://github.com/mcdearman/Scythe.git", branch = "master" }

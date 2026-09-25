@@ -1,0 +1,10 @@
+# Written by meadow. Commit this file: it is what makes a build on
+# another machine the build you tested. Change it with `meadow update`.
+
+version = 1
+
+[[package]]
+name = "Scythe"
+source = "git+https://github.com/mcdearman/Scythe.git?branch=master"
+rev = "ea75605dc43f3db611c62c0abd435a2d3637720f"
+tree = "f62c1bdef2b708fef826792c9821f863f63380b1"

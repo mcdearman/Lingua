@@ -13,6 +13,14 @@ use Lingua.Red (Syntax, nodes, tokens, kindOf)
 -- The `n`th child node, counting only those that cast.
 @pub fun nthChild (cast : Syntax k -> Maybe a) (n : Int) (s : Syntax k) : Maybe a = V.get (childrenOf cast s) n
 
+-- The `n`th child node of any kind, if it casts: what tells apart two
+-- children whose types overlap -- `func:Expr arg:Atom`, where an `Atom` is an
+-- `Expr` too -- by where they are rather than by what they are.
+@pub fun nthNodeAs (cast : Syntax k -> Maybe a) (n : Int) (s : Syntax k) : Maybe a =
+  match V.get (nodes s) n with
+  | Just c -> cast c
+  | None -> None
+
 -- Every child node that casts, in order.
 @pub fun childrenOf (cast : Syntax k -> Maybe a) (s : Syntax k) : [a] =
   V.concatMap (\c -> match cast c with | Just x -> [x] | None -> []) (nodes s)

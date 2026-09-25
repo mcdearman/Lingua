@@ -149,6 +149,15 @@ fun isEnum (d : Def) : Bool =
   | Alt alts -> V.all (\a -> match a with | Ref _ _ -> True | _ -> False) alts
   | _ -> False
 
+-- The kinds of node a rule's type can hold: its own, or an enum's
+-- alternatives', all the way down.
+fun kindsOf spec (n : String) : [String] =
+  match lookupDef spec n with
+  | Just d -> if isEnum d then V.concatMap (\a -> kindsOf spec a) (alternatives d) else [n]
+  | None -> []
+
+fun overlaps spec a b = V.any (\x -> V.elem x (kindsOf spec b)) (kindsOf spec a)
+
 fun alternatives (d : Def) : [String] =
   match defBody d with
   | Alt alts -> V.concatMap (\a -> match a with | Ref n _ -> [n] | _ -> []) alts
@@ -641,7 +650,10 @@ ${pub}fun syntax${r} (x : ${r}) : Syntax ${kt} = match x with | ${r}.${r} s -> s
 ${S.join "" (V.map (\i -> accessor spec pub r fs i) (V.range 0 (V.len fs)))}"
 
 -- The accessor for field `i` of rule `r`. Two single children of one rule are
--- told apart by position: `lhs` is the first `Expr`, `rhs` the second.
+-- told apart by position: `lhs` is the first `Expr`, `rhs` the second. When an
+-- earlier child's type can hold a node this one's can -- `func:Expr arg:Atom`,
+-- where every `Atom` is an `Expr` -- counting by type would find the earlier
+-- child again, so the position among all child nodes is what says which it is.
 fun accessor spec pub r fs i =
   let kt = kindType spec in
   let name = "${lowerFirst r}${upperFirst (match V.get fs i with | Just f -> fieldName f | None -> "")}" in
@@ -649,8 +661,15 @@ fun accessor spec pub r fs i =
   match V.get fs i with
   | Just (NodeField _ n True) -> "\n${pub}fun ${name} (x : ${r}) : [${n}] = LinguaA.childrenOf as${n} ${subject}\n"
   | Just (NodeField _ n False) ->
-      let before = V.len (V.filter (\f -> match f with | NodeField _ m False -> m == n | _ -> False) (V.take fs i)) in
-      "\n${pub}fun ${name} (x : ${r}) : Maybe ${n} = LinguaA.nthChild as${n} ${show before} ${subject}\n"
+      let prior = V.take fs i in
+      let overlapping = V.any (\f -> match f with | NodeField _ m _ -> m != n and overlaps spec m n | _ -> False) prior in
+      let single = V.all (\f -> match f with | NodeField _ _ many -> not many | _ -> True) prior in
+      if overlapping and single then
+        let at = V.len (V.filter (\f -> match f with | NodeField _ _ _ -> True | _ -> False) prior) in
+        "\n${pub}fun ${name} (x : ${r}) : Maybe ${n} = LinguaA.nthNodeAs as${n} ${show at} ${subject}\n"
+      else
+        let before = V.len (V.filter (\f -> match f with | NodeField _ m False -> m == n | _ -> False) prior) in
+        "\n${pub}fun ${name} (x : ${r}) : Maybe ${n} = LinguaA.nthChild as${n} ${show before} ${subject}\n"
   | Just (TokField _ ts True) -> "\n${pub}fun ${name} (x : ${r}) : [Syntax ${kt}] = LinguaA.tokensOf [${S.join ", " (V.map (\t -> k spec (tokKind spec t)) ts)}] ${subject}\n"
   | Just (TokField _ ts False) -> "\n${pub}fun ${name} (x : ${r}) : Maybe (Syntax ${kt}) = LinguaA.tokenOf [${S.join ", " (V.map (\t -> k spec (tokKind spec t)) ts)}] ${subject}\n"
   | None -> ""

@@ -63,11 +63,44 @@ syntax! {
   `parent`, `ancestors`, `tokenAt`, `nodeAt`.
 - **`Lingua.Parser`** and **`Lingua.Build`**, the runtime a generated parser
   stands on, usable by hand.
+- **`database!`** declares a compiler's steps as queries -- inputs set from
+  outside, and derived queries whose bodies are ordinary Meadow reading the
+  others by name -- and **`Lingua.Query`** runs them in the style of salsa:
+  each remembered, re-run only when something it read has changed, and cut
+  off where it answers what it did before. An input never set, or queries
+  that read each other in a circle, are a `QueryError`.
+- **`Lingua.Diagnostic`**, what a compiler says about a program and where,
+  drawn by [Nettle](https://github.com/mcdearman/Nettle), the port of
+  ariadne. A parse's errors become diagnostics at the tokens they were found
+  at; a pass reports with the `Report` effect -- in a `pass!` case, `here` is
+  the node being rewritten -- and `collect` gathers what it said, so a query
+  can run a pass that reports and stay pure.
 
-[`example/`](example) is a calculator: statements, precedence, calls and
-recovery, a test that every input comes back byte for byte, and a `Surface`
-to `Core` pass that is evaluated to the same answers.
+Two examples, in [`examples/`](examples):
+
+- [`calc`](examples/calc), a calculator: statements, precedence, calls and
+  recovery, a test that every input comes back byte for byte, a `Surface`
+  to `Core` pass that is evaluated to the same answers, and all of it as a
+  database of files -- where an edit re-runs only the file it is in, and a
+  comment stops at what the file binds.
+- [`miniml`](examples/miniml), Meadow's `examples/MiniML` -- a toy ML with
+  `let`-polymorphism -- written as its specification: the grammar, a
+  desugaring pass from `Surface` to `Core`, Hindley-Milner inference and an
+  evaluator as queries, and every error, from the parser to the run, drawn
+  where it is:
+
+  ```text
+  > 1 + true
+  Error: cannot unify Bool with Int
+     ╭─[ input.ml:1:5 ]
+     │
+   1 │ 1 + true
+     │     ──┬─
+     │       ╰─── cannot unify Bool with Int
+  ───╯
+  ```
 
 ## Next
 
-Queries, for incremental and parallel builds — see the milestones in the design.
+Parallel and persistent queries: independent keys on separate threads, and the
+memo table kept between runs — see the milestones in the design.

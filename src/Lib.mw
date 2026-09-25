@@ -13,6 +13,10 @@
 @pub mod Lang
 @pub mod Gen
 @pub mod Pass
+@pub mod Query
+@pub mod Database
+@pub mod Diagnostic
 
 @pub use Lingua.Gen (syntax)
 @pub use Lingua.Pass (lang, pass)
+@pub use Lingua.Database (database)

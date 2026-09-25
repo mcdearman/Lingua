@@ -1,0 +1,159 @@
+-- `database!`: a compiler's queries, declared.
+--
+--   database! {
+--     pub Session
+--     | input source (file : Int) : String
+--     | query tree (file : Int) : Green CalcKind = fst (parseCalc (querySource file))
+--     | query program (file : Int) : Maybe CoreFile = M.map lower (surfaceFromCalc (queryTree file))
+--   }
+--
+-- Each declaration is a query: an **input**, set from outside, or a derived
+-- **query**, whose body is ordinary Meadow of its key -- the parameter -- and
+-- of the other queries, each called as `query` and its name: `querySource
+-- file`, `queryTree file` -- a name of their own, so that a query called
+-- `tree` never meets a function called `tree`. It may
+-- call anything pure; it may not print, or mutate, or perform any effect but
+-- the reading of other queries, since what it answers is reused whenever
+-- nothing it read has changed. A `match` in it is parenthesised, since `|`
+-- starts the next declaration.
+--
+-- What is written, for a database `Session`:
+--
+-- - `SessionKey` and `SessionValue`, a case per query;
+-- - a function per query, for the bodies to call: `queryTree file`;
+-- - `newSession ()`, a database with every input unset;
+-- - `setSessionSource db file text` for each input;
+-- - `sessionTree db file` for each query, to ask from outside -- which raises
+--   `QueryError` (`Lingua.Query`) for an input that was never set or queries
+--   that read each other in a circle.
+--
+-- The engine underneath is `Lingua.Query`: what reruns when, early cutoff,
+-- and the log of what ran.
+
+use Std.Collections.Vector as V
+use Std.String as S
+use Std.Maybe as M
+use Std.Macro (TokenTree, Delim, Loc, isPunct, isWord)
+use Std.Macro.TokenTree.*
+use Std.Macro.Loc.*
+use Std.Macro.Delim.*
+use Std.Macro.Parse (Tokens, parseTokens, ident, keyword, punct, group, treesUntil)
+use Std.String.Parse as P
+use Std.String.Parse (Parser)
+
+-- --- reading ------------------------------------------------------------------------
+
+-- A declaration: whether it is an input, its name and where that was written,
+-- its parameter, the key's type, the value's type, and -- for a derived query
+-- -- its body.
+data Decl = Decl Bool String Loc String [TokenTree] [TokenTree] [TokenTree]
+
+use Decl.*
+
+def named : Parser Tokens (String, Loc) = P.label "a name" (P.token (\t -> match t with | Word w at -> Just (w, at) | _ -> None) [])
+
+def kind : Parser Tokens Bool = P.alt (P.map (\u -> True) (keyword "input")) (P.map (\u -> False) (keyword "query"))
+
+-- `(file : Int)`: the parameter, and the key's type.
+def param : Parser Tokens (String, [TokenTree]) =
+  group Paren (P.bind ident (\p -> P.skipThen (punct ":") (P.map (\t -> (p, t)) (treesUntil (\t -> False)))))
+
+def decl : Parser Tokens Decl =
+  P.skipThen (punct "|") (
+    P.bind kind (\input ->
+      P.bind named (\n ->
+        P.bind param (\pk ->
+          P.skipThen (punct ":") (
+            P.bind (treesUntil (\t -> isPunct "=" t or isPunct "|" t)) (\vt ->
+              if input then P.pure (Decl True (fst n) (snd n) (fst pk) (snd pk) vt [])
+              else P.skipThen (punct "=") (P.map (\body -> Decl False (fst n) (snd n) (fst pk) (snd pk) vt body) (treesUntil (isPunct "|")))))))))
+
+def databaseCall : Parser Tokens (Bool, (String, Loc), [Decl]) =
+  P.bind (P.optional (keyword "pub")) (\pub ->
+    P.bind named (\name -> P.map (\ds -> (M.isSome pub, name, ds)) (P.some decl)))
+
+-- --- database! ----------------------------------------------------------------------
+
+@macro
+@pub fun database (ts : [TokenTree]) : [TokenTree] ! { Expand | e } =
+  match parseTokens databaseCall ts with
+  | Err failed -> failed
+  | Ok (pub, name, decls) ->
+      match problems decls with
+      | Just failed -> failed
+      | None -> databaseCode (if pub then "@pub " else "") (fst name) decls
+
+-- A name declared twice, at its second place.
+fun problems (decls : [Decl]) : Maybe [TokenTree] =
+  let names = V.map declName decls in
+  let twice =
+    V.concatMap
+      (\i -> match V.get decls i with
+             | Just (Decl _ n at _ _ _ _) -> if V.any (\m -> m == n) (V.take names i) then [Fail "`${n}` is declared twice" at] else []
+             | None -> [])
+      (V.range 0 (V.len decls)) in
+    match V.get twice 0 with
+    | Just f -> Just [f]
+    | None -> None
+
+fun declName d = match d with | Decl _ n _ _ _ _ _ -> n
+
+fun databaseCode pub db decls : [TokenTree] =
+  let key = "${db}Key" in
+  let value = "${db}Value" in
+  let lower = lowerFirst db in
+  let several = V.len decls > 1 in
+  V.concat
+    [ [Code "use Lingua.Query as LinguaQ\n\n-- A key of `${db}`: which query, and of what.\n@derive(PartialEq)\n${pub}data ${key} = "],
+      cases (\d -> match d with | Decl _ n _ _ k _ _ -> (upperFirst n, k)) decls,
+      [Code "\n\n-- An answer of `${db}`, by the query that gave it.\n${pub}data ${value} = "],
+      cases (\d -> match d with | Decl _ n _ _ _ v _ -> ("${upperFirst n}Value", v)) decls,
+      [Code "\n"],
+      V.concatMap (\d -> accessor pub key value several d) decls,
+      [Code "\nfun ${lower}Compute key =\n  match key with"],
+      V.concatMap (\d -> computeArm key value d) decls,
+      [Code "\n\n-- A `${db}` database, every input unset.\n${pub}fun new${db} () = LinguaQ.newDb ${lower}Compute\n"],
+      V.concatMap (\d -> outside pub db key value several d) decls ]
+
+-- `A (T) | B (U)`: a constructor per declaration, its type as it was written.
+fun cases (f : Decl -> (String, [TokenTree])) (decls : [Decl]) : [TokenTree] =
+  V.concatMap
+    (\i ->
+      match V.get decls i with
+      | Just d -> (match f d with | (c, ty) -> [Code "${if i > 0 then " | " else ""}${c} ", Group Paren ty Nowhere])
+      | None -> [])
+    (V.range 0 (V.len decls))
+
+-- What a query's answer is, out of the value type: its own case, since a
+-- key's answer is always its own query's.
+fun unwrap value several n = " with | ${value}.${upperFirst n}Value x -> x${if several then " | _ -> LinguaQ.unreachable ()" else ""}"
+
+-- The function a query body calls: `queryTree file` reads the tree.
+fun accessor pub key value several d =
+  match d with
+  | Decl _ n _ _ _ _ _ ->
+      [Code "\n-- `${n}`, read from within a query.\n${pub}fun query${upperFirst n} key = match LinguaQ.ask (${key}.${upperFirst n} key)${unwrap value several n}\n"]
+
+fun computeArm key value d =
+  match d with
+  | Decl True n _ p _ _ _ -> [Code "\n  | ${key}.${upperFirst n} ${p} -> LinguaQ.notComputed ()"]
+  | Decl False n _ p _ _ body -> [Code "\n  | ${key}.${upperFirst n} ${p} -> LinguaQ.computedAs ${value}.${upperFirst n}Value", Group Paren body Nowhere]
+
+-- Setting an input and asking a query, from outside.
+fun outside pub db key value several d =
+  match d with
+  | Decl input n _ _ _ _ _ ->
+      let q = upperFirst n in
+      let ask = "\n-- `${n}`, asked of a `${db}` database.\n${pub}fun ${lowerFirst db}${q} db key = match LinguaQ.get db (${key}.${q} key)${unwrap value several n}\n" in
+      if input then [Code "\n-- Set input `${n}` for `key`.\n${pub}fun set${db}${q} db key x = LinguaQ.set db (${key}.${q} key) (${value}.${q}Value x)\n${ask}"]
+      else [Code ask]
+
+fun upperFirst (s : String) : String = caseFirst "ABCDEFGHIJKLMNOPQRSTUVWXYZ" 97 122 s
+
+fun lowerFirst (s : String) : String = caseFirst "abcdefghijklmnopqrstuvwxyz" 65 90 s
+
+fun caseFirst (letters : String) (from : Int) (to : Int) (s : String) : String =
+  if stringByteLength s == 0 then s
+  else
+    let b = toInt (stringByteAt s 0) in
+    (if b >= from and b <= to then stringSlice letters (b - from) (b - from + 1) else stringSlice s 0 1) ++ stringSlice s 1 (stringByteLength s)

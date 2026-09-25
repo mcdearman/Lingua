@@ -253,3 +253,58 @@ pass! {
       match surfaceFromCalc g with
       | Just s -> (match runState 0 (\() -> lowerCounting s) with | (_, n) -> assertEq n 2 "two operators")
       | None -> assertEq 0 1 "a program"
+
+-- --- queries ------------------------------------------------------------------------
+
+-- The calculator as a compiler of several files, each step a query: a file's
+-- text is an input, and everything else is worked out from it and remembered
+-- -- re-run only when something it read has changed.
+use Lingua (database!)
+use Lingua.Query as Q
+use Lingua.Query.QueryError.*
+use Std.Exn (toResult)
+use Std.Result.Result.*
+
+database! {
+  pub Session
+    | input source (file : Int) : String
+    | query tree (file : Int) : Green CalcKind = fst (parseCalc (querySource file))
+    | query program (file : Int) : Maybe CoreFile = M.map lower (surfaceFromCalc (queryTree file))
+    | query bindings (file : Int) : [(String, Int)] = (match queryProgram file with | Just (CoreFile.File r) -> V.foldl stepCore [] r.stmts | None -> [])
+    | query sum (files : [Int]) : Int = V.foldl (\acc f -> acc + V.foldl (\a b -> a + snd b) 0 (queryBindings f)) 0 files
+}
+
+fun twoFiles () =
+  let db = newSession () in
+  let a = setSessionSource db 1 "let x = 2 * 3;" in
+  let b = setSessionSource db 2 "let y = 10 - 1;" in
+  let c = sessionSum db [1, 2] in
+  let d = Q.takeLog db in
+  db
+
+@test fun aQueryIsWorkedOutOnceAndRemembered () =
+  let db = newSession () in
+  let a = setSessionSource db 1 "let x = 2 * 3;" in
+  let b = setSessionSource db 2 "let y = 10 - 1;" in
+  let c = assertEq (toResult (\() -> sessionSum db [1, 2])) (Ok 15) "6 + 9" in
+  let d = assertEq (V.len (Q.takeLog db)) 7 "tree, program and bindings for each file, and the sum" in
+  let e = assertEq (toResult (\() -> sessionSum db [1, 2])) (Ok 15) "asked again" in
+  assertEq (Q.takeLog db) [] "and nothing run for it"
+
+@test fun anEditReRunsOnlyTheFileItIsIn () =
+  let db = twoFiles () in
+  let a = setSessionSource db 2 "let y = 10 - 2;" in
+  let b = assertEq (toResult (\() -> sessionSum db [1, 2])) (Ok 14) "6 + 8" in
+  assertEq (Q.takeLog db) [SessionKey.Tree 2, SessionKey.Program 2, SessionKey.Bindings 2, SessionKey.Sum [1, 2]] "the first file untouched"
+
+@test fun aCommentStopsWhereTheAnswersAreTheSame () =
+  -- The comment is in the tree, and the program's `meta` covers it, so both
+  -- change; what the file binds does not, so the sum is not run again.
+  let db = twoFiles () in
+  let a = setSessionSource db 1 "let x = 2 * 3; // six" in
+  let b = assertEq (toResult (\() -> sessionSum db [1, 2])) (Ok 15) "still 15" in
+  assertEq (Q.takeLog db) [SessionKey.Tree 1, SessionKey.Program 1, SessionKey.Bindings 1] "cut off at the bindings"
+
+@test fun aFileNobodySetIsSaidToBe () =
+  let db = twoFiles () in
+  assertEq (toResult (\() -> sessionSum db [1, 3])) (Err (Unset (SessionKey.Source 3))) "file 3"

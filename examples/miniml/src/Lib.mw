@@ -1,0 +1,576 @@
+-- MiniML with Lingua: the toy ML of Meadow's `examples/MiniML` -- integers,
+-- booleans, `fun`, application, `let`, `let rec`, `if` and arithmetic --
+-- written as its specification.
+--
+--   meadow run examples/miniml     -- a few programs, typed and run
+--   meadow test examples/miniml    -- MiniML's tests, and the queries'
+--
+-- What Meadow's MiniML writes by hand, Lingua writes from declarations:
+--
+--   the syntax      an ungrammar; the parser, a lossless tree and a typed AST
+--                   are generated (`syntax!`)
+--   Surface, Core   two languages, the first read off the grammar and the
+--                   second declared as what changes (`lang!`)
+--   desugar         the pass between them, only its cases (`pass!`)
+--   the compiler    a database of queries: a file's text in, its type and
+--                   value out, each step remembered (`database!`)
+--   diagnostics     every error, from the parser, the pass, the checker or
+--                   the run, at the bytes it is about, drawn by Nettle
+--                   (`Lingua.Diagnostic`)
+--
+-- Type inference and evaluation are ordinary Meadow over `Core`. They run
+-- inside queries, so both are pure: inference threads its substitution with
+-- `Std.State`, and `let rec` is a closure that knows its own name rather than
+-- a cell tied into a knot.
+
+use Scythe (lexer!)
+use Lingua (syntax!, lang!, pass!, database!)
+use Lingua.Green (Green, dump, text)
+use Lingua.Lang (Meta)
+use Lingua.Diagnostic (Diagnostic, errorAt, withLabel, withNote, message, parseErrors, say, collect, renderAll)
+use Std.Collections.Vector as V
+use Std.Collections.List as L
+use Std.Collections.HashMap as HashMap
+use Std.String as S
+use Std.Maybe as M
+use Std.Exn (raise, toResult)
+use Std.Result.Result.*
+
+-- --- the syntax ------------------------------------------------------------------------
+
+-- Whitespace and `--` comments are tokens -- no `@skip` -- so the tree keeps
+-- them, and every program comes back byte for byte.
+@derive(Lexer)
+data Token
+  = @regex("[ \t\r\n]+") Whitespace
+  | @regex("--[^\n]*") Comment
+  | @token("let") Let
+  | @token("rec") Rec
+  | @token("in") In
+  | @token("fun") Fun
+  | @token("if") If
+  | @token("then") Then
+  | @token("else") Else
+  | @token("true") True
+  | @token("false") False
+  | @token("(") LParen
+  | @token(")") RParen
+  | @token("->") Arrow
+  | @token("=") Equals
+  | @token("==") EqEq
+  | @token("<=") Le
+  | @token(">=") Ge
+  | @token("<") Lt
+  | @token(">") Gt
+  | @token("+") Plus
+  | @token("-") Minus
+  | @token("*") Star
+  | @token("/") Slash
+  | @regex("[0-9]+") Number String
+  | @regex("[a-zA-Z_][a-zA-Z0-9_]*") Ident String
+
+-- Application is two operands side by side, as Meadow's own parser reads it:
+-- an atom after an expression is an argument to it. So `f x y` is `(f x) y`,
+-- and `f x + 1` is `(f x) + 1` -- the argument is one atom, and binds tighter
+-- than any operator.
+syntax! {
+  pub Mini
+  lexer Token
+  trivia { Whitespace, Comment }
+  tokens {
+    "let" = Let, "rec" = Rec, "in" = In, "fun" = Fun, "if" = If, "then" = Then, "else" = Else,
+    "true" = True, "false" = False, "(" = LParen, ")" = RParen, "->" = Arrow, "=" = Equals,
+    "==" = EqEq, "<=" = Le, ">=" = Ge, "<" = Lt, ">" = Gt, "+" = Plus, "-" = Minus, "*" = Star, "/" = Slash,
+    "ident" = Ident _, "int_number" = Number _
+  }
+  precedence Expr { left "==" "<=" ">=" "<" ">", left "+" "-", left "*" "/", postfix AppExpr }
+  grammar r#"
+    File = Expr
+
+    Expr = Atom | LamExpr | LetExpr | IfExpr | AppExpr | BinExpr
+
+    AppExpr = func:Expr arg:Atom
+    BinExpr = lhs:Expr op:('==' | '<=' | '>=' | '<' | '>' | '+' | '-' | '*' | '/') rhs:Expr
+
+    Atom = Literal | BoolLit | NameRef | ParenExpr
+    Literal   = 'int_number'
+    BoolLit   = value:('true' | 'false')
+    NameRef   = 'ident'
+    ParenExpr = '(' Expr ')'
+
+    LamExpr = 'fun' params:Param* '->' body:Expr
+    LetExpr = 'let' recursive:'rec'? name:Name params:Param* '=' value:Expr 'in' body:Expr
+    IfExpr  = 'if' cond:Expr 'then' yes:Expr 'else' no:Expr
+
+    Name  = 'ident'
+    Param = 'ident'
+  "#
+}
+
+-- The tree of `input`, drawn.
+@pub fun drawn (input : String) : String =
+  match parseMini input with
+  | (g, errs) -> dump display g
+
+-- --- the languages ------------------------------------------------------------------------
+
+-- The language the grammar implies.
+lang! { pub Surface from Mini }
+
+-- The one inference and evaluation read: every function takes one argument,
+-- an operator is a primitive, and a literal is its value.
+lang! {
+  pub Core extends Surface
+  Expr - Atom
+  Expr - AppExpr
+  Expr - BinExpr
+  Expr - LamExpr
+  Expr - LetExpr
+  Expr + Int { value : Int }
+  Expr + Bool { value : Bool }
+  Expr + Var { name : String }
+  Expr + App { func : Expr, arg : Expr }
+  Expr + Prim { op : String, args : [Expr] }
+  Expr + Lam { param : String, body : Expr }
+  Expr + Let { name : String, value : Expr, body : Expr }
+  Expr + LetRec { name : String, param : String, value : Expr, body : Expr }
+}
+
+-- `fun x y -> e` is `fun x -> fun y -> e`, and `let f x = e` binds `fun x -> e`;
+-- `let rec f x y = e` is recursive in `f`, taking `x`. `if` is copied. A
+-- `let rec` with nothing to take is reported where it is -- `here` -- and
+-- read as a `let`, so the rest of the program is still checked.
+pass! {
+  pub desugar : Surface -> Core
+    | Atom { atom } -> atomExpr atom
+    | AppExpr { func, arg } -> App { func = func, arg = atomExpr arg }
+    | BinExpr { lhs, op, rhs } -> Prim { op = op, args = [lhs, rhs] }
+    | LamExpr { params, body } -> V.foldr (\p acc -> Lam { param = paramName p, body = acc }) body params
+    | LetExpr { recursive, name, params, value, body } ->
+        (let n = nameOf name in
+          match (recursive, V.get params 0) with
+          | (Just _, Just first) ->
+              LetRec { name = n, param = paramName first, value = V.foldr (\p acc -> Lam { param = paramName p, body = acc }) value (V.drop params 1), body = body }
+          | (Just _, None) ->
+              (let u = say (errorAt here "`let rec` needs an argument" |> withNote "a recursive value that is not a function has nothing to stand on: write `let rec f x = …`") in
+                Let { name = n, value = value, body = body })
+          | _ -> Let { name = n, value = V.foldr (\p acc -> Lam { param = paramName p, body = acc }) value params, body = body })
+}
+
+-- An atom, as the expression it is.
+fun atomExpr (a : CoreAtom) : CoreExpr =
+  match a with
+  | CoreAtom.Literal r -> CoreExpr.Int { meta = r.meta, value = M.unwrapOr 0 (S.toInt r.number) }
+  | CoreAtom.BoolLit r -> CoreExpr.Bool { meta = r.meta, value = r.value == "true" }
+  | CoreAtom.NameRef r -> CoreExpr.Var { meta = r.meta, name = r.ident }
+  | CoreAtom.ParenExpr r -> r.expr
+
+fun paramName (p : CoreParam) : String = match p with | CoreParam.Param r -> r.ident
+
+fun nameOf (n : CoreName) : String = match n with | CoreName.Name r -> r.ident
+
+-- The expression a program is.
+fun programExpr (f : CoreFile) : CoreExpr = match f with | CoreFile.File r -> r.expr
+
+-- --- types: Hindley-Milner, Algorithm W -----------------------------------------------------
+--
+-- MiniML's checker is Algorithm J, a type variable a mutable cell. This one
+-- runs inside a query, where nothing may be mutated, so it is W: unification
+-- adds to a substitution, threaded with `Std.State` along with the next fresh
+-- variable, and a failure is `Std.Exn`. Both are handled before `typeOf`
+-- answers, which is as pure as any function.
+
+@derive(Debug, PartialEq)
+data Type = TInt | TBool | TFun Type Type | TVar Int
+
+use Type.*
+
+data Scheme = Forall [Int] Type
+
+use Scheme.*
+
+use Std.State (get, put, runState)
+
+-- The next variable's number, and what each variable has been solved as.
+fun fresh () =
+  match get () with
+  | (n, s) ->
+      let u = put (n + 1, s) in
+      TVar n
+
+-- `t`, solved as far as the substitution says.
+fun resolve t =
+  match t with
+  | TVar v -> (match HashMap.lookup v (snd (get ())) with | Just u -> resolve u | None -> t)
+  | TFun a b -> TFun (resolve a) (resolve b)
+  | _ -> t
+
+fun solve v t =
+  match get () with
+  | (n, s) -> put (n, HashMap.insert v t s)
+
+fun occurs v t =
+  match t with
+  | TVar w -> v == w
+  | TFun a b -> occurs v a or occurs v b
+  | _ -> False
+
+-- Make `a` and `b` one type, or say why not -- about the node at `at`.
+fun unify at a b =
+  match (resolve a, resolve b) with
+  | (TInt, TInt) -> ()
+  | (TBool, TBool) -> ()
+  | (TFun a1 b1, TFun a2 b2) ->
+      let u = unify at a1 a2 in
+      unify at b1 b2
+  | (TVar x, TVar y) -> if x == y then () else solve x (TVar y)
+  | (TVar x, t) -> if occurs x t then raise (errorAt at "occurs check: a type would contain itself") else solve x t
+  | (t, TVar x) -> if occurs x t then raise (errorAt at "occurs check: a type would contain itself") else solve x t
+  | (x, y) -> raise (errorAt at "cannot unify ${typeName x} with ${typeName y}")
+
+fun freeVars t =
+  match t with
+  | TVar v -> [v]
+  | TFun a b -> V.append (freeVars a) (freeVars b)
+  | _ -> []
+
+fun schemeFree (s : Scheme) = match s with | Forall bound t -> V.filter (\v -> not (V.elem v bound)) (freeVars (resolve t))
+
+-- Quantify what `t` has free that nothing in the environment does.
+fun generalize env t =
+  let inEnv = L.foldl (\acc b -> V.append acc (schemeFree (snd b))) [] env in
+  Forall (V.filter (\v -> not (V.elem v inEnv)) (freeVars (resolve t))) (resolve t)
+
+fun instantiate (s : Scheme) =
+  match s with
+  | Forall bound t ->
+      let fresh2 = V.map (\v -> (v, fresh ())) bound in
+      rename fresh2 t
+
+fun rename pairs t =
+  match t with
+  | TVar v -> (match V.find (\p -> fst p == v) pairs with | Just p -> snd p | None -> t)
+  | TFun a b -> TFun (rename pairs a) (rename pairs b)
+  | _ -> t
+
+fun infer env (e : CoreExpr) =
+  match e with
+  | CoreExpr.Int _ -> TInt
+  | CoreExpr.Bool _ -> TBool
+  | CoreExpr.Var r ->
+      (match L.lookupAssoc r.name env with
+       | Just s -> instantiate s
+       | None -> raise (errorAt r.meta "unbound variable: ${r.name}"))
+  | CoreExpr.Lam r ->
+      let a = fresh () in
+      TFun a (infer ((r.param, Forall [] a) :: env) r.body)
+  | CoreExpr.App r ->
+      let tf = infer env r.func in
+      let tx = infer env r.arg in
+      let out = fresh () in
+      let u = unify r.meta tf (TFun tx out) in
+      out
+  | CoreExpr.Let r ->
+      let tv = infer env r.value in
+      infer ((r.name, generalize env tv) :: env) r.body
+  | CoreExpr.LetRec r ->
+      let tf = fresh () in
+      let ta = fresh () in
+      let tr = infer ((r.param, Forall [] ta) :: (r.name, Forall [] tf) :: env) r.value in
+      let u = unify r.meta tf (TFun ta tr) in
+      infer ((r.name, generalize env tf) :: env) r.body
+  | CoreExpr.IfExpr r ->
+      let u = unify (metaCoreExpr r.cond) (infer env r.cond) TBool in
+      let ty = infer env r.yes in
+      let w = unify (metaCoreExpr r.no) ty (infer env r.no) in
+      ty
+  | CoreExpr.Prim r ->
+      (match (V.get r.args 0, V.get r.args 1) with
+       | (Just a, Just b) ->
+           let u = unify (metaCoreExpr a) (infer env a) TInt in
+           let w = unify (metaCoreExpr b) (infer env b) TInt in
+           if V.elem r.op ["+", "-", "*", "/"] then TInt else TBool
+       | _ -> raise (errorAt r.meta "`${r.op}` wants two operands"))
+
+-- How a type is written, its variables named in the order they appear.
+fun typeName t = shown (V.foldl (\acc v -> if V.elem v acc then acc else V.pushBack acc v) [] (freeVars t)) t
+
+fun shown vars t =
+  match t with
+  | TInt -> "Int"
+  | TBool -> "Bool"
+  | TFun a b -> "(${shown vars a} -> ${shown vars b})"
+  | TVar v -> "t${show (V.len (V.takeWhile (\w -> w != v) vars))}"
+
+-- The type of a program, or why it has none -- where.
+@pub fun typeOf (e : CoreExpr) : Result Diagnostic String =
+  toResult (\() -> match runState (0, HashMap.empty) (\() -> resolve (infer [;] e)) with | (t, _) -> typeName t)
+
+-- --- running -------------------------------------------------------------------------------
+
+-- A value. A recursive function is a closure that knows its own name, and
+-- binds it again each time it is applied: no cell, and so nothing to mutate.
+data Value = VInt Int | VBool Bool | VClosure String CoreExpr (List (String, Value)) | VRec String String CoreExpr (List (String, Value))
+
+use Value.*
+
+fun showValue v =
+  match v with
+  | VInt n -> S.fromInt n
+  | VBool b -> if b then "true" else "false"
+  | _ -> "<function>"
+
+fun eval env (e : CoreExpr) =
+  match e with
+  | CoreExpr.Int r -> VInt r.value
+  | CoreExpr.Bool r -> VBool r.value
+  | CoreExpr.Var r -> (match L.lookupAssoc r.name env with | Just v -> v | None -> raise (errorAt r.meta "unbound at run time: ${r.name}"))
+  | CoreExpr.Lam r -> VClosure r.param r.body env
+  | CoreExpr.App r -> apply r.meta (eval env r.func) (eval env r.arg)
+  | CoreExpr.Let r -> eval ((r.name, eval env r.value) :: env) r.body
+  | CoreExpr.LetRec r -> eval ((r.name, VRec r.name r.param r.value env) :: env) r.body
+  | CoreExpr.IfExpr r -> (match eval env r.cond with | VBool True -> eval env r.yes | _ -> eval env r.no)
+  | CoreExpr.Prim r ->
+      (match (V.get r.args 0, V.get r.args 1) with
+       | (Just a, Just b) -> primitive r.meta r.op (eval env a) (eval env b)
+       | _ -> raise (errorAt r.meta "`${r.op}` wants two operands"))
+
+fun apply at f x =
+  match f with
+  | VClosure p body env -> eval ((p, x) :: env) body
+  | VRec name p body env -> eval ((p, x) :: (name, f) :: env) body
+  | other -> raise (errorAt at "not a function: ${showValue other}")
+
+fun primitive at op l r =
+  match (l, r) with
+  | (VInt a, VInt b) ->
+      if op == "+" then VInt (a + b)
+      else if op == "-" then VInt (a - b)
+      else if op == "*" then VInt (a * b)
+      else if op == "/" then (if b == 0 then raise (errorAt at "division by zero") else VInt (a / b))
+      else if op == "==" then VBool (a == b)
+      else if op == "<" then VBool (a < b)
+      else if op == ">" then VBool (a > b)
+      else if op == "<=" then VBool (a <= b)
+      else VBool (a >= b)
+  | _ -> raise (errorAt at "`${op}` wants numbers")
+
+-- What a program evaluates to, or what went wrong running it, where.
+@pub fun run (e : CoreExpr) : Result Diagnostic String = toResult (\() -> showValue (eval [;] e))
+
+-- --- the compiler, as queries -------------------------------------------------------------
+--
+-- Each file's text is an input; everything else is worked out from it and
+-- remembered, and re-run only when something it read has changed.
+
+database! {
+  pub Session
+    | input source (file : Int) : String
+    | query parsed (file : Int) : (Green MiniKind, [(Int, String)]) = parseMini (querySource file)
+    | query program (file : Int) : (Maybe CoreFile, [Diagnostic]) = compile (queryParsed file)
+    | query typed (file : Int) : Result [Diagnostic] String = typedOf (queryProgram file)
+    | query result (file : Int) : Result [Diagnostic] String = resultOf (queryTyped file) (queryProgram file)
+    | query shown (file : Int) : String = shownOf (querySource file) (queryResult file)
+    | query signatures (files : [Int]) : [String] = V.map (\f -> signature (queryTyped f)) files
+}
+
+-- The `Core` program a parse makes, and what was said making it: the parse's
+-- errors, each at its token, or what the pass reported. A program with
+-- errors in it goes no further.
+fun compile (parsed : (Green MiniKind, [(Int, String)])) : (Maybe CoreFile, [Diagnostic]) =
+  match parsed with
+  | (g, []) ->
+      (match surfaceFromMini g with
+       | Just s -> (match collect (\() -> desugar s) with | (p, ds) -> (if V.isEmpty ds then Just p else None, ds))
+       | None -> (None, []))
+  | (g, errs) -> (None, parseErrors g errs)
+
+fun typedOf (p : (Maybe CoreFile, [Diagnostic])) : Result [Diagnostic] String =
+  match p with
+  | (Just f, _) -> (match typeOf (programExpr f) with | Ok t -> Ok t | Err d -> Err [d])
+  | (None, ds) -> Err ds
+
+-- The value and its type, or everything that went wrong on the way.
+fun resultOf (typed : Result [Diagnostic] String) (p : (Maybe CoreFile, [Diagnostic])) : Result [Diagnostic] String =
+  match (typed, fst p) with
+  | (Err ds, _) -> Err ds
+  | (Ok ty, Just f) -> (match run (programExpr f) with | Ok v -> Ok "${v} : ${ty}" | Err d -> Err [d])
+  | (Ok _, None) -> Err (snd p)
+
+-- What MiniML's REPL prints for a program: its value and type, or its
+-- diagnostics drawn against its text.
+fun shownOf (text : String) (r : Result [Diagnostic] String) : String =
+  match r with
+  | Ok out -> out
+  | Err ds -> renderAll "input.ml" text ds
+
+fun signature (t : Result [Diagnostic] String) : String = match t with | Ok ty -> ty | Err _ -> "?"
+
+-- One program through the whole compiler: what MiniML's REPL prints for a line.
+@pub fun replLine (src : String) : String ! { Mut | e } =
+  let db = newSession () in
+  let u = setSessionSource db 0 src in
+  match toResult (\() -> sessionShown db 0) with
+  | Ok out -> out
+  | Err e -> show e
+
+def main =
+  V.foldl
+    (\u src -> println "> ${src}\n${replLine src}\n")
+    ()
+    [ "let rec fact n = if n < 2 then 1 else n * fact (n - 1) in fact 10",
+      "let id = fun x -> x in if id true then id 1 else 2",
+      "let add = fun x y -> x + y in let inc = add 1 in inc 41",
+      "fun x -> x x",
+      "1 + true",
+      "1 / 0",
+      "let x = in 1",
+      "let rec loop = loop in loop" ]
+
+-- --- tests ---------------------------------------------------------------------------------
+
+use Std.Test (assertEq)
+use Std.Result (isErr)
+
+-- A program's type, or the message of the first thing wrong with it.
+fun typeOfSource src =
+  match compile (parseMini src) with
+  | (Just f, _) -> (match typeOf (programExpr f) with | Ok t -> Ok t | Err d -> Err (message d))
+  | (None, ds) -> Err (S.join "; " (V.map message ds))
+
+fun runSource src =
+  match compile (parseMini src) with
+  | (Just f, _) ->
+      (let e = programExpr f in
+        match typeOf e with
+        | Ok _ -> (match run e with | Ok v -> Ok v | Err d -> Err (message d))
+        | Err d -> Err (message d))
+  | (None, ds) -> Err (S.join "; " (V.map message ds))
+
+-- The syntax.
+
+@test fun everyProgramComesBackByteForByte () =
+  let a = assertEq (text (fst (parseMini "let rec f n = f n in f 1 -- loops\n"))) "let rec f n = f n in f 1 -- loops\n" "a comment kept" in
+  assertEq (text (fst (parseMini "let x = in (1"))) "let x = in (1" "and a broken one"
+
+@test fun applicationTakesOneAtom () =
+  -- `f x + 1` is `(f x) + 1`: the argument is an atom, and application binds
+  -- tighter than any operator.
+  assertEq
+    (V.len (V.filter (\l -> S.trim l == "AppExpr") (S.split "\n" (drawn "f x + 1"))))
+    1
+    "one application, under the `+`"
+
+@test fun keywordsAreNotIdentifiers () =
+  assertEq (typeOfSource "letter") (Err "unbound variable: letter") "`let` is a prefix of `letter`"
+
+@test fun aMissingPieceIsAnErrorWhereItWouldBe () =
+  match parseMini "let x = in 1" with
+  | (_, errs) -> assertEq errs [(8, "expected Expr")] "at the `in`"
+
+-- Inference: MiniML's own tests.
+
+@test fun infersSimpleTypes () =
+  let got = V.map typeOfSource ["1 + 1", "1 < 2", "fun x -> x + 1", "if true then 1 else 2"] in
+  assertEq got [Ok "Int", Ok "Bool", Ok "(Int -> Int)", Ok "Int"] "ground types"
+
+@test fun infersPolymorphicIdentity () = assertEq (typeOfSource "fun x -> x") (Ok "(t0 -> t0)") "identity"
+
+@test fun letIsGeneralized () =
+  assertEq (typeOfSource "let id = fun x -> x in if id true then id 1 else 2") (Ok "Int") "let-polymorphism"
+
+@test fun lambdaIsNotGeneralized () =
+  assertEq (isErr (typeOfSource "(fun id -> if id true then id 1 else 2) (fun x -> x)")) True "lambda-bound names are monomorphic"
+
+@test fun occursCheckFires () =
+  assertEq (typeOfSource "fun x -> x x") (Err "occurs check: a type would contain itself") "self-application"
+
+@test fun mismatchIsReported () = assertEq (typeOfSource "1 + true") (Err "cannot unify Bool with Int") "adding a bool"
+
+@test fun unboundIsReported () = assertEq (typeOfSource "x + 1") (Err "unbound variable: x") "unbound"
+
+@test fun recursiveFunctionsType () =
+  assertEq (typeOfSource "let rec fact n = if n < 2 then 1 else n * fact (n - 1) in fact 5") (Ok "Int") "factorial"
+
+@test fun aLetWhoseTypeEscapedIsNotGeneralized () =
+  assertEq (isErr (typeOfSource "fun f -> let g = f in if g true then g 1 else 2")) True "g's type is f's"
+
+@test fun aGenuinelyLocalLetIsGeneralized () =
+  assertEq (typeOfSource "let g = fun x -> x in if g true then g 1 else 2") (Ok "Int") "local"
+
+-- Evaluation.
+
+@test fun evaluatesArithmetic () =
+  assertEq (V.map runSource ["1 + 2 * 3", "(1 + 2) * 3", "7 / 2", "1 < 2"]) [Ok "7", Ok "9", Ok "3", Ok "true"] "arithmetic"
+
+@test fun evaluatesClosures () =
+  assertEq (runSource "let add = fun x y -> x + y in let inc = add 1 in inc 41") (Ok "42") "partial application captures"
+
+@test fun evaluatesRecursion () =
+  assertEq (runSource "let rec fact n = if n < 2 then 1 else n * fact (n - 1) in fact 10") (Ok "3628800") "factorial"
+
+@test fun shadowingSeesTheOldBinding () = assertEq (runSource "let x = 1 in let x = x + 1 in x") (Ok "2") "shadowing"
+
+@test fun divisionByZeroIsCaught () = assertEq (runSource "1 / 0") (Err "division by zero") "a run-time error, not a crash"
+
+-- The whole compiler, as MiniML's REPL reports it.
+
+@test fun replReportsTypeAndValue () =
+  assertEq (replLine "let rec fact n = if n < 2 then 1 else n * fact (n - 1) in fact 5") "120 : Int" "value and type"
+
+@test fun replReportsEachKindOfFailure () =
+  assertEq
+    (V.map (\src -> V.getOr "" (S.split "\n" (replLine src)) 0) ["1 +", "1 + true", "1 / 0", "let rec loop = loop in loop"])
+    ["Error: expected Expr", "Error: cannot unify Bool with Int", "Error: division by zero", "Error: `let rec` needs an argument"]
+    "all four, a diagnostic each"
+
+@test fun aTypeErrorIsDrawnAtWhatIsWrong () =
+  -- `true` is what is not an `Int`, so that is what is underlined.
+  assertEq
+    (replLine "1 + true")
+    "Error: cannot unify Bool with Int\n   ╭─[ input.ml:1:5 ]\n   │\n 1 │ 1 + true\n   │     ──┬─  \n   │       ╰─── cannot unify Bool with Int\n───╯\n"
+    "under `true`"
+
+@test fun thePassReportsWhereTheNodeIs () =
+  -- The whole `let rec`, from `let` to the end, with the note under it.
+  assertEq
+    (replLine "let rec loop = loop in loop")
+    "Error: `let rec` needs an argument\n   ╭─[ input.ml:1:1 ]\n   │\n 1 │ let rec loop = loop in loop\n   │ ─────────────┬─────────────  \n   │              ╰─────────────── `let rec` needs an argument\n   │ \n   │ Note: a recursive value that is not a function has nothing to stand on: write `let rec f x = …`\n───╯\n"
+    "the `let rec`, and the note"
+
+-- The queries.
+
+use Lingua.Query as Q
+
+fun twoFiles () =
+  let db = newSession () in
+  let a = setSessionSource db 1 "let id = fun x -> x in id" in
+  let b = setSessionSource db 2 "let rec fact n = if n < 2 then 1 else n * fact (n - 1) in fact 5" in
+  let c = toResult (\() -> sessionSignatures db [1, 2]) in
+  let d = toResult (\() -> sessionResult db 2) in
+  let e = Q.takeLog db in
+  db
+
+@test fun eachFileIsCompiledOnce () =
+  let db = twoFiles () in
+  let a = assertEq (toResult (\() -> sessionSignatures db [1, 2])) (Ok ["(t0 -> t0)", "Int"]) "both typed" in
+  let b = assertEq (toResult (\() -> sessionResult db 2)) (Ok (Ok "120 : Int")) "and the second run" in
+  assertEq (Q.takeLog db) [] "nothing ran again"
+
+@test fun anEditReCompilesOnlyItsFile () =
+  let db = twoFiles () in
+  let a = setSessionSource db 2 "let rec fact n = if n < 2 then 1 else n * fact (n - 1) in fact 6" in
+  let b = assertEq (toResult (\() -> sessionResult db 2)) (Ok (Ok "720 : Int")) "the new answer" in
+  assertEq
+    (Q.takeLog db)
+    [SessionKey.Parsed 2, SessionKey.Program 2, SessionKey.Typed 2, SessionKey.Result 2]
+    "file 1 untouched, and its type too"
+
+@test fun aCommentStopsAtTheType () =
+  -- The comment is in the tree and inside the program's `meta`, so both are
+  -- worked out again; the type is not changed by it, so the signatures --
+  -- which read only types -- are not.
+  let db = twoFiles () in
+  let a = setSessionSource db 1 "let id = fun x -> x in id -- the identity" in
+  let b = assertEq (toResult (\() -> sessionSignatures db [1, 2])) (Ok ["(t0 -> t0)", "Int"]) "the same types" in
+  assertEq (Q.takeLog db) [SessionKey.Parsed 1, SessionKey.Program 1, SessionKey.Typed 1] "cut off at the type"

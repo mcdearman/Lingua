@@ -1,0 +1,235 @@
+-- Lingua.Query: a compiler as queries, each remembered and re-run only when
+-- something it read has changed -- in the style of salsa.
+--
+-- A database holds **inputs**, set from outside -- a file's text, by its id --
+-- and **derived queries**, functions of a key that read other queries through
+-- `fetch`. Setting an input starts a new revision. A derived query asked for
+-- again:
+--
+-- - answers what it answered before if it was checked in this revision;
+-- - otherwise checks what it read last time, bringing each of those up to date
+--   first: if none of them has changed since it was last checked, it is still
+--   right, and is not run;
+-- - otherwise runs again, and if it answers what it answered before, it has
+--   not changed -- **early cutoff** -- so the queries that read it are still
+--   right too, and an edit inside one function stops at that function.
+--
+-- A database is `Db k v` over one type of key and one of value, each a choice
+-- with a case per query: `database!` (`Lingua.Database`) writes those, a typed
+-- function per query, and the dispatch from a key to the query that computes
+-- it. This module is the engine underneath, and can be used by hand the same
+-- way.
+--
+-- A query is a function of its key and of what it fetches, and nothing else:
+-- its effects are `Fetch` and no others, so a result can always be reused.
+
+use Std.Collections.HashMap as HashMap
+use Std.Collections.Vector as V
+use Std.Maybe.Maybe.*
+use Std.Exn (Exn, raise)
+use QueryError.*
+
+-- What a query reads another with. The handler that runs a query answers it,
+-- and notes what was read.
+@pub effect Fetch k v {
+  fetch : k -> v,
+}
+
+-- What asking a database can go wrong with: an input that was never set, or
+-- queries that read each other in a circle -- the keys around it, in order.
+@derive(Debug, Display, PartialEq)
+@pub data QueryError k = Unset k | Cycle [k]
+
+-- What a derived query answered, the revision that answer last changed at,
+-- the revision it was last checked at, and the keys it read to make it.
+data Memo k v = Memo v Int Int [k]
+
+-- The revision, the inputs (each with the revision it was set at), what the
+-- derived queries answered, the keys being computed now (outermost first),
+-- the keys computed since the log was last taken, and the queries themselves.
+@pub data Db k v
+  = Db (Ref Int) (Ref (HashMap k (v, Int))) (Ref (HashMap k (Memo k v))) (Ref [k]) (Ref [k]) (k -> Maybe v ! { Fetch k v })
+
+-- A database whose derived queries are `compute`: `Just` the answer for a
+-- derived key, `None` for an input's.
+@pub fun newDb (compute : k -> Maybe v ! { Fetch k v }) : Db k v ! { Mut | e } =
+  Db (newRef 0) (newRef HashMap.empty) (newRef HashMap.empty) (newRef []) (newRef []) compute
+
+-- The current revision: how many times an input has changed.
+@pub fun revision (db : Db k v) : Int ! { Mut | e } = match db with | Db rev _ _ _ _ _ -> getRef rev
+
+-- Set input `key` to `value`. Setting it to what it already holds changes
+-- nothing, and starts no revision.
+@pub fun set (db : Db k v) (key : k) (value : v) : () ! { Mut | e } =
+  match db with
+  | Db rev inputs _ _ _ _ ->
+      let unchanged = (match HashMap.lookup key (getRef inputs) with | Just held -> same (fst held) value | None -> False) in
+      if unchanged then ()
+      else
+        let now = getRef rev + 1 in
+        let u = setRef rev now in
+        setRef inputs (HashMap.insert key (value, now) (getRef inputs))
+
+-- What `key` answers now: an input as it was set, a derived query brought up
+-- to date. For asking from outside a query; a query asks with `fetch`.
+@pub fun get (db : Db k v) (key : k) : v ! { Mut, Exn (QueryError k) | e } =
+  match db with
+  | Db _ _ _ active _ _ ->
+      -- Anything a failed ask left on the stack of keys being computed is
+      -- gone: nothing is being computed when a query is asked from outside.
+      let u = setRef active [] in
+      fst (refresh db key)
+
+-- The keys computed since this was last asked, in the order they finished:
+-- what a revision cost, and what a test checks.
+@pub fun takeLog (db : Db k v) : [k] ! { Mut | e } =
+  match db with
+  | Db _ _ _ _ log _ ->
+      let ran = getRef log in
+      let u = setRef log [] in
+      ran
+
+-- `key`'s answer, up to date, and the revision it last changed at.
+fun refresh (db : Db k v) (key : k) : (v, Int) ! { Mut, Exn (QueryError k) | e } =
+  match db with
+  | Db rev inputs memos _ _ _ ->
+      match HashMap.lookup key (getRef inputs) with
+      | Just held -> held
+      | None ->
+          match HashMap.lookup key (getRef memos) with
+          | None -> recompute db key None
+          | Just (Memo x changed checked deps) ->
+              if checked == getRef rev then (x, changed)
+              else if V.all (\d -> snd (refresh db d) <= checked) deps then
+                let u = setRef memos (HashMap.insert key (Memo x changed (getRef rev) deps) (getRef memos)) in
+                (x, changed)
+              else recompute db key (Just (x, changed))
+
+-- Run `key`'s query, noting what it reads. It has changed only if it answers
+-- something other than it did before, `old`.
+fun recompute (db : Db k v) (key : k) (old : Maybe (v, Int)) : (v, Int) ! { Mut, Exn (QueryError k) | e } =
+  match db with
+  | Db rev _ memos active log compute ->
+      if V.any (\a -> same a key) (getRef active) then raise (Cycle (V.pushBack (getRef active) key))
+      else
+        let u = setRef active (V.pushBack (getRef active) key) in
+        let read = newRef [] in
+        let answer =
+          handle compute key with {
+            fetch k2 resume ->
+              let got = refresh db k2 in
+              let w = (if V.any (\d -> same d k2) (getRef read) then () else setRef read (V.pushBack (getRef read) k2)) in
+              resume (fst got),
+            return x -> x
+          } in
+          let v = setRef active (V.popBack (getRef active)) in
+          match answer with
+          | None -> raise (Unset key)
+          | Just x ->
+              let now = getRef rev in
+              let changed = (match old with | Just (y, c) -> if same y x then c else now | None -> now) in
+              let w = setRef memos (HashMap.insert key (Memo x changed now (getRef read)) (getRef memos)) in
+              let z = setRef log (V.pushBack (getRef log) key) in
+              (x, changed)
+
+-- Structural equality, whatever the type: an answer that is the same value as
+-- the one before has not changed.
+fun same (a : t) (b : t) : Bool = _primEq a b
+
+-- --- what `database!` writes with ---------------------------------------------------
+
+-- `fetch`, as a function: what generated code calls, from a module that
+-- reaches this one by a name.
+@pub fun ask (key : k) : v ! { Fetch k v | e } = fetch key
+
+-- A derived query's answer, made a value of the database's value type.
+@pub fun computedAs (wrap : a -> b) (x : a) : Maybe b = Just (wrap x)
+
+-- An input's: never computed.
+@pub fun notComputed () : Maybe a = None
+
+-- The arm of a `match` on a query's answer that cannot be taken: a key's
+-- answer is always the value of its own query.
+@pub fun unreachable () : a = arrayGet #[] 0
+
+-- --- tests -------------------------------------------------------------------
+
+use Std.Test (assertEq)
+use Std.Exn (toResult)
+use Std.Result.Result.*
+
+-- A spreadsheet, by hand: two cells, each an input, their lengths, and a
+-- total of the lengths.
+@derive(Debug, PartialEq)
+data K = Cell Int | Len Int | Total | Loop Int
+
+data V = Text String | Num Int
+
+fun cell (i : Int) : String ! { Fetch K V | e } = match fetch (K.Cell i) with | V.Text s -> s | _ -> unreachable ()
+
+fun len (i : Int) : Int ! { Fetch K V | e } = match fetch (K.Len i) with | V.Num n -> n | _ -> unreachable ()
+
+fun sheet (k : K) : Maybe V ! { Fetch K V | e } =
+  match k with
+  | K.Cell _ -> notComputed ()
+  | K.Len i -> computedAs V.Num (stringByteLength (cell i))
+  | K.Total -> computedAs V.Num (len 1 + len 2)
+  | K.Loop i -> computedAs V.Num (match fetch (K.Loop (1 - i)) with | V.Num n -> n + 1 | _ -> 0)
+
+fun total db = match get db K.Total with | V.Num n -> n | _ -> 0
+
+fun filled () =
+  let db = newDb sheet in
+  let a = set db (K.Cell 1) (V.Text "abc") in
+  let b = set db (K.Cell 2) (V.Text "de") in
+  db
+
+@test fun aQueryReadsWhatItFetches () =
+  let db = filled () in
+  let a = assertEq (toResult (\() -> total db)) (Ok 5) "3 + 2" in
+  assertEq (takeLog db) [K.Len 1, K.Len 2, K.Total] "each computed once, what it read first"
+
+@test fun askingAgainComputesNothing () =
+  let db = filled () in
+  let a = toResult (\() -> total db) in
+  let b = takeLog db in
+  let c = assertEq (toResult (\() -> total db)) (Ok 5) "the same answer" in
+  assertEq (takeLog db) [] "and nothing run for it"
+
+@test fun anInputChangedReRunsWhatReadIt () =
+  let db = filled () in
+  let a = toResult (\() -> total db) in
+  let b = takeLog db in
+  let c = set db (K.Cell 1) (V.Text "abcd") in
+  let d = assertEq (toResult (\() -> total db)) (Ok 6) "4 + 2" in
+  assertEq (takeLog db) [K.Len 1, K.Total] "the second cell's length is still right"
+
+@test fun theSameLengthStopsAtTheLength () =
+  -- "abc" to "xyz": the cell changed, its length did not, so the total --
+  -- which reads only lengths -- is not run again.
+  let db = filled () in
+  let a = toResult (\() -> total db) in
+  let b = takeLog db in
+  let c = set db (K.Cell 1) (V.Text "xyz") in
+  let d = assertEq (toResult (\() -> total db)) (Ok 5) "still 5" in
+  assertEq (takeLog db) [K.Len 1] "only the length ran; the total was cut off"
+
+@test fun settingWhatIsThereStartsNoRevision () =
+  let db = filled () in
+  let r = revision db in
+  let a = set db (K.Cell 1) (V.Text "abc") in
+  assertEq (revision db) r "the same revision"
+
+@test fun anUnsetInputIsSaidToBe () =
+  let db = newDb sheet in
+  let a = set db (K.Cell 1) (V.Text "abc") in
+  assertEq (toResult (\() -> total db)) (Err (Unset (K.Cell 2))) "the second cell"
+
+@test fun aCycleNamesItsKeys () =
+  let db = newDb sheet in
+  let r = toResult (\() -> get db (K.Loop 0)) in
+  let a = assertEq (match r with | Err e -> Just e | Ok _ -> None) (Just (Cycle [K.Loop 0, K.Loop 1, K.Loop 0])) "round and back" in
+  -- And the database is still usable after it.
+  let b = set db (K.Cell 1) (V.Text "a") in
+  let c = set db (K.Cell 2) (V.Text "b") in
+  assertEq (toResult (\() -> total db)) (Ok 2) "an ordinary query after"

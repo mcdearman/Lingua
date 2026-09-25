@@ -60,6 +60,11 @@ written beside it in the same declaration:
   and names the postfix forms; those alternatives are parsed as a Pratt loop
   instead of by descent. A left-recursive alternative without an entry is an
   error, reported on its rule.
+- **Application by juxtaposition** -- `f x y` -- is a postfix form whose
+  argument is an atom: `AppExpr = func:Expr arg:Atom`, with `Atom` an enum of
+  its own among `Expr`'s alternatives. The Pratt loop wraps the left side
+  whenever an atom can start next, so `f x y` is `(f x) y` and `f x + 1` is
+  `(f x) + 1`, as Meadow's own parser reads them (`examples/miniml`).
 
 ```meadow
 syntax! {
@@ -209,7 +214,10 @@ Every accessor is a `Maybe` or a list: the tree is lossless, so it holds
 whatever was written, including what is missing. Two single children of one
 type — `lhs` and `rhs` — are told apart by position, the first and the second;
 two that would get the same name are an error in the grammar, asking for
-labels. `astCalc` casts a parse's root.
+labels. Two whose types overlap — `func:Expr arg:Atom`, where every `Atom` is
+an `Expr` too — are told apart by position among all the node's children,
+since counting `Atom`s would find `func` again whenever it is one.
+`astCalc` casts a parse's root.
 
 ## 5. `lang` and `pass`
 
@@ -283,28 +291,85 @@ its input. Lingua runs them as **queries**, in the style of
 [salsa](https://github.com/salsa-rs/salsa): each memoized on its key, each
 recording what it read, re-run only when something it read has changed.
 
-- **Inputs** are set from outside: a file's text, by file id. Setting one
-  bumps a revision.
-- **Derived queries** are functions keyed by a value — a file, an item. A
-  query reads other queries through an effect, `fetch`, whose handler records
-  the dependency; a result remembers the revision it was computed at and what
-  it read.
-- A query asked again **validates** before re-running: if nothing it read has
-  changed since, the old result stands. If it re-runs and its result equals the
-  old one — cheap for green trees and generated languages, which are plain
-  values — the queries that read it are still valid: **early cutoff**, so an
-  edit inside a function body stops at that function.
-- **Parallel**: keys that do not depend on each other run on separate threads
-  (`Std.Thread`); the memo table is shared through `Std.Stm`, so two threads
-  asking for the same key compute it once.
+```meadow
+database! {
+  pub Session
+  | input source (file : Int) : String
+  | query tree (file : Int) : Green CalcKind = fst (parseCalc (querySource file))
+  | query program (file : Int) : Maybe CoreFile = M.map lower (surfaceFromCalc (queryTree file))
+  | query bindings (file : Int) : [(String, Int)] = evaluate (queryProgram file)
+  | query sum (files : [Int]) : Int = V.foldl (\acc f -> acc + total (queryBindings f)) 0 files
+}
+```
 
-What is generated: `syntax!` makes the parse of a file a query; each `pass` a
-query keyed by the item it runs on, so a pass over one function is cached per
-function. A driver sets the inputs and asks for the last query's result.
+- **Inputs** are set from outside: `setSessionSource db 1 text`. Setting one
+  to something new starts a revision; setting it to what it holds does not.
+- **Derived queries** are functions of a key -- the parameter -- whose bodies
+  are ordinary Meadow, and read other queries by calling them, each as
+  `query` and its name -- `queryTree file` -- so that a query never takes a
+  name an ordinary function has.
+  Each call performs `fetch` (the `Fetch` effect), and the handler that runs a
+  query answers it and notes what was read.
+- A query asked again **validates** before re-running: if it was checked this
+  revision, its answer stands; otherwise each thing it read is brought up to
+  date first, and if none of them changed since it was last checked, its answer
+  still stands. If it does re-run and answers what it answered before -- equal
+  as values, structurally, so any type will do -- it has not changed: **early
+  cutoff**, and what read it is still right. A comment added to a file changes
+  its tree, and the program whose `meta` covers the comment, but not what the
+  file binds; the sum over the files is not run again.
+- A query may perform no effect but `fetch`: it is a function of its key and
+  of what it read, which is what makes its answer reusable. The type says so,
+  and a body that prints does not compile.
+- What can go wrong is a value, `QueryError`, raised through `Std.Exn` by
+  `sessionTree db file` and the others that ask from outside: an input never
+  set, or queries that read each other in a circle, named key by key. The
+  database is usable after either.
 
-Persisting the memo table between runs — an incremental build rather than an
-incremental session — is last: results that are `Reflect` can be written as
-`Datum`s and read back, keyed by the fingerprints of what they read.
+**What is generated.** A database is `Lingua.Query.Db k v`: one type of key
+and one of value, each a choice with a case per query -- `SessionKey`,
+`SessionValue` -- since Meadow has no dynamic type to hold a table of
+anything. `database!` writes both, a function per query for bodies to call,
+the dispatch from a key to the body that computes it, `newSession`, a setter
+per input and an asker per query. `Lingua.Query` is the engine underneath --
+revisions, validation, cutoff, cycles, and a log of what ran, which is how the
+tests say what an edit cost -- and can be used by hand the same way.
+
+This is where the design first said that `syntax!` and each `pass` would make
+queries of their own. They do not, and need not: the key and value types are
+closed, so the queries of a database are declared in one place, and a query's
+body is a call to what `syntax!` and `pass!` already wrote -- `parseCalc`,
+`lower` -- one line each. A pass over a whole program is a query per file;
+a pass per item waits on the open question below.
+
+**Parallel** (milestone 5): keys that do not depend on each other run on
+separate threads (`Std.Thread`), the memo table shared through `Std.Stm`, so
+two threads asking for the same key compute it once.
+
+**Persistent** (milestone 5): the memo table written between runs -- an
+incremental build rather than an incremental session. Results that are
+`Reflect` can be written as `Datum`s and read back, keyed by the fingerprints
+of what they read.
+
+## 7. Diagnostics
+
+What a compiler says about a program is a value, `Lingua.Diagnostic`: how
+serious, what it says, the `Meta` it is about -- the bytes every node carries
+-- and further labelled spans and notes. It is drawn by
+[Nettle](https://github.com/mcdearman/Nettle), the port of ariadne, only when
+someone asks: `renderAll path text diagnostics`.
+
+- **The parser**'s errors are offsets and messages; `parseErrors` makes each
+  a diagnostic at the token found there, which is the one that was wrong or
+  that something was missing before.
+- **A pass** reports with `report` (the `Report` effect), and a `pass!` case
+  names the node it is rewriting as `here`. Whoever runs the pass handles the
+  effect; `collect` keeps what was said. A query may perform nothing but
+  `fetch`, so a query that runs a pass collects inside its body and answers
+  the diagnostics as part of its value -- which also means they are
+  remembered, and cut off, like any other answer.
+- **Anything else** -- a checker, an evaluator -- makes diagnostics the same
+  way, from the `meta` of the node it is looking at.
 
 ## Milestones
 
@@ -317,7 +382,8 @@ incremental session — is last: results that are `Reflect` can be written as
 3. **`lang` and `pass`** (§5), on the calculator: `Surface` from the grammar, a
    `Core` without binary expressions, a pass between them.
 4. **Queries** (§6), in a session: inputs, derived queries, validation, early
-   cutoff; `syntax!` and `pass` generating theirs.
+   cutoff, cycles; `database!` declaring them. Done: `Lingua.Query`,
+   `Lingua.Database`, and the calculator as a database of files.
 5. **Parallel and persistent**: threads over independent keys, and the memo
    table written between runs.
 

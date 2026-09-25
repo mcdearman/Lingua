@@ -3,5 +3,5 @@ name = "Calc"
 version = "0.1.0"
 
 [dependencies]
-Lingua = { path = ".." }
+Lingua = { path = "../.." }
 Scythe = { git = "https://github.com/mcdearman/Scythe.git", branch = "master" }

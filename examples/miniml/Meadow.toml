@@ -1,7 +1,7 @@
 [package]
-name = "Lingua"
+name = "MiniML"
 version = "0.1.0"
 
 [dependencies]
+Lingua = { path = "../.." }
 Scythe = { git = "https://github.com/mcdearman/Scythe.git", branch = "master" }
-Nettle = { git = "https://github.com/mcdearman/Nettle.git", branch = "master" }

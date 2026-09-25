@@ -1,0 +1,143 @@
+-- Lingua.Diagnostic: what a compiler says about a program, and where -- drawn
+-- by Nettle, the port of ariadne.
+--
+-- A `Diagnostic` is a value: how serious it is, what it says, the bytes of the
+-- source it is about -- a `Meta`, what every node of a language carries -- and
+-- any further spans it points at, and notes. It says nothing about files or
+-- terminals until it is drawn:
+--
+--   renderAll "main.ml" text [errorAt meta "cannot unify Bool with Int"]
+--
+-- A parse's errors become diagnostics with `parseErrors`, each at the token it
+-- was found at. A pass reports with `report`, the one operation of the
+-- `Report` effect -- in a `pass!` case, `here` is the `meta` of the node being
+-- rewritten -- and whoever runs the pass gathers what it said with `collect`,
+-- which is what lets a query, which may perform no effect of its own, run a
+-- pass that reports.
+
+use Std.Collections.Vector as V
+use Std.String as S
+use Std.Maybe.Maybe.*
+use Lingua.Lang (Meta, noMeta)
+use Lingua.Lang.Meta.*
+use Lingua.Green (Green)
+use Lingua.Red as R
+use Nettle.Report as N
+use Nettle.Report (ReportKind, IndexType)
+use Nettle.Source as NS
+use Nettle.Write (render)
+
+-- How serious a diagnostic is.
+@derive(Debug, Display, PartialEq)
+@pub data Severity = Error | Warning | Advice
+
+-- What it is, what it says, where, what else it points at, and notes.
+@derive(Debug, PartialEq)
+@pub data Diagnostic = Diagnostic Severity String Meta [(Meta, String)] [String]
+
+-- --- making them ---------------------------------------------------------------------
+
+@pub fun errorAt (at : Meta) (message : String) : Diagnostic = Diagnostic Severity.Error message at [] []
+
+@pub fun warningAt (at : Meta) (message : String) : Diagnostic = Diagnostic Severity.Warning message at [] []
+
+@pub fun adviceAt (at : Meta) (message : String) : Diagnostic = Diagnostic Severity.Advice message at [] []
+
+-- `d`, pointing at `at` as well, with `message` beside it.
+@pub fun withLabel (at : Meta) (message : String) (d : Diagnostic) : Diagnostic =
+  match d with
+  | Diagnostic s m w ls ns -> Diagnostic s m w (V.pushBack ls (at, message)) ns
+
+-- `d`, with a note under it.
+@pub fun withNote (note : String) (d : Diagnostic) : Diagnostic =
+  match d with
+  | Diagnostic s m w ls ns -> Diagnostic s m w ls (V.pushBack ns note)
+
+@pub fun severity (d : Diagnostic) : Severity = match d with | Diagnostic s _ _ _ _ -> s
+
+@pub fun message (d : Diagnostic) : String = match d with | Diagnostic _ m _ _ _ -> m
+
+@pub fun whereAt (d : Diagnostic) : Meta = match d with | Diagnostic _ _ w _ _ -> w
+
+@pub fun isError (d : Diagnostic) : Bool = severity d == Severity.Error
+
+-- --- from a parse --------------------------------------------------------------------
+
+-- A parse's errors, each at the token it was found at -- the one that was
+-- wrong, or that something was missing before -- or, at the end of the
+-- input, at the end.
+@pub fun parseErrors (g : Green k) (errs : [(Int, String)]) : [Diagnostic] =
+  V.map
+    (\e ->
+      match e with
+      | (at, msg) ->
+          let span = (match R.tokenAt at (R.root g) with | Just t -> R.range t | None -> (at, at)) in
+          errorAt (Meta (fst span) (snd span)) msg)
+    errs
+
+-- --- from a pass ---------------------------------------------------------------------
+
+-- What a pass says as it goes. A handler decides what becomes of it; `collect`
+-- keeps it.
+@pub effect Report {
+  report : Diagnostic -> (),
+}
+
+-- `report`, as a function, for code that reaches this module by a name.
+@pub fun say (d : Diagnostic) : () ! { Report | e } = report d
+
+-- Run `act`, keeping everything it reports, in order.
+@pub fun collect (act : () -> a ! { Report | e }) : (a, [Diagnostic]) ! e =
+  handle act () with {
+    report d k -> \acc -> (k ()) (V.pushBack acc d),
+    return x -> \acc -> (x, acc)
+  } []
+
+-- --- drawing -------------------------------------------------------------------------
+
+-- Every diagnostic about `text`, the source called `path`, drawn one after
+-- another -- without colour, as a test or a log wants them.
+@pub fun renderAll (path : String) (text : String) (ds : [Diagnostic]) : String = drawn False path text ds
+
+-- The same, in colour, for a terminal.
+@pub fun renderColored (path : String) (text : String) (ds : [Diagnostic]) : String = drawn True path text ds
+
+fun drawn color path text ds = S.join "" (V.map (\d -> render (nettle color path d) (NS.namedSource path (NS.source text))) ds)
+
+-- The Nettle report for `d`: its message at the top, its span underlined --
+-- with the message beside it too when nothing else is labelled, since Nettle,
+-- as ariadne, draws no line under a span nobody says anything about -- its
+-- other labels with theirs, and its notes. Offsets are bytes, as a `Meta`'s
+-- are.
+fun nettle color path d =
+  match d with
+  | Diagnostic s msg at labels notes ->
+      let span = \m -> (match m with | Meta a b -> NS.spanIn path a b) in
+      let primary = if V.isEmpty labels then N.labelMessage msg (N.label (span at)) else N.label (span at) in
+      let others = V.map (\l -> N.labelMessage (snd l) (N.label (span (fst l)))) labels in
+      N.build (kindOf s) (span at)
+        |> N.withConfig (N.config |> N.withColor color |> N.withIndexType IndexType.Byte)
+        |> N.withMessage msg
+        |> N.withLabel primary
+        |> N.withLabels others
+        |> N.withNotes notes
+
+fun kindOf s =
+  match s with
+  | Severity.Error -> ReportKind.Error
+  | Severity.Warning -> ReportKind.Warning
+  | Severity.Advice -> ReportKind.Advice
+
+-- --- tests -------------------------------------------------------------------
+
+use Std.Test (assertEq)
+
+@test fun aDiagnosticIsDrawnWhereItIs () =
+  assertEq
+    (renderAll "main.ml" "let x = 1 + true in x" [errorAt (Meta 12 16) "cannot unify Bool with Int" |> withLabel (Meta 8 9) "this is an `Int`"])
+    "Error: cannot unify Bool with Int\n   ╭─[ main.ml:1:13 ]\n   │\n 1 │ let x = 1 + true in x\n   │         ┬   ────  \n   │         ╰───────── this is an `Int`\n───╯\n"
+    "the span, and the label beside it"
+
+@test fun collectKeepsWhatWasReported () =
+  let got = collect (\() -> let a = say (errorAt noMeta "one") in let b = say (warningAt noMeta "two") in 3) in
+  assertEq (match got with | (x, ds) -> (x, V.map message ds)) (3, ["one", "two"]) "the answer, and both, in order"

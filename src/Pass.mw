@@ -26,7 +26,8 @@
 -- record -- `Prim { … }` -- is that language's, and gets the `meta` of the
 -- node it replaces. A case's body is ordinary Meadow: it may call anything,
 -- effects and all, and a `match` in it is parenthesised, since `|` starts the
--- next case.
+-- next case. `here` is the `meta` of the node being rewritten: where a
+-- diagnostic about it points (`Lingua.Diagnostic`).
 
 use Std.Collections.Vector as V
 use Std.String as S
@@ -316,7 +317,7 @@ fun arm pass from to cases s p =
   match V.find (\c -> caseName c == prodName p) cases with
   | Just (Case _ _ fs body) ->
       let binds = S.join "" (V.map (\f -> "let ${fst f} = ${translate pass (fieldTyOf p (fst f)) "r.${fst f}"} in ") fs) in
-      [Code "| ${st}.${prodName p} r -> let lingua_meta = r.meta in ${binds}", Group Paren (rewrite to body) Nowhere]
+      [Code "| ${st}.${prodName p} r -> let lingua_meta = r.meta in let here = lingua_meta in ${binds}", Group Paren (rewrite to body) Nowhere]
   | None ->
       let tt = "${langName to}${sortName s}" in
       let fields = V.map (\f -> "${fieldName f} = ${translate pass (fieldTy f) "r.${fieldName f}"}") (prodFields p) in

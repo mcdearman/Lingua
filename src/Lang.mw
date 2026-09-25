@@ -1,0 +1,108 @@
+-- Languages: what an intermediate language is, as `lang!` and `pass!` read it.
+--
+-- A language is a set of sorts -- `Expr`, `Stmt` -- each a choice of
+-- productions -- `BinExpr`, `Literal` -- each a record of fields. `syntax!`
+-- leaves the language its grammar implies as a compile-time binding, `lang!`
+-- makes new ones from it or from each other, and `pass!` reads the two it goes
+-- between. They cross between those macros as `Datum`s, which is what `Reflect`
+-- is for.
+--
+-- Every production a language generates also holds a `meta` its declaration
+-- does not mention: where the node came from.
+
+use Std.Collections.Vector as V
+use Std.Maybe.Maybe.*
+use Std.Macro (Datum, Reflect, toDatum, fromDatum)
+use Std.Result.Result.*
+use Lingua.Red (Syntax, range)
+use Ty.*
+
+-- What a field holds: a node of a sort of the same language, several, maybe
+-- one, or an ordinary Meadow type, by name.
+@derive(Reflect, PartialEq)
+@pub data Ty = TSort String | TMany Ty | TOpt Ty | TPrim String
+
+-- A field: its name, what it holds, and -- in a language read off a grammar --
+-- the typed-AST accessor that reads it and whether that answers a token.
+@derive(Reflect, PartialEq)
+@pub data Field = Field String Ty String Bool
+
+-- A production: its name and its fields.
+@derive(Reflect, PartialEq)
+@pub data Prod = Prod String [Field]
+
+-- A sort: its name and its productions.
+@derive(Reflect, PartialEq)
+@pub data Sort = Sort String [Prod]
+
+-- A language: its name, the sort a whole program is, its sorts, and -- when
+-- it was read off a grammar -- which grammar.
+@derive(Reflect, PartialEq)
+@pub data Lang = Lang String String [Sort] String
+
+@pub fun langName (l : Lang) : String = match l with | Lang n _ _ _ -> n
+
+@pub fun langRoot (l : Lang) : String = match l with | Lang _ r _ _ -> r
+
+@pub fun langSorts (l : Lang) : [Sort] = match l with | Lang _ _ ss _ -> ss
+
+@pub fun langGrammar (l : Lang) : String = match l with | Lang _ _ _ g -> g
+
+@pub fun sortName (s : Sort) : String = match s with | Sort n _ -> n
+
+@pub fun sortProds (s : Sort) : [Prod] = match s with | Sort _ ps -> ps
+
+@pub fun prodName (p : Prod) : String = match p with | Prod n _ -> n
+
+@pub fun prodFields (p : Prod) : [Field] = match p with | Prod _ fs -> fs
+
+@pub fun fieldName (f : Field) : String = match f with | Field n _ _ _ -> n
+
+@pub fun fieldTy (f : Field) : Ty = match f with | Field _ t _ _ -> t
+
+@pub fun fieldAccessor (f : Field) : String = match f with | Field _ _ a _ -> a
+
+@pub fun fieldIsToken (f : Field) : Bool = match f with | Field _ _ _ t -> t
+
+-- The sort a production belongs to.
+@pub fun sortOfProd (l : Lang) (p : String) : Maybe Sort =
+  V.find (\s -> V.any (\q -> prodName q == p) (sortProds s)) (langSorts l)
+
+@pub fun findSort (l : Lang) (n : String) : Maybe Sort = V.find (\s -> sortName s == n) (langSorts l)
+
+-- --- what every node carries ------------------------------------------------------
+
+-- Where a node came from: the bytes of the source it was read from.
+@derive(Debug, Display, PartialEq)
+@pub data Meta = Meta Int Int
+
+-- Where a syntax node is.
+@pub fun metaOf (s : Syntax k) : Meta = match range s with | (a, b) -> Meta a b
+
+-- A made-up node's: nowhere in particular.
+@pub def noMeta : Meta = Meta 0 0
+
+-- --- what a conversion from the typed AST stands on -------------------------------
+
+-- Every element converted, or `None` if any could not be.
+@pub fun allOf (xs : [Maybe a]) : Maybe [a] =
+  V.foldl (\acc x -> match (acc, x) with | (Just ys, Just y) -> Just (V.pushBack ys y) | _ -> None) (Just []) xs
+
+-- An optional child converted: `Just None` when it is not there, `None` when
+-- it is and could not be.
+@pub fun optOf (f : a -> Maybe b) (x : Maybe a) : Maybe (Maybe b) =
+  match x with
+  | None -> Just None
+  | Just y -> (match f y with | Just z -> Just (Just z) | None -> None)
+
+-- --- tests -------------------------------------------------------------------
+
+use Std.Test (assertEq)
+
+@test fun aLanguageSurvivesItsTripThroughADatum () =
+  let l = Lang "Core" "File" [Sort "Expr" [Prod "Lit" [Field "value" (TPrim "String") "" False]]] "" in
+  assertEq (fromDatum (toDatum l)) (Ok l) "the same language back"
+
+@test fun allOfIsNoneIfAnyIs () =
+  let a = assertEq (allOf [Just 1, Just 2]) (Just [1, 2]) "all there" in
+  assertEq (allOf [Just 1, None]) None "one missing"

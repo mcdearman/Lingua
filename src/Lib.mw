@@ -10,6 +10,9 @@
 @pub mod Build
 @pub mod Ungrammar
 @pub mod Ast
+@pub mod Lang
 @pub mod Gen
+@pub mod Pass
 
 @pub use Lingua.Gen (syntax)
+@pub use Lingua.Pass (lang, pass)

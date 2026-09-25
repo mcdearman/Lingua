@@ -213,44 +213,67 @@ labels. `astCalc` casts a parse's root.
 
 ## 5. `lang` and `pass`
 
-A **`lang`** declares an intermediate language: its productions, and what each
-holds. The first can be read off the grammar (`lang Surface from Calc`), with
-every node carrying where it came from; the rest are written as changes to one
-before them:
+A language is a set of **sorts** — `Expr`, `Stmt` — each a choice of
+**productions** — `BinExpr`, `Literal` — each a record of **fields**. They
+cross between the macros as `Lingua.Lang` values, stored as compile-time
+bindings.
+
+`syntax!` leaves the language its grammar implies, under the grammar's name.
+An enum rule is a sort whose productions are its alternatives; any other node
+rule is a sort of one production. A production's fields are its typed-AST
+slots, less the tokens that say nothing: a token is kept when it is labelled,
+or carries text of its own (`Ident _`); `'let'` and `';'` are dropped. A child
+under `?` is a `Maybe`, under `*` a list.
+
+A **`lang!`** declares an intermediate language. The first is read off the
+grammar; the rest are changes to one before them:
 
 ```meadow
-@pub lang Core extends Surface {
+lang! { pub Surface from Calc }
+
+lang! {
+  pub Core extends Surface
   Expr - BinExpr
-  Expr + Prim { op : PrimOp, args : [Expr] }
+  Expr + Prim { op : String, args : [Expr] }
 }
 ```
 
-Each language is generated as ordinary `data`, each production's fields an
-anonymous record that also holds a hidden `meta` — its provenance: the syntax
-node or earlier node it was made from. A `lang` leaves its shape as a
-compile-time binding, as `syntax!` does.
+`Sort - Prod` removes a production; `Sort + Prod { field : Type, … }` adds one
+(to a new sort, if there is none by that name). A field's type is a sort of
+the language, `[T]`, `Maybe T`, or any other type by name. Each language is
+written out as ordinary `data`, a type per sort named with the language —
+`CoreExpr`, `CoreStmt` — whose productions each hold an anonymous record: the
+fields, and a `meta : Meta` nobody writes, the bytes of the source the node
+came from. `metaCoreExpr` reads it. A language read off a grammar also gets its
+conversion from the typed AST, `surfaceFromCalc : Green CalcKind -> Maybe
+SurfaceFile` — `None` when the tree has something missing in it, since only an
+error-free tree is a program.
 
-A **`pass`** is a function from one language to another, written as the cases
-that change something:
+A **`pass!`** is a function from one language to another, written as the
+cases that change something:
 
 ```meadow
-@pub pass lower : Surface -> Core {
-  | BinExpr { lhs, op, rhs } -> Prim { op = primOf op, args = [lhs, rhs] }
+pass! {
+  pub lower : Surface -> Core
+  | BinExpr { lhs, op, rhs } -> Prim { op = op, args = [lhs, rhs] }
 }
 ```
 
-The pass reads both languages' shapes, and generates the rest: the traversal,
-and a copy of every production the delta left alone, children already
-lowered. A production that was removed or changed and has no case is a missing
-case of an ordinary `match`, reported where the pass is. `meta` is carried
-without being written: a node a case builds gets the provenance of the node it
-replaced.
+It reads both languages and writes the rest: a function per sort —
+`lowerExpr`, `lowerStmt` — the children of every node translated before its
+case sees them, and a copy of every production the target kept as it was. A
+case names the fields it wants, bound already translated. In its body, a
+production of the target written with a record — `Prim { … }` — is that
+language's and holds the `meta` of the node the case replaces.
 
-A case's body is **ordinary Meadow**, and may call any function — including
-ones with effects. A pass says what it performs, `pass check : Core -> Core !
-{ Diag | e }`, and the generated traversal performs it with the cases. `Diag`,
-reporting at a node's provenance, and `Fresh`, new names, are the two Lingua
-provides.
+What cannot be written is said where it is: a case for a production the source
+does not have, at the case; a field it does not have, at the field; a
+production the target dropped or changed with no case, at the pass.
+
+A case's body is **ordinary Meadow**, and may call any function — effects and
+all. The functions a pass writes are left to inference, so a pass performs what
+its cases do: one that counts with `Std.State` is run under `runState`. A
+`match` in a body is parenthesised, since `|` begins the next case.
 
 ## 6. Queries: incremental and parallel
 

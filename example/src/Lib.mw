@@ -5,7 +5,7 @@
 -- byte, and that errors land where they belong.
 
 use Scythe (lexer!)
-use Lingua (syntax!)
+use Lingua (syntax!, lang!, pass!)
 use Lingua.Green (Green, dump, text)
 use Std.Collections.Vector as V
 use Std.String as S
@@ -173,3 +173,83 @@ fun apply op a b = if op == "+" then a + b else if op == "-" then a - b else if 
                 | _ -> assertEq 0 1 "a call")
            | _ -> assertEq 0 1 "a statement")
       | None -> assertEq 0 1 "a file"
+
+-- --- languages and a pass ------------------------------------------------------
+
+-- The language the grammar implies, and one without binary expressions: an
+-- operator is a primitive applied to its arguments.
+lang! { pub Surface from Calc }
+
+lang! {
+  pub Core extends Surface
+  Expr - BinExpr
+  Expr + Prim { op : String, args : [Expr] }
+}
+
+-- Everything but `BinExpr` is copied, its children lowered first.
+pass! {
+  pub lower : Surface -> Core
+    | BinExpr { lhs, op, rhs } -> Prim { op = op, args = [lhs, rhs] }
+}
+
+use Std.Maybe as M
+use Lingua.Lang (Meta)
+
+fun core (input : String) : Maybe CoreFile =
+  match parseCalc input with
+  | (g, _) -> M.map lower (surfaceFromCalc g)
+
+-- What a `Core` program leaves bound.
+fun runCore (input : String) : [(String, Int)] =
+  match core input with
+  | Just f -> (match f with | CoreFile.File r -> V.foldl stepCore [] r.stmts)
+  | None -> []
+
+fun stepCore env s =
+  match s with
+  | CoreStmt.LetStmt r -> (match r.name with | CoreName.Name n -> V.pushBack env (n.ident, evalCore env r.value))
+  | CoreStmt.ExprStmt _ -> env
+
+fun evalCore env (e : CoreExpr) : Int =
+  match e with
+  | CoreExpr.Literal r -> (match S.toInt r.number with | Just n -> n | None -> 0)
+  | CoreExpr.NameRef r -> lookup env r.ident
+  | CoreExpr.ParenExpr r -> evalCore env r.expr
+  | CoreExpr.Prim r ->
+      (match (V.get r.args 0, V.get r.args 1) with
+       | (Just a, Just b) -> apply r.op (evalCore env a) (evalCore env b)
+       | _ -> 0)
+  | CoreExpr.CallExpr _ -> 0
+
+@test fun aPassRewritesWhatChangedAndCopiesTheRest () =
+  assertEq (runCore "let x = 2 * (3 + 4);\nlet y = x - 10 - 1;") [("x", 14), ("y", 3)] "lowered, and the same answers"
+
+@test fun aRewrittenNodeKeepsWhereItCameFrom () =
+  match core "let x = 1 + 2;" with
+  | Just (CoreFile.File r) ->
+      (match V.get r.stmts 0 with
+       | Just (CoreStmt.LetStmt l) -> assertEq (metaCoreExpr l.value) (Meta.Meta 8 13) "the bytes of `1 + 2`"
+       | _ -> assertEq 0 1 "a let")
+  | _ -> assertEq 0 1 "a program"
+
+@test fun aProgramWithSomethingMissingHasNoSurface () =
+  match parseCalc "let x = ;" with
+  | (g, _) -> assertEq (M.isSome (surfaceFromCalc g)) False "the tree has an error in it"
+
+-- A pass may do anything an ordinary function may: this one counts the
+-- operators it lowers, with `Std.State`.
+use Std.State (get, put, runState)
+
+fun tick () = put (get () + 1)
+
+pass! {
+  pub lowerCounting : Surface -> Core
+    | BinExpr { lhs, op, rhs } -> (let u = tick () in Prim { op = op, args = [lhs, rhs] })
+}
+
+@test fun aPassMayPerformEffects () =
+  match parseCalc "let x = 1 + 2 * 3;" with
+  | (g, _) ->
+      match surfaceFromCalc g with
+      | Just s -> (match runState 0 (\() -> lowerCounting s) with | (_, n) -> assertEq n 2 "two operators")
+      | None -> assertEq 0 1 "a program"

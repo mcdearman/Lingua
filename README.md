@@ -51,6 +51,13 @@ syntax! {
   the tree, and an accessor per element — `letStmtName`, `binExprLhs`,
   `argListArgs` — each a `Maybe` or a list, since the tree holds whatever was
   written. `parseMini` is pure, and `astMini` casts its root.
+- **`lang!`** declares an intermediate language — read off the grammar
+  (`lang! { Surface from Calc }`) or as changes to another
+  (`Core extends Surface`, `Expr - BinExpr`, `Expr + Prim { … }`) — written out
+  as plain data whose every node carries where it came from.
+- **`pass!`** is the cases that change something between two languages; the
+  traversal, the copies of what did not change, and the provenance of what did
+  are written for it. Case bodies are ordinary Meadow, effects and all.
 - **`Lingua.Green`**, the lossless tree: kinds, widths and text, no positions.
 - **`Lingua.Red`**, a view with offsets and parents: `range`, `children`,
   `parent`, `ancestors`, `tokenAt`, `nodeAt`.
@@ -58,8 +65,9 @@ syntax! {
   stands on, usable by hand.
 
 [`example/`](example) is a calculator: statements, precedence, calls and
-recovery, and a test that every input comes back byte for byte.
+recovery, a test that every input comes back byte for byte, and a `Surface`
+to `Core` pass that is evaluated to the same answers.
 
 ## Next
 
-`lang` and `pass`, then queries — see the milestones in the design.
+Queries, for incremental and parallel builds — see the milestones in the design.

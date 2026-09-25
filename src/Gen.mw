@@ -35,6 +35,13 @@ use Std.String.Parse as P
 use Std.String.Parse (Parser)
 use Lingua.Ungrammar (Rule, Def, parseGrammar, defName, defAt, defBody)
 use Lingua.Ungrammar.Rule.*
+use Lingua.Lang (Lang, Sort, Prod, Field, Ty)
+use Lingua.Lang.Lang.*
+use Lingua.Lang.Sort.*
+use Lingua.Lang.Prod.*
+use Lingua.Lang.Field.*
+use Lingua.Lang.Ty.*
+use Std.Macro (defineAs, toDatum, fromDatum)
 
 -- --- reading the call --------------------------------------------------------
 
@@ -97,7 +104,7 @@ def call : Parser Tokens (String, [Section]) =
 -- --- the macro -----------------------------------------------------------------
 
 @macro
-@pub fun syntax (ts : [TokenTree]) : [TokenTree] ! { Mut | e } =
+@pub fun syntax (ts : [TokenTree]) : [TokenTree] ! { Mut, Expand | e } =
   match parseTokens call ts with
   | Err failed -> failed
   | Ok (name, sections) -> written name sections
@@ -124,7 +131,10 @@ fun written name sections =
           } in
           match check spec with
           | Just failed -> failed
-          | None -> generate spec
+          | None ->
+              -- The language the grammar implies, for `lang!` and `pass!`.
+              let u = defineAs name (grammarLang spec) in
+              generate spec
 
 -- Where byte `off` of the grammar is in the file, `n` bytes of it.
 fun inGrammar (start : Int) (off : Int) (n : Int) : Loc = if start <= 0 then Nowhere else At (start + off) (start + off + n)
@@ -554,13 +564,13 @@ ${pub}fun parse${spec.name} (input : String) =
 
 -- A child an accessor reads: a node of a rule, or a token of these quoted
 -- names; one, or every one.
-data Field = NodeField String String Bool | TokField String [String] Bool
+data Slot = NodeField String String Bool | TokField String [String] Bool
 
-use Field.*
+use Slot.*
 
 fun fieldName f = match f with | NodeField n _ _ -> n | TokField n _ _ -> n
 
-fun fieldsOf spec (r : Rule) (many : Bool) : [Field] =
+fun fieldsOf spec (r : Rule) (many : Bool) : [Slot] =
   match r with
   | Tok t _ -> [TokField (lowerFirst (tokKind spec t) ++ "Token") [t] many]
   | Ref n _ -> [NodeField (lowerFirst n ++ (if many then "s" else "")) n many]
@@ -662,3 +672,65 @@ ${pub}fun syntax${e} (x : ${e}) : Syntax ${kt} =
   match x with
 ${S.join "\n" (V.map (\a -> "  | ${e}.${a} y -> syntax${a} y") alts)}
 "
+
+-- --- the language the grammar implies ------------------------------------------------
+--
+-- What `lang! { Surface from Calc }` starts from. An enum is a sort, its
+-- alternatives its productions; a node rule that is no enum's alternative is
+-- a sort of one production. A production's fields are its slots in the typed
+-- AST -- the same names, read by the same accessors -- less the tokens that
+-- say nothing: a token is kept when it is labelled or carries text of its own
+-- (`Ident _`), and `'let'` and `';'` are not.
+
+fun grammarLang spec : Lang =
+  let enums = V.filter isEnum spec.defs in
+  let alts = V.concatMap alternatives enums in
+  let enumSorts = V.map (\d -> Sort (defName d) (V.map (\a -> prodOf spec a) (alternatives d))) enums in
+  let loners = V.map (\d -> Sort (defName d) [prodOf spec (defName d)]) (V.filter (\d -> not (isEnum d) and not (V.elem (defName d) alts)) spec.defs) in
+  let root = (match V.get spec.defs 0 with | Just d -> defName d | None -> "File") in
+  Lang spec.name root (V.append enumSorts loners) spec.name
+
+-- The production of rule `r`: an enum inside an enum is a production holding
+-- that enum's sort.
+fun prodOf spec r =
+  match lookupDef spec r with
+  | Just d ->
+      if isEnum d then Prod r [Field (lowerFirst r) (TSort r) "" False]
+      else
+        let slots = fieldsOfDef spec d in
+        let opts = optsOf (defBody d) False in
+        Prod r (V.concatMap (\i -> fieldOf spec r (V.get slots i) (V.getOr False opts i)) (V.range 0 (V.len slots)))
+  | None -> Prod r []
+
+fun fieldOf spec r slot opt =
+  let accessorOf = \name -> "${lowerFirst r}${upperFirst name}" in
+  let shape = \many base -> if many then TMany base else if opt then TOpt base else base in
+  match slot with
+  | Just (NodeField name n many) -> [Field name (shape many (TSort n)) (accessorOf name) False]
+  | Just (TokField name ts many) ->
+      if kept spec name ts then [Field (fieldBare name) (shape many (TPrim "String")) (accessorOf name) True] else []
+  | None -> []
+
+-- Whether a token slot says anything: labelled, or a token with text.
+fun kept spec name ts =
+  V.len ts > 1
+    or not (V.any (\t -> name == lowerFirst (tokKind spec t) ++ "Token") ts)
+    or V.any (\t -> match V.find (\e -> tokName e == t) spec.tokens with | Just (_, _, pat) -> V.len pat > 1 | None -> False) ts
+
+-- `numberToken` is a field `number`.
+fun fieldBare name =
+  let n = stringByteLength name in
+  if n > 5 and stringSlice name (n - 5) n == "Token" then stringSlice name 0 (n - 5) else name
+
+-- For each slot, in the order `fieldsOf` makes them, whether it is under `?`.
+fun optsOf (r : Rule) (opt : Bool) : [Bool] =
+  match r with
+  | Tok _ _ -> [opt]
+  | Ref _ _ -> [opt]
+  | Label _ x -> [opt or isOptional x]
+  | Opt x -> optsOf x True
+  | Rep x -> optsOf x opt
+  | Seq xs -> V.concatMap (\x -> optsOf x opt) xs
+  | Alt xs -> V.concatMap (\x -> optsOf x opt) xs
+
+fun isOptional x = match x with | Opt _ -> True | _ -> False

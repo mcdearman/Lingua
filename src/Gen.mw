@@ -228,7 +228,8 @@ fun check spec : Maybe [TokenTree] =
         unknownTokens spec,
         duplicateRules spec,
         precedenceCovers spec env,
-        enumConflicts spec env ] in
+        enumConflicts spec env,
+        fieldClashes spec ] in
     match V.get problems 0 with
     | Just (msg, loc) -> Just [Fail msg loc]
     | None -> None
@@ -345,11 +346,15 @@ fun generate spec : [TokenTree] ! { Mut | e } =
     [ [Code (header spec pub)],
       classify spec,
       [Code (V.foldl (\acc d -> acc ++ "\n" ++ ruleFun spec env counter root d) "" spec.defs),
-        Code (entry spec pub root lx)] ]
+        Code (entry spec pub root lx),
+        Code (typed spec pub root)] ]
 
 fun header spec pub =
   "use Lingua.Parser as LinguaP
 use Lingua.Build as LinguaB
+use Lingua.Red as LinguaR
+use Lingua.Red (Syntax)
+use Lingua.Ast as LinguaA
 use Lingua.Green as LinguaG
 use Scythe as LinguaScythe
 use Std.Collections.Vector as LinguaV
@@ -449,11 +454,11 @@ fun enumFun spec env counter d =
     else
       "fun ${fn spec e} p = ${fn spec ("bp" ++ e)} p 0
 
-fun ${fn spec ("bp" ++ e)} p (minBp : Int) : Int ! { Mut | e } =
+fun ${fn spec ("bp" ++ e)} p (minBp : Int) : Int ! { St s | e } =
   let lhs = ${dispatch} in
   if lhs < 0 then lhs else ${fn spec ("led" ++ e)} p minBp lhs
 
-fun ${fn spec ("led" ++ e)} p (minBp : Int) (lhs : Int) : Int ! { Mut | e } =
+fun ${fn spec ("led" ++ e)} p (minBp : Int) (lhs : Int) : Int ! { St s | e } =
   ${ledBranches spec env counter e}lhs
 "
 
@@ -523,7 +528,8 @@ fun ${fn spec "lexemes"} (input : String) ts =
   match LinguaV.foldl step ([], 0) ts with
   | (out, at) -> if at < n then LinguaV.pushBack out (LinguaB.lexeme ${k spec "Unknown"} (stringSlice input at n) True) else out
 
--- `input` as a lossless tree, and every error with the byte it is at.
+-- `input` as a lossless tree, and every error with the byte it is at: a pure
+-- function of the text.
 ${pub}fun parse${spec.name} (input : String) =
   match lex${lx} input with
   | Err err ->
@@ -531,7 +537,128 @@ ${pub}fun parse${spec.name} (input : String) =
   | Ok ts ->
       let lexemes = ${fn spec "lexemes"} input ts in
       let kinds = LinguaV.toArray (LinguaV.map LinguaB.lexemeKind (LinguaV.filter (\\l -> not (LinguaB.lexemeTrivia l)) lexemes)) in
-      let p = LinguaP.parser kinds ${k spec "Eof"} ${k spec "ErrorNode"} ${fn spec "name"} in
-      let _ = ${fn spec root} p in
-      LinguaB.build ${k spec root} (LinguaP.events p) lexemes
+      let events =
+        runSt (\\() ->
+          let p = LinguaP.parser kinds ${k spec "Eof"} ${k spec "ErrorNode"} ${fn spec "name"} in
+          let _ = ${fn spec root} p in
+          LinguaP.events p) in
+      LinguaB.build ${k spec root} events lexemes
+"
+
+-- --- the typed AST -----------------------------------------------------------------
+--
+-- Each node rule a type over `Syntax`, each enum a sum of its alternatives, and
+-- each element of a node an accessor named for its label -- ungrammar's
+-- contract -- or, without one, for what it is: `name` for a `Name`, `names`
+-- for a `Name*`, `letToken` for a `'let'`.
+
+-- A child an accessor reads: a node of a rule, or a token of these quoted
+-- names; one, or every one.
+data Field = NodeField String String Bool | TokField String [String] Bool
+
+use Field.*
+
+fun fieldName f = match f with | NodeField n _ _ -> n | TokField n _ _ -> n
+
+fun fieldsOf spec (r : Rule) (many : Bool) : [Field] =
+  match r with
+  | Tok t _ -> [TokField (lowerFirst (tokKind spec t) ++ "Token") [t] many]
+  | Ref n _ -> [NodeField (lowerFirst n ++ (if many then "s" else "")) n many]
+  | Label l x -> labelled spec l x many
+  | Opt x -> fieldsOf spec x many
+  | Rep x -> fieldsOf spec x True
+  | Seq xs -> V.concatMap (\x -> fieldsOf spec x many) xs
+  | Alt xs -> V.concatMap (\x -> fieldsOf spec x many) xs
+
+-- `label:x`: one accessor for all of `x`. Its nodes, when it has any -- all of
+-- one rule, as many as there may be -- and otherwise its tokens.
+fun labelled spec l x many =
+  let inner = fieldsOf spec x many in
+  let nodes = V.filter (\f -> match f with | NodeField _ _ _ -> True | _ -> False) inner in
+  match V.get nodes 0 with
+  | Just (NodeField _ n m) -> [NodeField l n (many or m or V.len nodes > 1)]
+  | _ ->
+      let toks = V.concatMap (\f -> match f with | TokField _ ts _ -> ts | _ -> []) inner in
+      [TokField l toks (many or V.any (\f -> match f with | TokField _ _ m -> m | _ -> False) inner)]
+
+fun fieldsOfDef spec d = if isEnum d then [] else fieldsOf spec (defBody d) False
+
+fun fieldClashes spec =
+  V.concatMap
+    (\d ->
+      let fs = fieldsOfDef spec d in
+      V.concatMap
+        (\i ->
+          match V.get fs i with
+          | Just f ->
+              if V.any (\g -> fieldName g == fieldName f) (V.take fs i) then
+                [("`${defName d}` has two children that would both be `${fieldName f}`: give them labels", whereDef spec (defName d))]
+              else []
+          | None -> [])
+        (V.range 0 (V.len fs)))
+    spec.defs
+
+fun lowerFirst (s : String) : String =
+  if stringByteLength s == 0 then s
+  else
+    let c = stringSlice s 0 1 in
+    let b = toInt (stringByteAt s 0) in
+    (if b >= 65 and b <= 90 then stringSlice "abcdefghijklmnopqrstuvwxyz" (b - 65) (b - 64) else c) ++ stringSlice s 1 (stringByteLength s)
+
+fun upperFirst (s : String) : String =
+  if stringByteLength s == 0 then s
+  else
+    let b = toInt (stringByteAt s 0) in
+    (if b >= 97 and b <= 122 then stringSlice "ABCDEFGHIJKLMNOPQRSTUVWXYZ" (b - 97) (b - 96) else stringSlice s 0 1) ++ stringSlice s 1 (stringByteLength s)
+
+fun typed spec pub root =
+  "-- --- the typed AST ---------------------------------------------------------
+
+${S.join "\n" (V.map (\d -> if isEnum d then enumType spec pub d else nodeType spec pub d) spec.defs)}
+-- The typed root of a tree `parse${spec.name}` made.
+${pub}fun ast${spec.name} g : Maybe ${root} = as${root} (LinguaR.root g)
+"
+
+fun nodeType spec pub d =
+  let r = defName d in
+  let kt = kindType spec in
+  let fs = fieldsOfDef spec d in
+  "${pub}data ${r} = ${r} (Syntax ${kt})
+
+${pub}fun as${r} (s : Syntax ${kt}) : Maybe ${r} = if LinguaR.kindOf s == ${k spec r} then Just (${r}.${r} s) else None
+
+${pub}fun syntax${r} (x : ${r}) : Syntax ${kt} = match x with | ${r}.${r} s -> s
+${S.join "" (V.map (\i -> accessor spec pub r fs i) (V.range 0 (V.len fs)))}"
+
+-- The accessor for field `i` of rule `r`. Two single children of one rule are
+-- told apart by position: `lhs` is the first `Expr`, `rhs` the second.
+fun accessor spec pub r fs i =
+  let kt = kindType spec in
+  let name = "${lowerFirst r}${upperFirst (match V.get fs i with | Just f -> fieldName f | None -> "")}" in
+  let subject = "(syntax${r} x)" in
+  match V.get fs i with
+  | Just (NodeField _ n True) -> "\n${pub}fun ${name} (x : ${r}) : [${n}] = LinguaA.childrenOf as${n} ${subject}\n"
+  | Just (NodeField _ n False) ->
+      let before = V.len (V.filter (\f -> match f with | NodeField _ m False -> m == n | _ -> False) (V.take fs i)) in
+      "\n${pub}fun ${name} (x : ${r}) : Maybe ${n} = LinguaA.nthChild as${n} ${show before} ${subject}\n"
+  | Just (TokField _ ts True) -> "\n${pub}fun ${name} (x : ${r}) : [Syntax ${kt}] = LinguaA.tokensOf [${S.join ", " (V.map (\t -> k spec (tokKind spec t)) ts)}] ${subject}\n"
+  | Just (TokField _ ts False) -> "\n${pub}fun ${name} (x : ${r}) : Maybe (Syntax ${kt}) = LinguaA.tokenOf [${S.join ", " (V.map (\t -> k spec (tokKind spec t)) ts)}] ${subject}\n"
+  | None -> ""
+
+fun enumType spec pub d =
+  let e = defName d in
+  let kt = kindType spec in
+  let alts = alternatives d in
+  let cast =
+    V.foldr
+      (\a acc -> "(match as${a} s with | Just y -> Just (${e}.${a} y) | None -> ${acc})")
+      "None"
+      alts in
+    "${pub}data ${e} = ${S.join " | " (V.map (\a -> "${a} ${a}") alts)}
+
+${pub}fun as${e} (s : Syntax ${kt}) : Maybe ${e} = ${cast}
+
+${pub}fun syntax${e} (x : ${e}) : Syntax ${kt} =
+  match x with
+${S.join "\n" (V.map (\a -> "  | ${e}.${a} y -> syntax${a} y") alts)}
 "

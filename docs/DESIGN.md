@@ -180,28 +180,36 @@ kind, text, range, children, parent, ancestors, tokenAt, nodeAt
 ## 4. Typed AST, from the labels
 
 Each **node** rule becomes a type wrapping a red node, and each **enum** a sum
-of them, with a checked cast from `Syntax`:
+of its alternatives, with a checked cast from `Syntax` and the way back:
 
 ```meadow
-record LetStmt = { syntax : Syntax }
+data LetStmt = LetStmt (Syntax CalcKind)
+asLetStmt : Syntax CalcKind -> Maybe LetStmt
+syntaxLetStmt : LetStmt -> Syntax CalcKind
+
 data Expr = Literal Literal | NameRef NameRef | BinExpr BinExpr | …
+asExpr : Syntax CalcKind -> Maybe Expr
 ```
 
 Accessors come from the rule's elements, named by their labels — ungrammar's
-contract — or, unlabelled, by the child's name:
+contract — or, unlabelled, by what the child is: `name` for a `Name`, `names`
+for a `Name*`, `letToken` for a `'let'`. Meadow has no methods to hang them
+on, so each is prefixed with its rule:
 
-| element                    | accessor                             |
-| -------------------------- | ------------------------------------ |
-| `name:Name`                | `name : LetStmt -> Maybe Name`       |
-| `value:Expr`               | `value : LetStmt -> Maybe Expr`      |
-| `'let'`                    | `letToken : LetStmt -> Maybe Syntax` |
-| `args:(Expr (',' Expr)*)?` | `args : ArgList -> [Expr]`           |
-| `op:('+' \| …)`            | `op : BinExpr -> Maybe Syntax`       |
+| in `LetStmt`, `BinExpr`, `ArgList` | accessor                                           |
+| ---------------------------------- | -------------------------------------------------- |
+| `name:Name`                        | `letStmtName : LetStmt -> Maybe Name`              |
+| `value:Expr`                       | `letStmtValue : LetStmt -> Maybe Expr`             |
+| `'let'`                            | `letStmtLetToken : LetStmt -> Maybe Syntax`        |
+| `lhs:Expr` … `rhs:Expr`            | `binExprLhs`, `binExprRhs : BinExpr -> Maybe Expr` |
+| `op:('+' \| …)`                    | `binExprOp : BinExpr -> Maybe Syntax`              |
+| `args:(Expr (',' Expr)*)?`         | `argListArgs : ArgList -> [Expr]`                  |
 
 Every accessor is a `Maybe` or a list: the tree is lossless, so it holds
-whatever was written, including what is missing. Two children of one type in
-one node — `lhs` and `rhs` — are told apart by their labels; an unlabelled
-duplicate is an error in the grammar.
+whatever was written, including what is missing. Two single children of one
+type — `lhs` and `rhs` — are told apart by position, the first and the second;
+two that would get the same name are an error in the grammar, asking for
+labels. `astCalc` casts a parse's root.
 
 ## 5. `lang` and `pass`
 

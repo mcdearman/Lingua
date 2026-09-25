@@ -1,0 +1,41 @@
+-- What a typed AST accessor asks of the red view.
+--
+-- `syntax!` gives each rule of the grammar a type over `Syntax`, and each
+-- element of a rule an accessor named by its label. Every accessor answers a
+-- `Maybe` or a list -- the tree holds whatever was written, including what is
+-- missing -- and is one of these, given how to cast a child to the type it is
+-- after.
+
+use Std.Collections.Vector as V
+use Std.Maybe.Maybe.*
+use Lingua.Red (Syntax, nodes, tokens, kindOf)
+
+-- The `n`th child node, counting only those that cast.
+@pub fun nthChild (cast : Syntax k -> Maybe a) (n : Int) (s : Syntax k) : Maybe a = V.get (childrenOf cast s) n
+
+-- Every child node that casts, in order.
+@pub fun childrenOf (cast : Syntax k -> Maybe a) (s : Syntax k) : [a] =
+  V.concatMap (\c -> match cast c with | Just x -> [x] | None -> []) (nodes s)
+
+-- The first child token of one of the kinds `ks`.
+@pub fun tokenOf (ks : [k]) (s : Syntax k) : Maybe (Syntax k) = V.find (\t -> V.elem (kindOf t) ks) (tokens s)
+
+-- Every child token of one of the kinds `ks`.
+@pub fun tokensOf (ks : [k]) (s : Syntax k) : [Syntax k] = V.filter (\t -> V.elem (kindOf t) ks) (tokens s)
+
+-- --- tests -------------------------------------------------------------------
+
+use Std.Test (assertEq)
+use Lingua.Green (node, token)
+use Lingua.Red (root, text)
+use Std.Maybe as M
+
+def sample = root (node "Sum" [node "Num" [token "digit" "1"], token "+" "+", node "Num" [token "digit" "2"]])
+
+fun num s = if kindOf s == "Num" then Just (text s) else None
+
+@test fun theNthChildCountsOnlyWhatCasts () =
+  let a = assertEq (nthChild num 1 sample) (Just "2") "the second number" in
+  assertEq (childrenOf num sample) ["1", "2"] "both, in order"
+
+@test fun aTokenIsFoundByKind () = assertEq (M.map text (tokenOf ["+", "-"] sample)) (Just "+") "the operator"

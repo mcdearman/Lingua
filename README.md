@@ -47,6 +47,10 @@ syntax! {
   events, in the style of matklad's
   [resilient LL parsing](https://matklad.github.io/2023/05/21/resilient-ll-parsing-tutorial.html).
   A mistake in the grammar is reported at the byte of the string it is at.
+- **A typed AST** from the grammar's labels: a type per rule, a cast from
+  the tree, and an accessor per element — `letStmtName`, `binExprLhs`,
+  `argListArgs` — each a `Maybe` or a list, since the tree holds whatever was
+  written. `parseMini` is pure, and `astMini` casts its root.
 - **`Lingua.Green`**, the lossless tree: kinds, widths and text, no positions.
 - **`Lingua.Red`**, a view with offsets and parents: `range`, `children`,
   `parent`, `ancestors`, `tokenAt`, `nodeAt`.
@@ -58,5 +62,4 @@ recovery, and a test that every input comes back byte for byte.
 
 ## Next
 
-Typed AST accessors from the grammar's labels, then `lang` and `pass`, then
-queries — see the milestones in the design.
+`lang` and `pass`, then queries — see the milestones in the design.

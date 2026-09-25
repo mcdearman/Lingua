@@ -9,6 +9,7 @@
 @pub mod Parser
 @pub mod Build
 @pub mod Ungrammar
+@pub mod Ast
 @pub mod Gen
 
 @pub use Lingua.Gen (syntax)

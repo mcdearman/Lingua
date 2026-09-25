@@ -59,7 +59,7 @@ syntax! {
 }
 
 -- The tree of `input`, drawn.
-@pub fun drawn (input : String) : String ! { Mut | e } =
+@pub fun drawn (input : String) : String =
   match parseCalc input with
   | (g, errs) -> dump display g
 
@@ -116,3 +116,60 @@ fun lines (s : String) : [String] = S.split "\n" s
   | (g, errs) ->
       let a = assertEq (V.len errs) 1 "one error" in
       assertEq (V.any (\l -> l == "  ExprStmt") (lines (dump display g))) True "the `1;` after it"
+
+-- --- the typed AST -----------------------------------------------------------
+
+use Lingua.Red as R
+
+-- What a program's statements leave bound, reading only the typed AST.
+fun run (input : String) : [(String, Int)] =
+  match parseCalc input with
+  | (g, _) ->
+      match astCalc g with
+      | Just file -> V.foldl step [] (fileStmts file)
+      | None -> []
+
+fun step env s =
+  match s with
+  | Stmt.LetStmt l ->
+      (match (letStmtName l, letStmtValue l) with
+       | (Just n, Just v) -> V.pushBack env (R.text (syntaxName n), value env v)
+       | _ -> env)
+  | Stmt.ExprStmt _ -> env
+
+fun value env (e : Expr) : Int =
+  match e with
+  | Expr.Literal l -> (match literalNumberToken l with | Just t -> (match S.toInt (R.text t) with | Just n -> n | None -> 0) | None -> 0)
+  | Expr.NameRef n -> (match nameRefIdentToken n with | Just t -> lookup env (R.text t) | None -> 0)
+  | Expr.ParenExpr p -> (match parenExprExpr p with | Just x -> value env x | None -> 0)
+  | Expr.BinExpr b ->
+      (match (binExprLhs b, binExprOp b, binExprRhs b) with
+       | (Just l, Just op, Just r) -> apply (R.text op) (value env l) (value env r)
+       | _ -> 0)
+  | Expr.CallExpr c -> 0
+
+fun lookup env name = match V.find (\p -> fst p == name) env with | Just p -> snd p | None -> 0
+
+fun apply op a b = if op == "+" then a + b else if op == "-" then a - b else if op == "*" then a * b else a / b
+
+@test fun theTypedTreeIsReadByLabel () =
+  assertEq
+    (run "let x = 2 * (3 + 4); // fourteen\nlet y = x - 10 - 1;\n")
+    [("x", 14), ("y", 3)]
+    "`lhs`, `op` and `rhs`, and names by their labels"
+
+@test fun anArgumentListIsEveryArgument () =
+  match parseCalc "f(1, 2, 3);" with
+  | (g, _) ->
+      match astCalc g with
+      | Just file ->
+          (match V.get (fileStmts file) 0 with
+           | Just (Stmt.ExprStmt s) ->
+               (match exprStmtExpr s with
+                | Just (Expr.CallExpr c) ->
+                    (match callExprArgList c with
+                     | Just args -> assertEq (V.len (argListArgs args)) 3 "three"
+                     | None -> assertEq 0 1 "an argument list")
+                | _ -> assertEq 0 1 "a call")
+           | _ -> assertEq 0 1 "a statement")
+      | None -> assertEq 0 1 "a file"

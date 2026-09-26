@@ -51,12 +51,14 @@ mod Eval
 mod Compiler
 mod Editor
 mod Units
+mod Bench
 
 use Lingua (cli!)
 use Lingua.Diagnostic (renderToOutput)
 use MiniML.Compiler
 use MiniML.Editor
 use MiniML.Units
+use MiniML.Bench (benchmark)
 use Std.Collections.Vector as V
 use Std.Maybe as M
 use Std.Fs (Fs, readToString)
@@ -73,6 +75,7 @@ cli! {
     | demo "Type and run a few programs" {}
     | build "Build a unit and every unit it depends on" { root : Maybe String "the unit's directory; this one if none is given" }
     | lsp "Be a language server, on standard input and output" {}
+    | bench "Time each phase of the compiler on a generated program" { lines : Maybe String "how many lets; 2000 if none is given" }
 }
 
 def main =
@@ -83,6 +86,7 @@ def main =
   | Cli.Demo -> demo ()
   | Cli.Build r -> finish (buildBuild (M.unwrapOr "." r.root))
   | Cli.Lsp -> serveServer ()
+  | Cli.Bench r -> benchmark (M.unwrapOr 2000 (M.andThen S.toInt r.lines))
 
 -- End with status 1 when something went wrong.
 fun finish (ok : Bool) = if ok then () else exit 1
@@ -174,6 +178,7 @@ fun asked args =
   | Ok Cli.Demo -> "demo"
   | Ok (Cli.Build r) -> "build ${M.unwrapOr "." r.root}"
   | Ok Cli.Lsp -> "lsp"
+  | Ok (Cli.Bench _) -> "bench"
   | Err (Help h) -> V.getOr "" (S.split "\n" h) 0
   | Err (Complete c) -> "completions"
   | Err (Wrong d line) -> message d
@@ -215,5 +220,5 @@ fun asked args =
 @test fun aCompletionScriptNamesTheCommands () =
   match askCli ["completions", "bash"] with
   | Err (Complete script) ->
-      assertEq (S.contains "compgen -W \"check run repl demo build lsp help completions\"" script) True script
+      assertEq (S.contains "compgen -W \"check run repl demo build lsp bench help completions\"" script) True script
   | _ -> assertEq True False "a script"

@@ -10,9 +10,13 @@
 -- wrap a node already closed in a new one: how `a + b` takes the `a` it has
 -- already read as its left side.
 --
--- `nth` burns fuel and `advance` refills it: a loop that stops moving is
+-- `nth` burns fuel and progress refills it: a loop that stops moving is
 -- stopped, reported as an error in the tree, and ends at the end of the input
--- rather than never.
+-- rather than never. Progress is taking a token, or closing a node out to a
+-- depth not reached since the last one was taken -- so that unwinding a
+-- thousand nested rules at the end of the input, each looking once more at
+-- what comes next, is not taken for a loop, and opening and closing nodes on
+-- the spot still is.
 --
 -- Its state lives in `Std.St` cells, so a parse is run under `runSt` and is,
 -- from outside, a pure function of the tokens: what a cached query needs.
@@ -29,20 +33,21 @@ use Parser.*
   | Error String
 
 -- The kinds of the tokens to read, where it is, its fuel, what it has said,
--- the kinds that stand for the end of the input and for a node of errors, and
--- how a kind is named in a message.
-@pub data Parser s k = Parser #[k] (StRef s Int) (StRef s Int) (StRef s [Event k]) k k (k -> String)
+-- the kinds that stand for the end of the input and for a node of errors, how
+-- a kind is named in a message, and how many nodes are open with the fewest
+-- there have been since the last token was taken.
+@pub data Parser s k = Parser #[k] (StRef s Int) (StRef s Int) (StRef s [Event k]) k k (k -> String) (StRef s (Int, Int))
 
 def fuelMax : Int = 256
 
 -- A parser over tokens of these kinds.
 @pub fun parser (kinds : #[k]) (eof : k) (errorKind : k) (name : k -> String) : Parser s k ! { St s | e } =
-  Parser kinds (stNewRef 0) (stNewRef fuelMax) (stNewRef []) eof errorKind name
+  Parser kinds (stNewRef 0) (stNewRef fuelMax) (stNewRef []) eof errorKind name (stNewRef (0, 0))
 
 -- The kind `n` tokens ahead; past the end, the end-of-input kind.
 @pub fun nth (p : Parser s k) (n : Int) : k ! { St s | e } =
   match p with
-  | Parser ks pos fuel evs eofK _ _ ->
+  | Parser ks pos fuel evs eofK _ _ _ ->
       let f = stGetRef fuel in
       if f <= 0 then
         -- Stuck: said once, and from then on the input has ended, so every
@@ -61,39 +66,43 @@ def fuelMax : Int = 256
 -- Whether every token has been read.
 @pub fun atEnd (p : Parser s k) : Bool ! { St s | e } =
   match p with
-  | Parser ks pos _ _ _ _ _ -> stGetRef pos >= arrayLen ks
+  | Parser ks pos _ _ _ _ _ _ -> stGetRef pos >= arrayLen ks
 
 -- Open a node whose kind is not known yet; its mark.
 @pub fun open (p : Parser s k) : Int ! { St s | e } =
   match p with
-  | Parser _ _ _ evs _ errK _ ->
+  | Parser _ _ _ evs _ errK _ _ ->
       let at = V.len (stGetRef evs) in
       let u = push p (Open errK) in
+      let v = deeper p 1 in
       at
 
 -- Close the node opened at `m`, as a `k`; its mark, for `openBefore`.
 @pub fun close (p : Parser s k) (m : Int) (k : k) : Int ! { St s | e } =
   match p with
-  | Parser _ _ _ evs _ _ _ ->
+  | Parser _ _ _ evs _ _ _ _ ->
       let u = stSetRef evs (V.set (stGetRef evs) m (Open k)) in
       let v = push p Close in
+      let w = deeper p (0 - 1) in
       m
 
 -- Open a node before the one closed at `m`, so that it holds it.
 @pub fun openBefore (p : Parser s k) (m : Int) : Int ! { St s | e } =
   match p with
-  | Parser _ _ _ evs _ errK _ ->
+  | Parser _ _ _ evs _ errK _ _ ->
       let halves = V.splitAt (stGetRef evs) m in
       let u = stSetRef evs (V.append (V.pushBack (fst halves) (Open errK)) (snd halves)) in
+      let v = deeper p 1 in
       m
 
 -- Take the next token.
 @pub fun advance (p : Parser s k) : () ! { St s | e } =
   match p with
-  | Parser _ pos fuel _ _ _ _ ->
+  | Parser _ pos _ _ _ _ _ nesting ->
       let u = push p Advance in
       let v = stSetRef pos (stGetRef pos + 1) in
-      if stGetRef fuel >= 0 then stSetRef fuel fuelMax else ()
+      let w = stSetRef nesting (fst (stGetRef nesting), fst (stGetRef nesting)) in
+      refill p
 
 -- Take the next token if it is a `k`.
 @pub fun eat (p : Parser s k) (k : k) : Bool ! { St s | e } =
@@ -102,7 +111,7 @@ def fuelMax : Int = 256
 -- Take a `k`, or say one was expected and take nothing.
 @pub fun expect (p : Parser s k) (k : k) : () ! { St s | e } =
   if eat p k then ()
-  else match p with | Parser _ _ _ _ _ _ name -> error p "expected ${name k}"
+  else match p with | Parser _ _ _ _ _ _ name _ -> error p "expected ${name k}"
 
 -- Say what is wrong here, taking nothing.
 @pub fun error (p : Parser s k) (msg : String) : () ! { St s | e } = push p (Error msg)
@@ -110,7 +119,7 @@ def fuelMax : Int = 256
 -- Take the next token into a node of errors, saying what is wrong with it.
 @pub fun advanceWithError (p : Parser s k) (msg : String) : () ! { St s | e } =
   match p with
-  | Parser _ _ _ _ _ errK _ ->
+  | Parser _ _ _ _ _ errK _ _ ->
       let m = open p in
       let u = error p msg in
       let v = advance p in
@@ -120,11 +129,27 @@ def fuelMax : Int = 256
 -- Everything it said.
 @pub fun events (p : Parser s k) : [Event k] ! { St s | e } =
   match p with
-  | Parser _ _ _ evs _ _ _ -> stGetRef evs
+  | Parser _ _ _ evs _ _ _ _ -> stGetRef evs
+
+-- `by` more nodes open, or fewer; closing out past the fewest there have been
+-- since the last token is progress.
+fun deeper p (by : Int) =
+  match p with
+  | Parser _ _ _ _ _ _ _ nesting ->
+      match stGetRef nesting with
+      | (depth, fewest) ->
+          let now = depth + by in
+          if now < fewest then (let u = stSetRef nesting (now, now) in refill p)
+          else stSetRef nesting (now, fewest)
+
+-- Full fuel again -- unless the parser was already stopped.
+fun refill p =
+  match p with
+  | Parser _ _ fuel _ _ _ _ _ -> if stGetRef fuel >= 0 then stSetRef fuel fuelMax else ()
 
 fun push p e =
   match p with
-  | Parser _ _ _ evs _ _ _ -> stSetRef evs (V.pushBack (stGetRef evs) e)
+  | Parser _ _ _ evs _ _ _ _ -> stSetRef evs (V.pushBack (stGetRef evs) e)
 
 -- --- tests -------------------------------------------------------------------
 
@@ -166,3 +191,21 @@ use Std.Test (assertEq)
       let n = spin 0 in
       events p) in
     assertEq (V.last said) (Just (Error "the parser is stuck here")) "stuck, said, and over"
+
+@test fun openingAndClosingOnTheSpotIsStuckToo () =
+  let said =
+    runSt (\() ->
+      let p = parser #["x"] "eof" "error" (\k -> k) in
+      let rec spin n = if at p "eof" then n else (let m = open p in let c = close p m "node" in spin (n + 1)) in
+      let n = spin 0 in
+      events p) in
+    assertEq (V.last said) (Just (Error "the parser is stuck here")) "no deeper, and no further"
+
+@test fun unwindingDeepNestingAtTheEndIsNotStuck () =
+  let said =
+    runSt (\() ->
+      let p = parser #["x"] "eof" "error" (\k -> k) in
+      let rec down n = if n == 0 then (let a = advance p in ()) else (let m = open p in let u = down (n - 1) in let peek = V.map (\i -> nth p 0) (V.range 0 10) in let c = close p m "node" in ()) in
+      let u = down 1000 in
+      events p) in
+    assertEq (V.any (\e -> match e with | Error m -> m == "the parser is stuck here" | _ -> False) said) False "a thousand levels, each looking ten times"

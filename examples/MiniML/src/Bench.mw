@@ -1,0 +1,73 @@
+-- How fast the compiler is: each of its phases, timed on a generated
+-- program of a few thousand lines -- a front end's work at the size a real
+-- one does it, to see where the time goes before anything is made faster.
+--
+--   meadow run examples/MiniML --release -- bench          -- 2000 `let`s
+--   meadow run examples/MiniML --release -- bench 8000
+--
+-- The phases, each on what the one before made, in bytes of source a second:
+-- lexing and parsing into the lossless tree, the typed AST read into
+-- `Surface`, resolution and desugaring into `Core`, inference, and running it.
+
+use Lingua.Diagnostic (collect)
+use Lingua.Table (tabled)
+use MiniML.Syntax
+use MiniML.Names
+use MiniML.Desugar
+use MiniML.Infer
+use MiniML.Eval
+use Std.Bench (BenchConfig, Report, benchUnitsWith, report)
+use Std.Collections.Vector as V
+use Std.String as S
+use Std.Result.Result.*
+
+-- A program of `n` `let`s, each defining a function from the one before it:
+-- arithmetic, a conditional, a closure used at two types -- which inference
+-- generalizes -- and a recursive function, in turn. Each is used, so running
+-- it goes through all of them.
+@pub fun program (n : Int) : String =
+  S.join "" (V.pushBack (V.map line (V.range 0 n)) "f${show (n - 1)} 10\n")
+
+fun line (i : Int) : String =
+  let k = show i in
+  let prev = if i == 0 then "(fun x -> x)" else "f${show (i - 1)}" in
+  let kind = i - (i / 4) * 4 in
+  if kind == 0 then "let f${k} = fun x -> ${prev} (x + ${k}) - ${k} in\n"
+  else if kind == 1 then "let f${k} = fun x -> if x < ${k} then ${prev} x else ${prev} (x - 1) in\n"
+  else if kind == 2 then "let f${k} = let id = fun y -> y in fun x -> if id true then ${prev} (id x) else 0 in\n"
+  else "let rec f${k} n = if n < 2 then ${prev} n else f${k} (n - 1) in\n"
+
+-- Each phase once per sample, three samples: a phase on a big program takes
+-- long enough that calibrating further only adds to the wait.
+def config : BenchConfig = BenchConfig { warmupNanos = 0, sampleNanos = 1, samples = 3 }
+
+-- Time every phase on a program of `n` `let`s, and say how it went.
+@pub fun benchmark (n : Int) =
+  let src = program n in
+  let bytes = stringByteLength src in
+  let u = println "a program of ${show n} lets, ${show bytes} bytes\n" in
+  let parsed = parseMini src in
+  match (parsed, surfaceFromMini (fst parsed)) with
+  | ((_, errs), _) if not (V.isEmpty errs) -> println "the generated program does not parse: ${show errs}"
+  | (_, None) -> println "the generated program has no surface"
+  | (_, Just surface) ->
+      let core = fst (fst (collect (\() -> tabled (\() -> desugar (resolved [] surface))))) in
+      let e = programExpr core in
+      let a = println "it is ${show (typeOf e)}, and runs to ${show (run e)}\n" in
+      report
+        [ benchUnitsWith config "parse" bytes (\() -> parseMini src),
+          benchUnitsWith config "surface" bytes (\() -> surfaceFromMini (fst parsed)),
+          benchUnitsWith config "resolve + desugar" bytes (\() -> collect (\() -> tabled (\() -> desugar (resolved [] surface)))),
+          benchUnitsWith config "infer" bytes (\() -> typed e),
+          benchUnitsWith config "run" bytes (\() -> run e) ]
+
+-- --- tests ---------------------------------------------------------------------------------
+
+use Std.Test (assertEq)
+use MiniML.Compiler (runSource, typeOfSource)
+use Std.Result (isOk)
+
+@test fun theGeneratedProgramTypesAndRuns () =
+  let src = program 40 in
+  let a = assertEq (typeOfSource src) (Ok "Int") "an `Int`" in
+  assertEq (isOk (runSource src)) True "and runs"

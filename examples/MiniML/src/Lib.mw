@@ -60,7 +60,7 @@ use MiniML.Units
 use Std.Collections.Vector as V
 use Std.Maybe as M
 use Std.Fs (Fs, readToString)
-use Std.Process (Process, exit)
+use Std.Process (Process, exit, isTerminal)
 use Std.Console (Console, readLine, writeOutput)
 use Std.Result.Result.*
 use Std.Exn (toResult)
@@ -128,10 +128,13 @@ fun runFile (path : String) =
       | Ok out -> (let u = println out in True)
       | Err ds -> (let u = writeOutput (renderToOutput path (sessionSource db 1) ds) in False)
 
+-- A prompt before each line when someone is typing them, and none when
+-- they come from a file or a pipe.
 fun repl () =
+  let u = if isTerminal 0 then writeOutput "> " else () in
   match readLine () with
   | None -> ()
-  | Just line -> (let u = println (shown line) in repl ())
+  | Just line -> (let w = println (shown line) in repl ())
 
 -- What the REPL prints for a line: `replLine`, its diagnostics in colour
 -- where `renderToOutput` says so.

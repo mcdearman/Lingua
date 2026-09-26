@@ -1,0 +1,53 @@
+-- Lingua.Table: a side table a pass fills as it goes -- what is known about
+-- each id it hands out, kept beside the tree rather than in it.
+--
+-- A pass that resolves names gives each binder an id and says what it knows
+-- about it -- its name, where it is -- here:
+--
+--   | Lam { param, later body } ->
+--       (let id = enter (Binder param here) in
+--         Lam { param = id, body = body ((param, id) :: env) })
+--
+-- A tree then holds only ids, and every pass after it keys what it keeps by
+-- them. Nothing carries the table from case to case: `enter` is an effect,
+-- like `Lingua.Diagnostic`'s `report`, and whoever runs the pass gathers the
+-- table once, with `tabled`. What flows *down* the tree -- which names are in
+-- scope -- is the pass's context; what builds up *across* it is a table.
+--
+-- An id is the entry's place in the table, from 0, in the order the pass
+-- entered them.
+
+use Std.Collections.Vector as V
+use Std.Maybe.Maybe.*
+
+@pub effect Table v {
+  enter : v -> Int,
+  entry : Int -> Maybe v,
+  revise : (Int, v) -> (),
+}
+
+-- What entry `id` holds, rewritten by `f` -- as more is learned about it.
+-- Nothing, for an id the table has no entry for.
+@pub fun amend (id : Int) (f : v -> v) : () ! { Table v | e } =
+  match entry id with
+  | Just x -> revise (id, f x)
+  | None -> ()
+
+-- Run `act`, keeping the table it fills.
+@pub fun tabled (act : () -> a ! { Table v | e }) : (a, [v]) ! e =
+  handle act () with {
+    enter x k -> \t -> (k (V.len t)) (V.pushBack t x),
+    entry i k -> \t -> (k (V.get t i)) t,
+    revise p k -> \t -> (k ()) (match p with | (i, x) -> if i >= 0 and i < V.len t then V.set t i x else t),
+    return x -> \t -> (x, t)
+  } []
+
+-- --- tests -------------------------------------------------------------------
+
+use Std.Test (assertEq)
+
+@test fun anIdIsItsPlaceInTheTable () =
+  assertEq
+    (tabled (\() -> (let a = enter "a" in let b = enter "b" in let u = amend a (\s -> s ++ "!") in (a, b, entry b, entry 7))))
+    ((0, 1, Just "b", None), ["a!", "b"])
+    "entered in order, and one of them amended"

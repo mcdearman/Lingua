@@ -11,10 +11,14 @@
 -- module each:
 --
 --   Syntax     an ungrammar; the parser, a lossless tree and a typed AST are
---              generated (`syntax!`)
---   Desugar    two languages, `Surface` read off the grammar and `Core`
---              declared as what changes (`lang!`), and the pass between them,
---              only its cases (`pass!`)
+--              generated (`syntax!`), and `Surface`, the language the
+--              grammar implies (`lang!`)
+--   Names      resolution, the first pass: every name becomes the id of its
+--              binder -- the scope carried down as the pass's context, and
+--              what is known about each binder written to a side table as it
+--              goes (`Lingua.Table`) -- so that nothing after it holds a name
+--   Desugar    `Core`, declared as what changes (`lang!`), and the pass to
+--              it, only its cases (`pass!`)
 --   Types      the type an expression ends up with, and how it is written
 --   Infer      Algorithm J as an elaboration: a pass from `Core` to `Typed`,
 --              the same program with the type of every expression written on
@@ -25,12 +29,10 @@
 --              out, each step remembered (`database!`). Every error, from the
 --              parser, the pass, the checker or the run, is at the bytes it is
 --              about, drawn by Nettle (`Lingua.Diagnostic`)
---   Names      resolution, as another pass with a context: each use of a name
---              to where it was bound, for the editor to go to
 --   Editor     a language server over the same queries: diagnostics, types on
---              hover, going to a definition, references, renaming,
---              completion, symbols, and colours, folds and selections read off
---              the tree (`lsp!`)
+--              hover, and going to a definition, references, renaming,
+--              completion and symbols read off the binders' table; colours,
+--              folds and selections read off the tree (`lsp!`)
 --   Units      the build: units -- directories of files, each depending on
 --              others -- compiled in order, those that can be at once, and
 --              each again only when its files or an interface it read changed
@@ -41,12 +43,12 @@
 -- (`cli!`).
 
 mod Syntax
+mod Names
 mod Desugar
 mod Types
 mod Infer
 mod Eval
 mod Compiler
-mod Names
 mod Editor
 mod Units
 

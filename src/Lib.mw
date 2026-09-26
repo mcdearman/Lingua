@@ -16,6 +16,7 @@
 @pub mod Query
 @pub mod Database
 @pub mod Diagnostic
+@pub mod Table
 @pub mod Cli
 @pub mod Lsp
 @pub mod Make

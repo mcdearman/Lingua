@@ -332,6 +332,33 @@ binder in it; a `let`'s value, one level deeper. This is what makes type
 inference a pass rather than a function beside one. Without a context, a
 `later` field is a function of `()`.
 
+A context flows _down_ the tree; what a pass learns _across_ it -- every
+binder it met, what each is called and where, every use of each -- is a
+**side table** (`Lingua.Table`), and that is an effect rather than a
+parameter, so no case passes it on:
+
+```meadow
+pass! {
+  resolve : Surface -> Resolved with env
+  | NameRef { ident } ->
+      (match L.lookupAssoc ident env with
+       | Just id -> (let u = amend id (\(b : Binder) -> { b | uses = V.pushBack b.uses here }) in NameRef { id = id })
+       | None -> …)
+  | Lam { params, later body } ->
+      (let ids = V.map (\p -> enter (binderOf p)) params in
+        Lam { params = ids, body = body (bindAll params ids env) })
+  …
+}
+```
+
+`enter` records what is known about something and answers its id -- its
+place in the table, from 0 -- `entry` reads one back, and `amend` rewrites it
+as more is learned. Whoever runs the pass installs the one handler,
+`tabled`, and gets the table beside the tree. From then on the tree holds
+only ids, and every later pass keys what it keeps by them: MiniML's
+inference context and evaluation environment are by id, and its editor's
+features are lookups in the table.
+
 MiniML's inference is **Algorithm J** as nine cases, and shows what a case
 body being ordinary Meadow buys. Its type variables are mutable cells --
 `Std.St`'s -- so its cases perform `St s`, and fail with `Std.Exn`; `infer`
@@ -471,12 +498,14 @@ was only redone for the file that changed. The protocol is Lingua's -- its
 framing, which needs Meadow's `Console.readExact`, its UTF-16 positions, the
 documents open -- and the server says it can do exactly what it was given.
 
-**Names** are resolved as a pass, for the same reason inference is: which `x`
-a use means depends on what is around it. A pass may carry a **context**
-(§5) -- an environment -- and `Resolved extends Surface` gives each name that
-is used the place its binder was written. What a file binds, where each can
-be seen, and every use are a query of their own, which going to a
-definition, finding references, renaming and completion all read.
+**Names** are resolved as a pass, the first after the grammar's: which `x` a
+use means depends on what is around it, which the pass's **context** (§5)
+carries down. `Resolved extends Surface` has an id wherever a name was -- a
+binder's own, and a use its binder's -- and what the pass learned about
+each binder is its side table (§5): what it is called, where, what it binds,
+where it can be seen, and every use. That table is a query of its own, which
+going to a definition, finding references, renaming, completion and symbols
+all read.
 
 **`make!`** declares a build over **compilation units**: directories with a
 manifest naming the units they depend on. Two kinds of incrementality meet

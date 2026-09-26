@@ -1,72 +1,110 @@
--- Names. Resolution is a pass as inference is, and for the same reason:
--- which `x` a use means depends on what is around it, which a context carries
--- down. `Resolved` is `Surface` with each name that is used holding where the
--- binder it means was written -- or nothing, for one bound nowhere.
+-- Names. Resolution is the first pass: every binder gets an id, every use of
+-- a name becomes the id of the binder it means, and from here on the program
+-- holds no names at all -- `Desugar`, `Infer` and `Eval` key what they keep
+-- by id, and shadowing was settled once, here.
+--
+-- Which binder a name means depends on what is around it, and that is the
+-- pass's context, `env`, carried down the tree. What is known about each
+-- binder -- what it is called, where, what it binds, where it can be seen
+-- and where it is used -- builds up across the whole pass, and that is a
+-- side table (`Lingua.Table`): a case `enter`s a binder and gets its id back,
+-- and `amend`s it as it learns more. The table is the editor's: going to a
+-- definition, references, completion and symbols all read it.
 
 use Lingua (lang!, pass!)
-use Lingua.Green (Green)
-use Lingua.Lang (Meta)
+use Lingua.Lang (Meta, noMeta)
+use Lingua.Diagnostic (Report, errorAt, say)
+use Lingua.Table (Table, enter, amend)
 use MiniML.Syntax
-use MiniML.Desugar
 use Std.Collections.Vector as V
 use Std.Collections.List as L
 use Std.Maybe as M
 
-lang! {
+-- `Surface`, with ids where names were: a use is the id of its binder, and a
+-- binder -- a `let`'s name, a parameter -- is its own.
+@pub(pkg) lang! {
   pub Resolved extends Surface
   Atom - NameRef
-  Atom + NameRef { ident : String, binder : Maybe Meta }
+  Atom + NameRef { id : Int }
+  Expr - Lam
+  Expr + Lam { params : [Int], body : Expr }
+  Expr - Let
+  Expr + Let { recursive : Bool, id : Int, params : [Int], value : Expr, body : Expr }
 }
 
+-- A binder: what it is called, where, whether it is a function, a variable,
+-- a parameter or an import, the stretches of the file it can be seen in, and
+-- each use of it.
+@derive(Debug, PartialEq)
+@pub record Binder = { name : String, at : Meta, kind : String, scopes : [Meta], uses : [Meta] }
+
+-- The id of a name bound nowhere. It has no entry: it was reported.
+@pub def unbound : Int = 0 - 1
+
 pass! {
-  pub resolve : Surface -> Resolved with env
-    | NameRef { ident } -> NameRef { ident = ident, binder = L.lookupAssoc ident env }
-    | Lam { params, later body } -> Lam { params = params, body = body (bindParams params env) }
+  resolve : Surface -> Resolved with env
+    | NameRef { ident } ->
+        (match L.lookupAssoc ident env with
+         | Just id -> (let u = amend id (\(b : Binder) -> { b | uses = V.pushBack b.uses here }) in NameRef { id = id })
+         | None -> (let u = say (errorAt here "unbound variable: ${ident}") in NameRef { id = unbound }))
+    | Lam { params, later body } ->
+        (let ids = V.map (\p -> declare (paramIdent p) (metaResolvedParam p) "parameter") params in
+          let b = body (bindAll params ids env) in
+          let u = seenIn ids [metaResolvedExpr b] in
+          Lam { params = ids, body = b })
     | Let { recursive, name, params, later value, later body } ->
-        (let self = (nameIdent name, metaResolvedName name) :: env in
-          let inner = bindParams params (if M.isSome recursive then self else env) in
-          Let { recursive = recursive, name = name, params = params, value = value inner, body = body self })
+        (let rec = M.isSome recursive in
+          let self = declare (nameIdent name) (metaResolvedName name) "variable" in
+          let outer = (nameIdent name, self) :: env in
+          let ids = V.map (\p -> declare (paramIdent p) (metaResolvedParam p) "parameter") params in
+          let v = value (bindAll params ids (if rec then outer else env)) in
+          let b = body outer in
+          let kind = if not (V.isEmpty ids) or isLam v then "function" else "variable" in
+          let scopes = if rec then [metaResolvedExpr v, metaResolvedExpr b] else [metaResolvedExpr b] in
+          let u = amend self (\(x : Binder) -> { x | kind = kind, scopes = scopes }) in
+          let w = seenIn ids [metaResolvedExpr v] in
+          Let { recursive = rec, id = self, params = ids, value = v, body = b })
 }
+
+-- A new binder, seen nowhere and used nowhere yet.
+fun declare (name : String) (at : Meta) (kind : String) : Int ! { Table Binder | e } =
+  enter (Binder { name = name, at = at, kind = kind, scopes = [], uses = [] })
+
+fun seenIn (ids : [Int]) (scopes : [Meta]) = V.foldl (\u id -> amend id (\(b : Binder) -> { b | scopes = scopes })) () ids
+
+fun bindAll (ps : [ResolvedParam]) (ids : [Int]) env = V.foldl (\acc p -> (paramIdent (fst p), snd p) :: acc) env (V.zip ps ids)
 
 fun nameIdent (n : ResolvedName) : String = match n with | ResolvedName.Name r -> r.ident
 
 fun paramIdent (p : ResolvedParam) : String = match p with | ResolvedParam.Param r -> r.ident
 
-fun bindParams (ps : [ResolvedParam]) env = V.foldl (\acc p -> (paramIdent p, metaResolvedParam p) :: acc) env ps
-
--- A file's names: each binder -- what it is called, where, what it binds,
--- and the stretches of the file it can be seen in -- and each use, with
--- where its binder is.
-@derive(Debug, PartialEq)
-@pub data Names = Names [(String, Meta, String, [Meta])] [(Meta, Meta)]
-
-@pub(pkg) fun namesOf (parsed : (Green Mini, [(Int, String)])) : Names =
-  match M.map (resolve [;]) (surfaceFromMini (fst parsed)) with
-  | Just (ResolvedFile.File r) -> (match namesIn r.expr with | (bs, us) -> Names.Names bs us)
-  | None -> Names.Names [] []
-
-fun both a b = (V.append (fst a) (fst b), V.append (snd a) (snd b))
-
-fun namesIn (e : ResolvedExpr) =
-  match e with
-  | ResolvedExpr.Atom r -> namesInAtom r.atom
-  | ResolvedExpr.App r -> both (namesIn r.func) (namesInAtom r.arg)
-  | ResolvedExpr.Bin r -> both (namesIn r.lhs) (namesIn r.rhs)
-  | ResolvedExpr.If r -> both (namesIn r.cond) (both (namesIn r.yes) (namesIn r.no))
-  | ResolvedExpr.Lam r -> both (paramsSeenIn r.params [metaResolvedExpr r.body], []) (namesIn r.body)
-  | ResolvedExpr.Let r ->
-      let value = metaResolvedExpr r.value in
-      let body = metaResolvedExpr r.body in
-      let kind = if not (V.isEmpty r.params) or isLam r.value then "function" else "variable" in
-      let self = (nameIdent r.name, metaResolvedName r.name, kind, if M.isSome r.recursive then [value, body] else [body]) in
-      both ([self], []) (both (paramsSeenIn r.params [value], []) (both (namesIn r.value) (namesIn r.body)))
-
-fun paramsSeenIn ps scope = V.map (\p -> (paramIdent p, metaResolvedParam p, "parameter", scope)) ps
-
 fun isLam (e : ResolvedExpr) = match e with | ResolvedExpr.Lam _ -> True | _ -> False
 
-fun namesInAtom (a : ResolvedAtom) =
-  match a with
-  | ResolvedAtom.NameRef r -> ([], match r.binder with | Just b -> [(r.meta, b)] | None -> [])
-  | ResolvedAtom.Paren r -> namesIn r.expr
-  | _ -> ([], [])
+-- A program resolved, with `imports` -- names another unit exports -- in
+-- scope. Each import is a binder too, entered first: the `i`th is id `i`.
+@pub(pkg) fun resolved (imports : [String]) (s : SurfaceFile) : ResolvedFile ! { Table Binder, Report | e } =
+  let env = V.foldl (\acc n -> (n, declare n noMeta "import") :: acc) [;] imports in
+  resolve env s
+
+-- --- tests ---------------------------------------------------------------------------------
+
+use Std.Test (assertEq)
+use Lingua.Table (tabled)
+use Lingua.Diagnostic (collect)
+
+fun binders src =
+  match surfaceFromMini (fst (parseMini src)) with
+  | Just s -> snd (fst (collect (\() -> tabled (\() -> resolved [] s))))
+  | None -> []
+
+@test fun eachBinderIsEnteredInTheOrderItIsWritten () =
+  assertEq
+    (V.map (\(b : Binder) -> (b.name, b.kind, V.len b.uses)) (binders "let rec f n = if n < 2 then 1 else f (n - 1) in let x = f 3 in x"))
+    [("f", "function", 2), ("n", "parameter", 2), ("x", "variable", 1)]
+    "a binder each, with what it is and how often it is used"
+
+@test fun aShadowingBinderIsAnotherOne () =
+  assertEq
+    (V.map (\(b : Binder) -> V.len b.uses) (binders "let x = 1 in let x = x + 1 in x"))
+    [1, 1]
+    "the inner `x` uses the outer, and the body the inner"

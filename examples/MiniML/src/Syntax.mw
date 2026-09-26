@@ -1,8 +1,9 @@
--- MiniML's syntax: its tokens, and the grammar Lingua makes a parser, a
--- lossless tree and a typed AST of (`syntax!`).
+-- MiniML's syntax: its tokens, the grammar Lingua makes a parser, a lossless
+-- tree and a typed AST of (`syntax!`), and the language the grammar implies
+-- (`lang!`).
 
 use Scythe (lexer!)
-use Lingua (syntax!)
+use Lingua (syntax!, lang!)
 use Lingua.Green (dump)
 
 -- Whitespace and `--` comments are tokens -- no `@skip` -- so the tree keeps
@@ -73,6 +74,9 @@ use Lingua.Green (dump)
     Param = 'ident'
   "#
 }
+
+-- The language the grammar implies: what name resolution reads.
+@pub(pkg) lang! { pub Surface from Mini }
 
 -- The tree of `input`, drawn.
 @pub fun drawn (input : String) : String =

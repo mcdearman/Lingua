@@ -39,9 +39,10 @@ use TyVar.*
 -- The level of a variable a `let` has generalized: deeper than any.
 def generic = 1000000000
 
--- What inference carries down the tree: the names in scope and their types,
--- how many `let`s deep it is, and the cell the next variable's number is in.
-data Ctx s = Ctx (List (String, MType s)) Int (StRef s Int)
+-- What inference carries down the tree: the binders in scope, by id, and
+-- their types, how many `let`s deep it is, and the cell the next variable's
+-- number is in.
+data Ctx s = Ctx (List (Int, MType s)) Int (StRef s Int)
 
 use Ctx.*
 
@@ -49,8 +50,8 @@ fun envOf (c : Ctx s) = match c with | Ctx env _ _ -> env
 
 fun levelOf (c : Ctx s) : Int = match c with | Ctx _ l _ -> l
 
--- `c` with `n` bound to `t`.
-fun bind (c : Ctx s) (n : String) (t : MType s) : Ctx s = match c with | Ctx env l k -> Ctx ((n, t) :: env) l k
+-- `c` with binder `n` at type `t`.
+fun bind (c : Ctx s) (n : Int) (t : MType s) : Ctx s = match c with | Ctx env l k -> Ctx ((n, t) :: env) l k
 
 -- `c` one `let` deeper: where a `let`'s value is inferred.
 fun deeper (c : Ctx s) : Ctx s = match c with | Ctx env l k -> Ctx env (l + 1) k
@@ -180,10 +181,10 @@ pass! {
   pub infer : Core -> Inferring with ctx
     | Int { value } -> Int { value = value, ty = MType.Int }
     | Bool { value } -> Bool { value = value, ty = MType.Bool }
-    | Var { name } ->
-        (match L.lookupAssoc name (envOf ctx) with
-         | Just t -> Var { name = name, ty = instantiate ctx t }
-         | None -> raise (errorAt here "unbound variable: ${name}"))
+    | Var { id } ->
+        (match L.lookupAssoc id (envOf ctx) with
+         | Just t -> Var { id = id, ty = instantiate ctx t }
+         | None -> raise (errorAt here "no type for binder ${show id}: it was not resolved"))
     | Lam { param, later body } ->
         (let a = fresh ctx in
           let b = body (bind ctx param a) in
@@ -192,20 +193,20 @@ pass! {
         (let out = fresh ctx in
           let u = unify here (tyInferringExpr func) (MType.Fun (tyInferringExpr arg) out) in
           App { func = func, arg = arg, ty = out })
-    | Let { name, later value, later body } ->
+    | Let { id, later value, later body } ->
         (let v = value (deeper ctx) in
           let u = generalize ctx (tyInferringExpr v) in
-          let b = body (bind ctx name (tyInferringExpr v)) in
-          Let { name = name, value = v, body = b, ty = tyInferringExpr b })
-    | LetRec { name, param, later value, later body } ->
+          let b = body (bind ctx id (tyInferringExpr v)) in
+          Let { id = id, value = v, body = b, ty = tyInferringExpr b })
+    | LetRec { id, param, later value, later body } ->
         (let inner = deeper ctx in
           let tf = fresh inner in
           let ta = fresh inner in
-          let v = value (bind (bind inner name tf) param ta) in
+          let v = value (bind (bind inner id tf) param ta) in
           let u = unify here tf (MType.Fun ta (tyInferringExpr v)) in
           let w = generalize ctx tf in
-          let b = body (bind ctx name tf) in
-          LetRec { name = name, param = param, value = v, body = b, ty = tyInferringExpr b })
+          let b = body (bind ctx id tf) in
+          LetRec { id = id, param = param, value = v, body = b, ty = tyInferringExpr b })
     | If { cond, yes, no } ->
         (let u = unify (metaInferringExpr cond) (tyInferringExpr cond) MType.Bool in
           let w = unify (metaInferringExpr no) (tyInferringExpr yes) (tyInferringExpr no) in
@@ -223,11 +224,11 @@ pass! {
   pub settle : Inferring -> Typed
     | Int { value, ty } -> Int { value = value, ty = frozen ty }
     | Bool { value, ty } -> Bool { value = value, ty = frozen ty }
-    | Var { name, ty } -> Var { name = name, ty = frozen ty }
+    | Var { id, ty } -> Var { id = id, ty = frozen ty }
     | Lam { param, body, ty } -> Lam { param = param, body = body, ty = frozen ty }
     | App { func, arg, ty } -> App { func = func, arg = arg, ty = frozen ty }
-    | Let { name, value, body, ty } -> Let { name = name, value = value, body = body, ty = frozen ty }
-    | LetRec { name, param, value, body, ty } -> LetRec { name = name, param = param, value = value, body = body, ty = frozen ty }
+    | Let { id, value, body, ty } -> Let { id = id, value = value, body = body, ty = frozen ty }
+    | LetRec { id, param, value, body, ty } -> LetRec { id = id, param = param, value = value, body = body, ty = frozen ty }
     | If { cond, yes, no, ty } -> If { cond = cond, yes = yes, no = no, ty = frozen ty }
     | Prim { op, args, ty } -> Prim { op = op, args = args, ty = frozen ty }
 }
@@ -250,12 +251,13 @@ fun children (e : TypedExpr) : [TypedExpr] =
 -- only `Typed`, which has none, comes out of it.
 @pub fun typed (e : CoreExpr) : Result Diagnostic TypedExpr = typedIn [] e
 
--- The same, with names another unit exports in scope, each at its type.
-@pub fun typedIn (imports : [(String, Type)]) (e : CoreExpr) : Result Diagnostic TypedExpr =
+-- The same, with what another unit exports in scope, each at its type: the
+-- `i`th import is binder `i`, as `Names.resolved` entered it.
+@pub fun typedIn (imports : [Type]) (e : CoreExpr) : Result Diagnostic TypedExpr =
   toResult (\() ->
     runSt (\() ->
       let start = Ctx [;] 0 (St.newRef 0) in
-      let ctx = V.foldl (\c i -> bind c (fst i) (thaw c (snd i))) start imports in
+      let ctx = V.foldl (\c i -> bind c i (thaw c (V.getOr Type.Int imports i))) start (V.range 0 (V.len imports)) in
       settleExpr (inferExpr ctx e)))
 
 -- An imported type as inference holds one: each of its variables a new one,

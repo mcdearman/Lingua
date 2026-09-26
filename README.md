@@ -68,6 +68,13 @@ syntax! {
   inference is such a pass: Algorithm J, its type variables `runSt` cells,
   elaborating the program into one with every expression's type written on
   it.
+- **`Lingua.Table`**, a side table a pass fills as it goes: a case `enter`s
+  what it knows about something and gets an id back, `amend`s it as it
+  learns more, and whoever runs the pass gathers the table with `tabled`.
+  What flows down the tree is a pass's context; what builds up across it is
+  a table, and nothing carries it from case to case. MiniML's name
+  resolution is such a pass: every name becomes the id of its binder, and
+  the table of binders is what its editor reads.
 - **`Lingua.Green`**, the lossless tree: kinds, widths and text, no positions.
 - **`Lingua.Red`**, a view with offsets and parents: `range`, `children`,
   `parent`, `ancestors`, `tokenAt`, `nodeAt`.

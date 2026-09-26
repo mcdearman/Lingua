@@ -5,6 +5,7 @@
 use Lingua (database!)
 use Lingua.Green (Green)
 use Lingua.Diagnostic (Diagnostic, message, parseErrors, collect, renderAll)
+use Lingua.Table (tabled)
 use MiniML.Syntax
 use MiniML.Desugar
 use MiniML.Types
@@ -20,39 +21,42 @@ database! {
   pub Session
     | input source (file : Int) : String
     | query parsed (file : Int) : (Green Mini, [(Int, String)]) = parseMini (querySource file)
-    | query program (file : Int) : (Maybe CoreFile, [Diagnostic]) = compile (queryParsed file)
+    | query program (file : Int) : (Maybe CoreFile, [Binder], [Diagnostic]) = compile [] (queryParsed file)
     | query elaborated (file : Int) : Result [Diagnostic] TypedExpr = elaboratedOf (queryProgram file)
     | query typed (file : Int) : Result [Diagnostic] String = typeNameOf (queryElaborated file)
     | query result (file : Int) : Result [Diagnostic] String = resultOf (queryTyped file) (queryProgram file)
     | query shown (file : Int) : String = shownOf (querySource file) (queryResult file)
     | persisted query signatures (files : [Int]) : [String] = V.map signature (queryTypedEach files)
-    | query names (file : Int) : Names = namesOf (queryParsed file)
+    | query names (file : Int) : [Binder] = (match queryProgram file with | (_, bs, _) -> bs)
     | input imports (unit : Int) : [(String, Type)]
-    | query linked (file : Int) : Result [Diagnostic] Type = linkedOf (queryImports 0) (queryProgram file)
+    | query linked (file : Int) : Result [Diagnostic] Type = linkedOf (queryImports 0) (queryParsed file)
     | persisted query exported (files : [Int]) : [Maybe Type] = V.map (\r -> match r with | Ok t -> Just t | Err _ -> None) (queryLinkedEach files)
 }
 
--- The `Core` program a parse makes, and what was said making it: the parse's
--- errors, each at its token, or what the pass reported. A program with
+-- The `Core` program a parse makes, with `imports` in scope; its binders, the
+-- table name resolution filled; and what was said making it: the parse's
+-- errors, each at its token, or what the passes reported. A program with
 -- errors in it goes no further.
-@pub(pkg) fun compile (parsed : (Green Mini, [(Int, String)])) : (Maybe CoreFile, [Diagnostic]) =
+@pub(pkg) fun compile (imports : [String]) (parsed : (Green Mini, [(Int, String)])) : (Maybe CoreFile, [Binder], [Diagnostic]) =
   match parsed with
   | (g, []) ->
       (match surfaceFromMini g with
-       | Just s -> (match collect (\() -> desugar s) with | (p, ds) -> (if V.isEmpty ds then Just p else None, ds))
-       | None -> (None, []))
-  | (g, errs) -> (None, parseErrors g errs)
+       | Just s ->
+           (match collect (\() -> tabled (\() -> desugar (resolved imports s))) with
+            | ((p, bs), ds) -> (if V.isEmpty ds then Just p else None, bs, ds))
+       | None -> (None, [], []))
+  | (g, errs) -> (None, [], parseErrors g errs)
 
 -- A file's type, with what the units it depends on export in scope.
-fun linkedOf (imports : [(String, Type)]) (p : (Maybe CoreFile, [Diagnostic])) : Result [Diagnostic] Type =
-  match p with
-  | (Just f, _) -> (match typedIn imports (programExpr f) with | Ok t -> Ok (tyTypedExpr t) | Err d -> Err [d])
-  | (None, ds) -> Err ds
+fun linkedOf (imports : [(String, Type)]) parsed : Result [Diagnostic] Type =
+  match compile (V.map fst imports) parsed with
+  | (Just f, _, _) -> (match typedIn (V.map snd imports) (programExpr f) with | Ok t -> Ok (tyTypedExpr t) | Err d -> Err [d])
+  | (None, _, ds) -> Err ds
 
-fun elaboratedOf (p : (Maybe CoreFile, [Diagnostic])) : Result [Diagnostic] TypedExpr =
+fun elaboratedOf (p : (Maybe CoreFile, [Binder], [Diagnostic])) : Result [Diagnostic] TypedExpr =
   match p with
-  | (Just f, _) -> (match typed (programExpr f) with | Ok t -> Ok t | Err d -> Err [d])
-  | (None, ds) -> Err ds
+  | (Just f, _, _) -> (match typed (programExpr f) with | Ok t -> Ok t | Err d -> Err [d])
+  | (None, _, ds) -> Err ds
 
 -- The program's type, read off its elaboration: a change that moves nothing
 -- but where things are -- a comment -- stops here.
@@ -62,11 +66,11 @@ fun typeNameOf (e : Result [Diagnostic] TypedExpr) : Result [Diagnostic] String 
   | Err ds -> Err ds
 
 -- The value and its type, or everything that went wrong on the way.
-fun resultOf (typed : Result [Diagnostic] String) (p : (Maybe CoreFile, [Diagnostic])) : Result [Diagnostic] String =
-  match (typed, fst p) with
+fun resultOf (typed : Result [Diagnostic] String) (p : (Maybe CoreFile, [Binder], [Diagnostic])) : Result [Diagnostic] String =
+  match (typed, p) with
   | (Err ds, _) -> Err ds
-  | (Ok ty, Just f) -> (match run (programExpr f) with | Ok v -> Ok "${v} : ${ty}" | Err d -> Err [d])
-  | (Ok _, None) -> Err (snd p)
+  | (Ok ty, (Just f, _, _)) -> (match run (programExpr f) with | Ok v -> Ok "${v} : ${ty}" | Err d -> Err [d])
+  | (Ok _, (None, _, ds)) -> Err ds
 
 -- What MiniML's REPL prints for a program: its value and type, or its
 -- diagnostics drawn against its text.
@@ -89,25 +93,25 @@ fun signature (t : Result [Diagnostic] String) : String = match t with | Ok ty -
 
 -- A program's type, or the message of the first thing wrong with it.
 @pub(pkg) fun typeOfSource (src : String) : Result String String =
-  match compile (parseMini src) with
-  | (Just f, _) -> (match typeOf (programExpr f) with | Ok t -> Ok t | Err d -> Err (message d))
-  | (None, ds) -> Err (S.join "; " (V.map message ds))
+  match compile [] (parseMini src) with
+  | (Just f, _, _) -> (match typeOf (programExpr f) with | Ok t -> Ok t | Err d -> Err (message d))
+  | (None, _, ds) -> Err (S.join "; " (V.map message ds))
 
 -- A program's value, or the message of the first thing wrong with it.
 @pub(pkg) fun runSource (src : String) : Result String String =
-  match compile (parseMini src) with
-  | (Just f, _) ->
+  match compile [] (parseMini src) with
+  | (Just f, _, _) ->
       (let e = programExpr f in
         match typeOf e with
         | Ok _ -> (match run e with | Ok v -> Ok v | Err d -> Err (message d))
         | Err d -> Err (message d))
-  | (None, ds) -> Err (S.join "; " (V.map message ds))
+  | (None, _, ds) -> Err (S.join "; " (V.map message ds))
 
 -- Each expression of a program with its type, outermost first.
 @pub(pkg) fun annotatedSource (src : String) : [String] =
-  match compile (parseMini src) with
-  | (Just f, _) -> (match typed (programExpr f) with | Ok t -> annotated src t | Err d -> [message d])
-  | (None, ds) -> V.map message ds
+  match compile [] (parseMini src) with
+  | (Just f, _, _) -> (match typed (programExpr f) with | Ok t -> annotated src t | Err d -> [message d])
+  | (None, _, ds) -> V.map message ds
 
 -- --- tests ---------------------------------------------------------------------------------
 

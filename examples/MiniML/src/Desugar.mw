@@ -1,21 +1,21 @@
--- MiniML's two languages and the pass between them: `Surface`, read off the
--- grammar, and `Core`, which inference and evaluation read -- declared as
--- what changes (`lang!`), and the pass as only its cases (`pass!`).
+-- The language inference and evaluation read, `Core`, and the pass from
+-- `Resolved` to it -- declared as what changes (`lang!`), and the pass as only
+-- its cases (`pass!`). Every name is an id by now (`Names`).
 
 use Lingua (lang!, pass!)
 use Lingua.Diagnostic (errorAt, withNote, say)
+use Lingua.Lang (Meta)
 use MiniML.Syntax
+use MiniML.Names
 use Std.Collections.Vector as V
 use Std.String as S
 use Std.Maybe as M
 
--- The language the grammar implies.
-@pub(pkg) lang! { pub Surface from Mini }
-
 -- The one inference and evaluation read: every function takes one argument,
--- an operator is a primitive, and a literal is its value.
+-- an operator is a primitive, and a literal is its value. A variable, a
+-- parameter and what a `let` binds are ids.
 @pub(pkg) lang! {
-  pub Core extends Surface
+  pub Core extends Resolved
   Expr - Atom
   Expr - App
   Expr - Bin
@@ -23,12 +23,12 @@ use Std.Maybe as M
   Expr - Let
   Expr + Int { value : Int }
   Expr + Bool { value : Bool }
-  Expr + Var { name : String }
+  Expr + Var { id : Int }
   Expr + App { func : Expr, arg : Expr }
   Expr + Prim { op : String, args : [Expr] }
-  Expr + Lam { param : String, body : Expr }
-  Expr + Let { name : String, value : Expr, body : Expr }
-  Expr + LetRec { name : String, param : String, value : Expr, body : Expr }
+  Expr + Lam { param : Int, body : Expr }
+  Expr + Let { id : Int, value : Expr, body : Expr }
+  Expr + LetRec { id : Int, param : Int, value : Expr, body : Expr }
 }
 
 -- `fun x y -> e` is `fun x -> fun y -> e`, and `let f x = e` binds `fun x -> e`;
@@ -36,33 +36,32 @@ use Std.Maybe as M
 -- `let rec` with nothing to take is reported where it is -- `here` -- and
 -- read as a `let`, so the rest of the program is still checked.
 pass! {
-  pub desugar : Surface -> Core
+  pub desugar : Resolved -> Core
     | Atom { atom } -> atomExpr atom
     | App { func, arg } -> App { func = func, arg = atomExpr arg }
     | Bin { lhs, op, rhs } -> Prim { op = op, args = [lhs, rhs] }
-    | Lam { params, body } -> V.foldr (\p acc -> Lam { param = paramName p, body = acc }) body params
-    | Let { recursive, name, params, value, body } ->
-        (let n = nameOf name in
-          match (recursive, V.get params 0) with
-          | (Just _, Just first) ->
-              LetRec { name = n, param = paramName first, value = V.foldr (\p acc -> Lam { param = paramName p, body = acc }) value (V.drop params 1), body = body }
-          | (Just _, None) ->
-              (let u = say (errorAt here "`let rec` needs an argument" |> withNote "a recursive value that is not a function has nothing to stand on: write `let rec f x = …`") in
-                Let { name = n, value = value, body = body })
-          | _ -> Let { name = n, value = V.foldr (\p acc -> Lam { param = paramName p, body = acc }) value params, body = body })
+    | Lam { params, body } -> lambdas here params body
+    | Let { recursive, id, params, value, body } ->
+        (match (recursive, V.get params 0) with
+         | (True, Just first) -> LetRec { id = id, param = first, value = lambdas here (V.drop params 1) value, body = body }
+         | (True, None) ->
+             (let u = say (errorAt here "`let rec` needs an argument" |> withNote "a recursive value that is not a function has nothing to stand on: write `let rec f x = …`") in
+               Let { id = id, value = value, body = body })
+         | _ -> Let { id = id, value = lambdas here params value, body = body })
 }
+
+-- `fun` of each of `params` in turn, around `body`: each where the node
+-- that took them was, `at`.
+fun lambdas (at : Meta) (params : [Int]) (body : CoreExpr) : CoreExpr =
+  V.foldr (\p acc -> CoreExpr.Lam { meta = at, param = p, body = acc }) body params
 
 -- An atom, as the expression it is.
 fun atomExpr (a : CoreAtom) : CoreExpr =
   match a with
   | CoreAtom.Literal r -> CoreExpr.Int { meta = r.meta, value = M.unwrapOr 0 (S.toInt r.number) }
   | CoreAtom.BoolLit r -> CoreExpr.Bool { meta = r.meta, value = r.value == "true" }
-  | CoreAtom.NameRef r -> CoreExpr.Var { meta = r.meta, name = r.ident }
+  | CoreAtom.NameRef r -> CoreExpr.Var { meta = r.meta, id = r.id }
   | CoreAtom.Paren r -> r.expr
-
-fun paramName (p : CoreParam) : String = match p with | CoreParam.Param r -> r.ident
-
-fun nameOf (n : CoreName) : String = match n with | CoreName.Name r -> r.ident
 
 -- The expression a program is.
 @pub fun programExpr (f : CoreFile) : CoreExpr = match f with | CoreFile.File r -> r.expr

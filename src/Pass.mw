@@ -44,6 +44,10 @@
 -- translated child, for the case to call with the context the child is in --
 -- under a binder, the one with the binder in it. Without a context, a
 -- `later` field is a function of `()`.
+--
+-- What a pass learns across the tree, rather than down it -- the binders it
+-- met, say -- is a side table, `Lingua.Table`: an effect a case performs and
+-- whoever runs the pass handles once, not a parameter every case passes on.
 
 use Std.Collections.Vector as V
 use Std.String as S

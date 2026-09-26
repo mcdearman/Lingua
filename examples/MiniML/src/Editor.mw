@@ -1,6 +1,6 @@
 -- The editor: a language server over the compiler's own queries (`lsp!`).
 -- Each feature asks the session, which works out only what the last edit
--- changed: hovering reads the elaboration, going to a definition the names,
+-- changed: hovering reads the elaboration, going to a definition the binders,
 -- and neither runs again until the file does.
 
 use Lingua (lsp!)
@@ -47,38 +47,34 @@ fun hoverAt db file at =
         | Just x -> Just (metaTypedExpr x, "```\n${typeName (tyTypedExpr x)}\n```")
         | None -> None)
 
-fun namesAt db file = answered (Names.Names [] []) (\() -> sessionNames db file)
+-- The binders of a file: the side table name resolution filled.
+fun bindersOf db file = answered [] (\() -> sessionNames db file)
 
--- The binder the editor is on, or the one the name it is on means.
-fun binderAt (n : Names) (at : Int) : Maybe Meta =
-  match n with
-  | Names.Names bs us ->
-      (match V.find (\u -> contains (fst u) at) us with
-       | Just u -> Just (snd u)
-       | None -> M.map (\b -> match b with | (_, m, _, _) -> m) (V.find (\b -> match b with | (_, m, _, _) -> contains m at) bs))
+-- The binder the editor is on, or the one the name it is on is a use of.
+fun binderAt (bs : [Binder]) (at : Int) : Maybe Binder =
+  V.find (\(b : Binder) -> b.kind != "import" and (contains b.at at or V.any (\u -> contains u at) b.uses)) bs
 
-fun definitionAt db file at = match binderAt (namesAt db file) at with | Just b -> [(file, b)] | None -> []
+fun definitionAt db file at =
+  match binderAt (bindersOf db file) at with
+  | Just b -> [(file, b.at)]
+  | None -> []
 
 -- The binder and every use of it.
 fun referencesAt db file at =
-  let n = namesAt db file in
-  match (n, binderAt n at) with
-  | (Names.Names _ us, Just b) -> V.pushFront (V.map (\u -> (file, fst u)) (V.filter (\u -> snd u == b) us)) (file, b)
-  | _ -> []
+  match binderAt (bindersOf db file) at with
+  | Just b -> V.map (\m -> (file, m)) (V.pushFront b.uses b.at)
+  | None -> []
 
 -- The names that can be seen where the editor is, innermost first, and the
 -- keywords.
 fun completionAt db file at =
-  match namesAt db file with
-  | Names.Names bs _ ->
-      let seen = V.filter (\b -> match b with | (_, _, _, scopes) -> V.any (\s -> contains s at) scopes) bs in
-      let named = V.foldr (\b acc -> match b with | (n, _, k, _) -> if V.any (\x -> fst x == n) acc then acc else V.pushBack acc (n, k)) [] seen in
-      V.append named (V.map (\k -> (k, "keyword")) ["let", "rec", "in", "fun", "if", "then", "else", "true", "false"])
+  let seen = V.filter (\(b : Binder) -> V.any (\s -> contains s at) b.scopes) (bindersOf db file) in
+  let named = V.foldr (\(b : Binder) acc -> if V.any (\x -> fst x == b.name) acc then acc else V.pushBack acc (b.name, b.kind)) [] seen in
+  V.append named (V.map (\k -> (k, "keyword")) ["let", "rec", "in", "fun", "if", "then", "else", "true", "false"])
 
 -- Everything a `let` binds.
 fun symbolsOf db file =
-  match namesAt db file with
-  | Names.Names bs _ -> V.concatMap (\b -> match b with | (n, m, k, _) -> if k == "parameter" then [] else [(n, k, m)]) bs
+  V.concatMap (\(b : Binder) -> if b.kind == "parameter" or b.kind == "import" then [] else [(b.name, b.kind, b.at)]) (bindersOf db file)
 
 -- --- tests ---------------------------------------------------------------------------------
 --

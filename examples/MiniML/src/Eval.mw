@@ -9,9 +9,10 @@ use Std.Collections.Vector as V
 use Std.Collections.List as L
 use Std.String as S
 
--- A value. A recursive function binds its own name again each time it is
--- applied: no cell, and so nothing to mutate.
-data Value = Int Int | Bool Bool | Closure String CoreExpr (List (String, Value)) | Rec String String CoreExpr (List (String, Value))
+-- A value. A function holds its parameter's id and the environment it was
+-- made in, binders by id; a recursive one binds its own id again each time it
+-- is applied: no cell, and so nothing to mutate.
+data Value = Int Int | Bool Bool | Closure Int CoreExpr (List (Int, Value)) | Rec Int Int CoreExpr (List (Int, Value))
 
 fun showValue v =
   match v with
@@ -23,11 +24,11 @@ fun eval env (e : CoreExpr) =
   match e with
   | CoreExpr.Int r -> Value.Int r.value
   | CoreExpr.Bool r -> Value.Bool r.value
-  | CoreExpr.Var r -> (match L.lookupAssoc r.name env with | Just v -> v | None -> raise (errorAt r.meta "unbound at run time: ${r.name}"))
+  | CoreExpr.Var r -> (match L.lookupAssoc r.id env with | Just v -> v | None -> raise (errorAt r.meta "binder ${show r.id} has no value"))
   | CoreExpr.Lam r -> Value.Closure r.param r.body env
   | CoreExpr.App r -> apply r.meta (eval env r.func) (eval env r.arg)
-  | CoreExpr.Let r -> eval ((r.name, eval env r.value) :: env) r.body
-  | CoreExpr.LetRec r -> eval ((r.name, Value.Rec r.name r.param r.value env) :: env) r.body
+  | CoreExpr.Let r -> eval ((r.id, eval env r.value) :: env) r.body
+  | CoreExpr.LetRec r -> eval ((r.id, Value.Rec r.id r.param r.value env) :: env) r.body
   | CoreExpr.If r -> (match eval env r.cond with | Value.Bool True -> eval env r.yes | _ -> eval env r.no)
   | CoreExpr.Prim r ->
       (match (V.get r.args 0, V.get r.args 1) with

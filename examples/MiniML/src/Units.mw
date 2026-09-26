@@ -1,0 +1,135 @@
+-- Units, and building them (`make!`). A unit is a directory of `.ml` files
+-- with a `Unit` file naming the units it depends on, a line each. Each file
+-- exports its program under the file's name -- `lib/double.ml` is `double` --
+-- and a unit's interface is what its files export, at their types.
+
+use Lingua (make!)
+use Lingua.Make (Given, unitSources, unitImports, unitOut)
+use Lingua.Diagnostic (renderAll)
+use MiniML.Types
+use MiniML.Compiler
+use Std.Macro (Reflect, Datum, toDatum, fromDatum)
+use Std.Collections.Vector as V
+use Std.String as S
+use Std.Maybe as M
+use Std.Path as Path
+use Std.Fs (writeString)
+use Std.Exn (toResult)
+use Std.Result.Result.*
+
+make! {
+  pub Build "miniml"
+    | sources = ".ml"
+    | manifest = "Unit"
+    | compile = compileUnit
+}
+
+-- What a unit exports: each file's name, and the type of its program.
+@derive(Debug, PartialEq)
+data Interface = Interface [(String, Type)]
+
+impl Reflect Interface {
+  fun toDatum i = match i with | Interface.Interface xs -> Datum.List (V.map (\x -> Datum.Tag (fst x) [toDatum (snd x)]) xs)
+  fun fromDatum d =
+    match d with
+    | Datum.List ds ->
+        V.foldl
+          (\acc x -> match (acc, x) with
+                     | (Ok (Interface.Interface xs), Datum.Tag n ts) ->
+                         (match M.map fromDatum (V.get ts 0) with
+                          | Just (Ok t) -> Ok (Interface.Interface (V.pushBack xs (n, t)))
+                          | _ -> Err "an export's type")
+                     | (Err e, _) -> Err e
+                     | _ -> Err "an export")
+          (Ok (Interface.Interface []))
+          ds
+    | _ -> Err "not an interface"
+}
+
+fun exports (i : Interface) : [(String, Type)] = match i with | Interface.Interface xs -> xs
+
+-- The compiler, given a unit. Inside it, it is the compiler's business how
+-- the work is done: here, with a session of its own, whose `exported` query
+-- is kept in the unit's directory between builds -- a unit built before is
+-- read back and its files not typed again -- and whose files are typed on
+-- threads of their own when they are.
+fun compileUnit (u : Given Interface) : Result String Interface ! { Thread, Mut, Fs | e } =
+  match toResult (\() -> compiling u) with
+  | Ok r -> r
+  | Err why -> Err "${show why}\n"
+
+fun compiling (u : Given Interface) =
+  let sources = unitSources u in
+  let files = V.range 1 (V.len sources + 1) in
+  let db = newSession () in
+  let a = setSessionImports db 0 (V.concatMap (\i -> exports (snd i)) (unitImports u)) in
+  let b = V.foldl (\acc i -> setSessionSource db i (snd (V.getOr ("", "") sources (i - 1)))) () files in
+  let cache = Path.join (unitOut u) "session.json" in
+  let c = loadSession db cache in
+  let exported = sessionExported db files in
+  let named = V.map (\i -> Path.fileStem (fst (V.getOr ("", "") sources i))) (V.range 0 (V.len sources)) in
+  if V.all M.isSome exported then
+    (let interface = V.map (\i -> (V.getOr "" named i, M.unwrapOr Type.Int (V.getOr None exported i))) (V.range 0 (V.len named)) in
+      let d = saveSession db cache in
+      let e = writeString (Path.join (unitOut u) "types", S.join "" (V.map (\x -> "${fst x} : ${typeName (snd x)}\n") interface)) in
+      Ok (Interface.Interface interface))
+  else
+    let linked = sessionLinkedEach db files in
+    Err
+      (S.join ""
+        (V.map
+          (\i -> match (V.get sources i, V.get linked i) with
+                 | (Just (path, text), Just (Err ds)) -> renderAll path text ds
+                 | _ -> "")
+          (V.range 0 (V.len sources))))
+
+-- --- tests ---------------------------------------------------------------------------------
+
+use Std.Test (assertEq)
+use Std.Console (withOutput)
+use Std.Fs (createDirAll)
+
+-- Build `root` and say, for each unit, how it went.
+fun built root = match withOutput (\() -> buildBuild root) with | (ok, said) -> (ok, V.filter (\l -> S.startsWith "   " l) (S.lines said))
+
+fun write dir file text =
+  let u = createDirAll dir in
+  writeString (Path.join dir file, text)
+
+@test fun aUnitIsBuiltAgainOnlyWhenWhatItReadChanged () =
+  let root = "target/build-test" in
+  let lib = Path.join root "lib" in
+  let app = Path.join root "app" in
+  let a = write lib "Unit" "" in
+  let b = write lib "double.ml" "fun x -> x + x" in
+  let c = write lib "id.ml" "fun x -> x" in
+  let d = write app "Unit" "../lib\n" in
+  let e = write app "main.ml" "double (id 21)" in
+  let first = built app in
+  let second = built app in
+  -- The body changes, the type does not: `lib` is compiled, `app` is not.
+  let f = write lib "double.ml" "fun x -> x * 2" in
+  let third = built app in
+  -- The type changes: both are.
+  let g = write lib "double.ml" "fun x -> x > 1" in
+  let fourth = built app in
+  let h = write lib "double.ml" "fun x -> x + x" in
+  assertEq
+    [first, second, third, fourth]
+    [ (True, ["   Compiled lib", "   Compiled app"]),
+      (True, ["   Fresh lib", "   Fresh app"]),
+      (True, ["   Compiled lib", "   Fresh app"]),
+      (True, ["   Compiled lib", "   Compiled app"]) ]
+    "each build"
+
+@test fun aUnitThatFailsBlocksWhatDependsOnIt () =
+  let root = "target/build-fail" in
+  let lib = Path.join root "lib" in
+  let app = Path.join root "app" in
+  let a = write lib "Unit" "" in
+  let b = write lib "bad.ml" "1 + true" in
+  let d = write app "Unit" "../lib\n" in
+  let e = write app "main.ml" "bad" in
+  match built app with
+  | (ok, lines) ->
+      assertEq (ok, V.getOr "" lines 0, V.getOr "" lines (V.len lines - 1)) (False, "   Failed lib", "   Blocked app: lib did not build") "the failure, and what it stopped"

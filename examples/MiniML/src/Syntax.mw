@@ -1,0 +1,108 @@
+-- MiniML's syntax: its tokens, and the grammar Lingua makes a parser, a
+-- lossless tree and a typed AST of (`syntax!`).
+
+use Scythe (lexer!)
+use Lingua (syntax!)
+use Lingua.Green (dump)
+
+-- Whitespace and `--` comments are tokens -- no `@skip` -- so the tree keeps
+-- them, and every program comes back byte for byte.
+@derive(Lexer)
+@pub data Token
+  = @regex("[ \t\r\n]+") Whitespace
+  | @regex("--[^\n]*") Comment
+  | @token("let") Let
+  | @token("rec") Rec
+  | @token("in") In
+  | @token("fun") Fun
+  | @token("if") If
+  | @token("then") Then
+  | @token("else") Else
+  | @token("true") True
+  | @token("false") False
+  | @token("(") LParen
+  | @token(")") RParen
+  | @token("->") Arrow
+  | @token("=") Equals
+  | @token("==") EqEq
+  | @token("<=") Le
+  | @token(">=") Ge
+  | @token("<") Lt
+  | @token(">") Gt
+  | @token("+") Plus
+  | @token("-") Minus
+  | @token("*") Star
+  | @token("/") Slash
+  | @regex("[0-9]+") Number String
+  | @regex("[a-zA-Z_][a-zA-Z0-9_]*") Ident String
+
+-- Application is two operands side by side, as Meadow's own parser reads it:
+-- an atom after an expression is an argument to it. So `f x y` is `(f x) y`,
+-- and `f x + 1` is `(f x) + 1` -- the argument is one atom, and binds tighter
+-- than any operator.
+@pub(pkg) syntax! {
+  pub Mini
+  lexer Token
+  trivia { Whitespace, Comment }
+  tokens {
+    "let" = Let, "rec" = Rec, "in" = In, "fun" = Fun, "if" = If, "then" = Then, "else" = Else,
+    "true" = True, "false" = False, "(" = LParen, ")" = RParen, "->" = Arrow, "=" = Equals,
+    "==" = EqEq, "<=" = Le, ">=" = Ge, "<" = Lt, ">" = Gt, "+" = Plus, "-" = Minus, "*" = Star, "/" = Slash,
+    "ident" = Ident _, "int_number" = Number _
+  }
+  precedence Expr { left "==" "<=" ">=" "<" ">", left "+" "-", left "*" "/", postfix AppExpr }
+  grammar r#"
+    File = Expr
+
+    Expr = Atom | LamExpr | LetExpr | IfExpr | AppExpr | BinExpr
+
+    AppExpr = func:Expr arg:Atom
+    BinExpr = lhs:Expr op:('==' | '<=' | '>=' | '<' | '>' | '+' | '-' | '*' | '/') rhs:Expr
+
+    Atom = Literal | BoolLit | NameRef | ParenExpr
+    Literal   = 'int_number'
+    BoolLit   = value:('true' | 'false')
+    NameRef   = 'ident'
+    ParenExpr = '(' Expr ')'
+
+    LamExpr = 'fun' params:Param* '->' body:Expr
+    LetExpr = 'let' recursive:'rec'? name:Name params:Param* '=' value:Expr 'in' body:Expr
+    IfExpr  = 'if' cond:Expr 'then' yes:Expr 'else' no:Expr
+
+    Name  = 'ident'
+    Param = 'ident'
+  "#
+}
+
+-- The tree of `input`, drawn.
+@pub fun drawn (input : String) : String =
+  match parseMini input with
+  | (g, errs) -> dump display g
+
+-- --- tests ---------------------------------------------------------------------------------
+
+use Std.Test (assertEq)
+use Std.Collections.Vector as V
+use Std.String as S
+use Lingua.Green (text)
+use MiniML.Compiler (typeOfSource)
+use Std.Result.Result.*
+
+@test fun everyProgramComesBackByteForByte () =
+  let a = assertEq (text (fst (parseMini "let rec f n = f n in f 1 -- loops\n"))) "let rec f n = f n in f 1 -- loops\n" "a comment kept" in
+  assertEq (text (fst (parseMini "let x = in (1"))) "let x = in (1" "and a broken one"
+
+@test fun applicationTakesOneAtom () =
+  -- `f x + 1` is `(f x) + 1`: the argument is an atom, and application binds
+  -- tighter than any operator.
+  assertEq
+    (V.len (V.filter (\l -> S.trim l == "AppExpr") (S.split "\n" (drawn "f x + 1"))))
+    1
+    "one application, under the `+`"
+
+@test fun keywordsAreNotIdentifiers () =
+  assertEq (typeOfSource "letter") (Err "unbound variable: letter") "`let` is a prefix of `letter`"
+
+@test fun aMissingPieceIsAnErrorWhereItWouldBe () =
+  match parseMini "let x = in 1" with
+  | (_, errs) -> assertEq errs [(8, "expected Expr")] "at the `in`"

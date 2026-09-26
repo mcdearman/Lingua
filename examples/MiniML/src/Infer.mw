@@ -1,0 +1,350 @@
+-- Hindley-Milner, Algorithm J, as an elaboration.
+--
+-- MiniML's checker is Algorithm J, and so is this one: a type variable is a
+-- cell, and unifying two types writes into cells instead of building up a
+-- substitution. A `let` generalizes by levels, as OCaml's checker does, and
+-- a failure is `Std.Exn`.
+--
+-- It runs inside a query, where nothing anyone could see may be mutated. So
+-- the cells are `Std.St`'s: made inside a `runSt` and gone by the time it
+-- returns, which is what lets `typed` be pure while every step of it writes.
+-- Lingua's passes are ordinary Meadow, effects and all, and these two
+-- perform `St s` as the functions they call do:
+--
+--   infer    `Core` to `Inferring s` -- `Core` with each expression's type as
+--            inference holds it, cells and all, `s` being the `runSt`'s
+--   settle   `Inferring s` to `Typed`, reading every cell once all are written
+
+use Lingua (lang!, pass!)
+use Lingua.Lang (Meta)
+use Lingua.Diagnostic (Diagnostic, errorAt)
+use MiniML.Desugar
+use MiniML.Types
+use Std.St as St
+use Std.Exn (raise, toResult)
+use Std.Result.Result.*
+use Std.Collections.Vector as V
+use Std.Collections.List as L
+use Std.String as S
+
+-- A type while it is inferred: a variable is a cell of the `runSt`'s.
+data MType s = Int | Bool | Fun (MType s) (MType s) | Var (StRef s (TyVar s))
+
+-- What a variable's cell holds: nothing yet -- its number, and the level of
+-- the `let` it was made under -- or the type it was unified with.
+data TyVar s = Unbound Int Int | Bound (MType s)
+
+use TyVar.*
+
+-- The level of a variable a `let` has generalized: deeper than any.
+def generic = 1000000000
+
+-- What inference carries down the tree: the names in scope and their types,
+-- how many `let`s deep it is, and the cell the next variable's number is in.
+data Ctx s = Ctx (List (String, MType s)) Int (StRef s Int)
+
+use Ctx.*
+
+fun envOf (c : Ctx s) = match c with | Ctx env _ _ -> env
+
+fun levelOf (c : Ctx s) : Int = match c with | Ctx _ l _ -> l
+
+-- `c` with `n` bound to `t`.
+fun bind (c : Ctx s) (n : String) (t : MType s) : Ctx s = match c with | Ctx env l k -> Ctx ((n, t) :: env) l k
+
+-- `c` one `let` deeper: where a `let`'s value is inferred.
+fun deeper (c : Ctx s) : Ctx s = match c with | Ctx env l k -> Ctx env (l + 1) k
+
+-- A new variable, at the context's level.
+fun fresh (c : Ctx s) =
+  match c with
+  | Ctx _ l k ->
+      let n = St.getRef k in
+      let u = St.setRef k (n + 1) in
+      MType.Var (St.newRef (Unbound n l))
+
+-- `t`, past every variable that is bound -- each one on the way made to hold
+-- the end directly, so that the next walk is short.
+fun repr t =
+  match t with
+  | MType.Var r ->
+      (match St.getRef r with
+       | Bound u -> (let v = repr u in let w = St.setRef r (Bound v) in v)
+       | Unbound _ _ -> t)
+  | _ -> t
+
+-- Make `a` and `b` one type, by writing into their variables, or say why not
+-- -- about the node at `at`.
+fun unify at a b =
+  match (repr a, repr b) with
+  | (MType.Int, MType.Int) -> ()
+  | (MType.Bool, MType.Bool) -> ()
+  | (MType.Fun a1 b1, MType.Fun a2 b2) ->
+      let u = unify at a1 a2 in
+      unify at b1 b2
+  | (MType.Var r, t) -> bindVar at r t
+  | (t, MType.Var r) -> bindVar at r t
+  | (x, y) -> raise (errorAt at "cannot unify ${typeName (frozen x)} with ${typeName (frozen y)}")
+
+-- Write `t` into unbound variable `r` -- unless `t` is `r`, or holds it.
+-- What `t` holds is made no deeper than `r`: a `let` that cannot generalize
+-- `r` cannot generalize what `r` now is either.
+fun bindVar at r t =
+  match St.getRef r with
+  | Unbound id level ->
+      if isVar id t then ()
+      else
+        let u = adjust at id level t in
+        St.setRef r (Bound t)
+  | Bound u -> unify at u t
+
+fun isVar id t =
+  match t with
+  | MType.Var r -> (match St.getRef r with | Unbound j _ -> j == id | Bound _ -> False)
+  | _ -> False
+
+fun adjust at id level t =
+  match repr t with
+  | MType.Var r ->
+      (match St.getRef r with
+       | Unbound j l ->
+           if j == id then raise (errorAt at "occurs check: a type would contain itself")
+           else if l > level then St.setRef r (Unbound j level)
+           else ()
+       | Bound _ -> ())
+  | MType.Fun a b ->
+      let u = adjust at id level a in
+      adjust at id level b
+  | _ -> ()
+
+-- Generalize what `t` holds that was made deeper than `c`: those variables
+-- belong to the `let` whose value `t` is, and nothing outside it can see them.
+fun generalize (c : Ctx s) t =
+  match repr t with
+  | MType.Var r ->
+      (match St.getRef r with
+       | Unbound j l -> if l > levelOf c then St.setRef r (Unbound j generic) else ()
+       | Bound _ -> ())
+  | MType.Fun a b ->
+      let u = generalize c a in
+      generalize c b
+  | _ -> ()
+
+-- `t` with a new variable for each generalized one -- the same new one
+-- wherever the same one was.
+fun instantiate (c : Ctx s) t = fst (copy c t [])
+
+fun copy c t seen =
+  let u = repr t in
+  match u with
+  | MType.Var r ->
+      (match St.getRef r with
+       | Unbound j l ->
+           if l == generic then
+             (match V.find (\p -> fst p == j) seen with
+              | Just p -> (snd p, seen)
+              | None -> (let v = fresh c in (v, V.pushBack seen (j, v))))
+           else (u, seen)
+       | Bound _ -> (u, seen))
+  | MType.Fun a b ->
+      (match copy c a seen with
+       | (a2, s1) -> (match copy c b s1 with | (b2, s2) -> (MType.Fun a2 b2, s2)))
+  | _ -> (u, seen)
+
+-- `t` as it stands, every variable read out of its cell.
+fun frozen t =
+  match repr t with
+  | MType.Int -> Type.Int
+  | MType.Bool -> Type.Bool
+  | MType.Fun a b -> Type.Fun (frozen a) (frozen b)
+  | MType.Var r -> (match St.getRef r with | Unbound j _ -> Type.Var j | Bound u -> frozen u)
+
+-- `Core`, every expression holding its type as inference has it so far.
+lang! {
+  pub Inferring s extends Core
+  Expr * { ty : MType s }
+}
+
+-- `Core`, every expression holding its type.
+lang! {
+  pub Typed extends Core
+  Expr * { ty : Type }
+}
+
+-- Algorithm J, written as the cases of a pass. The context is carried down
+-- the tree: every child is inferred in the one its parent is, but a binder's
+-- body is taken `later` and inferred with the name bound, and a `let`'s value
+-- one level deeper, so that what it makes and nothing else is generalized. A
+-- node's type is worked out from its children's, which it already holds.
+pass! {
+  pub infer : Core -> Inferring with ctx
+    | Int { value } -> Int { value = value, ty = MType.Int }
+    | Bool { value } -> Bool { value = value, ty = MType.Bool }
+    | Var { name } ->
+        (match L.lookupAssoc name (envOf ctx) with
+         | Just t -> Var { name = name, ty = instantiate ctx t }
+         | None -> raise (errorAt here "unbound variable: ${name}"))
+    | Lam { param, later body } ->
+        (let a = fresh ctx in
+          let b = body (bind ctx param a) in
+          Lam { param = param, body = b, ty = MType.Fun a (tyInferringExpr b) })
+    | App { func, arg } ->
+        (let out = fresh ctx in
+          let u = unify here (tyInferringExpr func) (MType.Fun (tyInferringExpr arg) out) in
+          App { func = func, arg = arg, ty = out })
+    | Let { name, later value, later body } ->
+        (let v = value (deeper ctx) in
+          let u = generalize ctx (tyInferringExpr v) in
+          let b = body (bind ctx name (tyInferringExpr v)) in
+          Let { name = name, value = v, body = b, ty = tyInferringExpr b })
+    | LetRec { name, param, later value, later body } ->
+        (let inner = deeper ctx in
+          let tf = fresh inner in
+          let ta = fresh inner in
+          let v = value (bind (bind inner name tf) param ta) in
+          let u = unify here tf (MType.Fun ta (tyInferringExpr v)) in
+          let w = generalize ctx tf in
+          let b = body (bind ctx name tf) in
+          LetRec { name = name, param = param, value = v, body = b, ty = tyInferringExpr b })
+    | IfExpr { cond, yes, no } ->
+        (let u = unify (metaInferringExpr cond) (tyInferringExpr cond) MType.Bool in
+          let w = unify (metaInferringExpr no) (tyInferringExpr yes) (tyInferringExpr no) in
+          IfExpr { cond = cond, yes = yes, no = no, ty = tyInferringExpr yes })
+    | Prim { op, args } ->
+        (if V.len args != 2 then raise (errorAt here "`${op}` wants two operands")
+          else
+            let u = V.foldl (\acc a -> unify (metaInferringExpr a) (tyInferringExpr a) MType.Int) () args in
+            Prim { op = op, args = args, ty = if V.elem op ["+", "-", "*", "/"] then MType.Int else MType.Bool })
+}
+
+-- A type the tree holds is a cell inference may have written into since the
+-- node was made. Once every one is written, each is read.
+pass! {
+  pub settle : Inferring -> Typed
+    | Int { value, ty } -> Int { value = value, ty = frozen ty }
+    | Bool { value, ty } -> Bool { value = value, ty = frozen ty }
+    | Var { name, ty } -> Var { name = name, ty = frozen ty }
+    | Lam { param, body, ty } -> Lam { param = param, body = body, ty = frozen ty }
+    | App { func, arg, ty } -> App { func = func, arg = arg, ty = frozen ty }
+    | Let { name, value, body, ty } -> Let { name = name, value = value, body = body, ty = frozen ty }
+    | LetRec { name, param, value, body, ty } -> LetRec { name = name, param = param, value = value, body = body, ty = frozen ty }
+    | IfExpr { cond, yes, no, ty } -> IfExpr { cond = cond, yes = yes, no = no, ty = frozen ty }
+    | Prim { op, args, ty } -> Prim { op = op, args = args, ty = frozen ty }
+}
+
+-- Every expression in `e`, outermost first.
+@pub fun subexpressions (e : TypedExpr) : [TypedExpr] = V.pushFront (V.concatMap subexpressions (children e)) e
+
+fun children (e : TypedExpr) : [TypedExpr] =
+  match e with
+  | TypedExpr.App r -> [r.func, r.arg]
+  | TypedExpr.Prim r -> r.args
+  | TypedExpr.Lam r -> [r.body]
+  | TypedExpr.Let r -> [r.value, r.body]
+  | TypedExpr.LetRec r -> [r.value, r.body]
+  | TypedExpr.IfExpr r -> [r.cond, r.yes, r.no]
+  | _ -> []
+
+-- A program elaborated -- every expression in it with its type -- or why it
+-- has none, where. Every cell is made and written inside the `runSt`, and
+-- only `Typed`, which has none, comes out of it.
+@pub fun typed (e : CoreExpr) : Result Diagnostic TypedExpr = typedIn [] e
+
+-- The same, with names another unit exports in scope, each at its type.
+@pub fun typedIn (imports : [(String, Type)]) (e : CoreExpr) : Result Diagnostic TypedExpr =
+  toResult (\() ->
+    runSt (\() ->
+      let start = Ctx [;] 0 (St.newRef 0) in
+      let ctx = V.foldl (\c i -> bind c (fst i) (thaw c (snd i))) start imports in
+      settleExpr (inferExpr ctx e)))
+
+-- An imported type as inference holds one: each of its variables a new one,
+-- and generalized -- it was a `let`'s, in the unit it came from.
+fun thaw (c : Ctx s) (t : Type) = fst (thawing c t [])
+
+fun thawing c t seen =
+  match t with
+  | Type.Int -> (MType.Int, seen)
+  | Type.Bool -> (MType.Bool, seen)
+  | Type.Fun a b -> (match thawing c a seen with | (a2, s1) -> (match thawing c b s1 with | (b2, s2) -> (MType.Fun a2 b2, s2)))
+  | Type.Var n ->
+      (match V.find (\p -> fst p == n) seen with
+       | Just p -> (snd p, seen)
+       | None -> (let v = genericVar c in (v, V.pushBack seen (n, v))))
+
+fun genericVar c =
+  match fresh c with
+  | MType.Var r -> (match St.getRef r with | Unbound j _ -> (let u = St.setRef r (Unbound j generic) in MType.Var r) | Bound _ -> MType.Var r)
+  | t -> t
+
+-- The type of a program, or why it has none.
+@pub fun typeOf (e : CoreExpr) : Result Diagnostic String =
+  match typed e with
+  | Ok t -> Ok (typeName (tyTypedExpr t))
+  | Err d -> Err d
+
+-- Each expression of a program as it was written, with its type, outermost
+-- first.
+@pub fun annotated (src : String) (e : TypedExpr) : [String] =
+  V.map
+    (\x -> match metaTypedExpr x with | Meta a b -> "${S.trim (stringSlice src a b)} : ${typeName (tyTypedExpr x)}")
+    (subexpressions e)
+
+-- --- tests ---------------------------------------------------------------------------------
+
+use Std.Test (assertEq)
+use Std.Result (isErr)
+use MiniML.Compiler (typeOfSource, annotatedSource)
+
+-- MiniML's own tests.
+
+@test fun infersSimpleTypes () =
+  let got = V.map typeOfSource ["1 + 1", "1 < 2", "fun x -> x + 1", "if true then 1 else 2"] in
+  assertEq got [Ok "Int", Ok "Bool", Ok "(Int -> Int)", Ok "Int"] "ground types"
+
+@test fun infersPolymorphicIdentity () = assertEq (typeOfSource "fun x -> x") (Ok "(t0 -> t0)") "identity"
+
+@test fun letIsGeneralized () =
+  assertEq (typeOfSource "let id = fun x -> x in if id true then id 1 else 2") (Ok "Int") "let-polymorphism"
+
+@test fun lambdaIsNotGeneralized () =
+  assertEq (isErr (typeOfSource "(fun id -> if id true then id 1 else 2) (fun x -> x)")) True "lambda-bound names are monomorphic"
+
+@test fun occursCheckFires () =
+  assertEq (typeOfSource "fun x -> x x") (Err "occurs check: a type would contain itself") "self-application"
+
+@test fun mismatchIsReported () = assertEq (typeOfSource "1 + true") (Err "cannot unify Bool with Int") "adding a bool"
+
+@test fun unboundIsReported () = assertEq (typeOfSource "x + 1") (Err "unbound variable: x") "unbound"
+
+@test fun recursiveFunctionsType () =
+  assertEq (typeOfSource "let rec fact n = if n < 2 then 1 else n * fact (n - 1) in fact 5") (Ok "Int") "factorial"
+
+@test fun aLetWhoseTypeEscapedIsNotGeneralized () =
+  assertEq (isErr (typeOfSource "fun f -> let g = f in if g true then g 1 else 2")) True "g's type is f's"
+
+@test fun aGenuinelyLocalLetIsGeneralized () =
+  assertEq (typeOfSource "let g = fun x -> x in if g true then g 1 else 2") (Ok "Int") "local"
+
+-- The elaboration.
+
+@test fun everyExpressionHoldsItsType () =
+  -- `id` at its use is an instance, `Int -> Int`; the `x` inside is the
+  -- variable the definition was generalized over.
+  assertEq
+    (annotatedSource "let id = fun x -> x in id 1")
+    ["let id = fun x -> x in id 1 : Int", "fun x -> x : (t0 -> t0)", "x : t0", "id 1 : Int", "id : (Int -> Int)", "1 : Int"]
+    "outermost first"
+
+@test fun aTypeLearnedLaterIsSettledEverywhere () =
+  -- `n`'s type is a variable when `n` is met, and `Int` only once `n < 2` is:
+  -- every node says `Int`.
+  assertEq
+    (annotatedSource "let rec f n = if n < 2 then n else f (n - 1) in f")
+    [ "let rec f n = if n < 2 then n else f (n - 1) in f : (Int -> Int)",
+      "if n < 2 then n else f (n - 1) : Int",
+      "n < 2 : Bool", "n : Int", "2 : Int",
+      "n : Int",
+      "f (n - 1) : Int", "f : (Int -> Int)", "n - 1 : Int", "n : Int", "1 : Int",
+      "f : (Int -> Int)" ]
+    "no variable left"

@@ -99,12 +99,12 @@ syntax! {
 
 Two examples, in [`examples/`](examples):
 
-- [`calc`](examples/calc), a calculator: statements, precedence, calls and
+- [`Calc`](examples/Calc), a calculator: statements, precedence, calls and
   recovery, a test that every input comes back byte for byte, a `Surface`
   to `Core` pass that is evaluated to the same answers, and all of it as a
   database of files -- where an edit re-runs only the file it is in, and a
   comment stops at what the file binds.
-- [`miniml`](examples/miniml), Meadow's `examples/MiniML` -- a toy ML with
+- [`MiniML`](examples/MiniML), Meadow's `examples/MiniML` -- a toy ML with
   `let`-polymorphism -- written as its specification: the grammar, a
   desugaring pass from `Surface` to `Core`, Hindley-Milner inference and an
   evaluator as queries, and every error, from the parser to the run, drawn

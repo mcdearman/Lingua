@@ -64,7 +64,7 @@ written beside it in the same declaration:
   argument is an atom: `AppExpr = func:Expr arg:Atom`, with `Atom` an enum of
   its own among `Expr`'s alternatives. The Pratt loop wraps the left side
   whenever an atom can start next, so `f x y` is `(f x) y` and `f x + 1` is
-  `(f x) + 1`, as Meadow's own parser reads them (`examples/miniml`).
+  `(f x) + 1`, as Meadow's own parser reads them (`examples/MiniML`).
 
 ```meadow
 syntax! {

@@ -1,0 +1,48 @@
+-- The type an expression ends up with, how it is written, and how it is kept
+-- between builds.
+
+use Std.Macro (Reflect, Datum, toDatum, fromDatum)
+use Std.Collections.Vector as V
+use Std.Result.Result.*
+
+@derive(Debug, PartialEq)
+@pub data Type = Int | Bool | Fun Type Type | Var Int
+
+-- A type as a `Datum`, which is how an interface is kept between builds.
+impl Reflect Type {
+  fun toDatum t =
+    match t with
+    | Type.Int -> Datum.Tag "Int" []
+    | Type.Bool -> Datum.Tag "Bool" []
+    | Type.Fun a b -> Datum.Tag "Fun" [toDatum a, toDatum b]
+    | Type.Var n -> Datum.Tag "Var" [Datum.Int n]
+  fun fromDatum d =
+    match d with
+    | Datum.Tag t xs ->
+        if t == "Int" then Ok Type.Int
+        else if t == "Bool" then Ok Type.Bool
+        else if t == "Var" then (match V.get xs 0 with | Just (Datum.Int n) -> Ok (Type.Var n) | _ -> Err "a variable's number")
+        else if t == "Fun" then
+          (match (V.get xs 0, V.get xs 1) with
+           | (Just a, Just b) -> (match (fromDatum a, fromDatum b) with | (Ok x, Ok y) -> Ok (Type.Fun x y) | (Err e, _) -> Err e | (_, Err e) -> Err e)
+           | _ -> Err "a function's two sides")
+        else Err "`${t}` is not a type"
+    | _ -> Err "not a type"
+}
+
+fun freeVars t =
+  match t with
+  | Type.Var v -> [v]
+  | Type.Fun a b -> V.append (freeVars a) (freeVars b)
+  | _ -> []
+
+-- How a type is written, its variables named in the order they appear.
+@pub fun typeName (t : Type) : String =
+  shown (V.foldl (\acc v -> if V.elem v acc then acc else V.pushBack acc v) [] (freeVars t)) t
+
+fun shown vars t =
+  match t with
+  | Type.Int -> "Int"
+  | Type.Bool -> "Bool"
+  | Type.Fun a b -> "(${shown vars a} -> ${shown vars b})"
+  | Type.Var v -> "t${show (V.len (V.takeWhile (\w -> w != v) vars))}"

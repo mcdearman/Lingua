@@ -1,0 +1,72 @@
+-- Names. Resolution is a pass as inference is, and for the same reason:
+-- which `x` a use means depends on what is around it, which a context carries
+-- down. `Resolved` is `Surface` with each name that is used holding where the
+-- binder it means was written -- or nothing, for one bound nowhere.
+
+use Lingua (lang!, pass!)
+use Lingua.Green (Green)
+use Lingua.Lang (Meta)
+use MiniML.Syntax
+use MiniML.Desugar
+use Std.Collections.Vector as V
+use Std.Collections.List as L
+use Std.Maybe as M
+
+lang! {
+  pub Resolved extends Surface
+  Atom - NameRef
+  Atom + NameRef { ident : String, binder : Maybe Meta }
+}
+
+pass! {
+  pub resolve : Surface -> Resolved with env
+    | NameRef { ident } -> NameRef { ident = ident, binder = L.lookupAssoc ident env }
+    | LamExpr { params, later body } -> LamExpr { params = params, body = body (bindParams params env) }
+    | LetExpr { recursive, name, params, later value, later body } ->
+        (let self = (nameIdent name, metaResolvedName name) :: env in
+          let inner = bindParams params (if M.isSome recursive then self else env) in
+          LetExpr { recursive = recursive, name = name, params = params, value = value inner, body = body self })
+}
+
+fun nameIdent (n : ResolvedName) : String = match n with | ResolvedName.Name r -> r.ident
+
+fun paramIdent (p : ResolvedParam) : String = match p with | ResolvedParam.Param r -> r.ident
+
+fun bindParams (ps : [ResolvedParam]) env = V.foldl (\acc p -> (paramIdent p, metaResolvedParam p) :: acc) env ps
+
+-- A file's names: each binder -- what it is called, where, what it binds,
+-- and the stretches of the file it can be seen in -- and each use, with
+-- where its binder is.
+@derive(Debug, PartialEq)
+@pub data Names = Names [(String, Meta, String, [Meta])] [(Meta, Meta)]
+
+@pub(pkg) fun namesOf (parsed : (Green MiniKind, [(Int, String)])) : Names =
+  match M.map (resolve [;]) (surfaceFromMini (fst parsed)) with
+  | Just (ResolvedFile.File r) -> (match namesIn r.expr with | (bs, us) -> Names.Names bs us)
+  | None -> Names.Names [] []
+
+fun both a b = (V.append (fst a) (fst b), V.append (snd a) (snd b))
+
+fun namesIn (e : ResolvedExpr) =
+  match e with
+  | ResolvedExpr.Atom r -> namesInAtom r.atom
+  | ResolvedExpr.AppExpr r -> both (namesIn r.func) (namesInAtom r.arg)
+  | ResolvedExpr.BinExpr r -> both (namesIn r.lhs) (namesIn r.rhs)
+  | ResolvedExpr.IfExpr r -> both (namesIn r.cond) (both (namesIn r.yes) (namesIn r.no))
+  | ResolvedExpr.LamExpr r -> both (paramsSeenIn r.params [metaResolvedExpr r.body], []) (namesIn r.body)
+  | ResolvedExpr.LetExpr r ->
+      let value = metaResolvedExpr r.value in
+      let body = metaResolvedExpr r.body in
+      let kind = if not (V.isEmpty r.params) or isLam r.value then "function" else "variable" in
+      let self = (nameIdent r.name, metaResolvedName r.name, kind, if M.isSome r.recursive then [value, body] else [body]) in
+      both ([self], []) (both (paramsSeenIn r.params [value], []) (both (namesIn r.value) (namesIn r.body)))
+
+fun paramsSeenIn ps scope = V.map (\p -> (paramIdent p, metaResolvedParam p, "parameter", scope)) ps
+
+fun isLam (e : ResolvedExpr) = match e with | ResolvedExpr.LamExpr _ -> True | _ -> False
+
+fun namesInAtom (a : ResolvedAtom) =
+  match a with
+  | ResolvedAtom.NameRef r -> ([], match r.binder with | Just b -> [(r.meta, b)] | None -> [])
+  | ResolvedAtom.ParenExpr r -> namesIn r.expr
+  | _ -> ([], [])

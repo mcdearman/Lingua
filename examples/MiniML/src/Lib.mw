@@ -1,0 +1,203 @@
+-- MiniML with Lingua: the toy ML of Meadow's `examples/MiniML` -- integers,
+-- booleans, `fun`, application, `let`, `let rec`, `if` and arithmetic --
+-- written as its specification.
+--
+--   meadow run examples/MiniML -- check a.ml b.ml
+--   meadow run examples/MiniML -- run a.ml
+--   meadow run examples/MiniML -- demo     -- a few programs, typed and run
+--   meadow test examples/MiniML    -- MiniML's tests, and the queries'
+--
+-- What Meadow's MiniML writes by hand, Lingua writes from declarations, a
+-- module each:
+--
+--   Syntax     an ungrammar; the parser, a lossless tree and a typed AST are
+--              generated (`syntax!`)
+--   Desugar    two languages, `Surface` read off the grammar and `Core`
+--              declared as what changes (`lang!`), and the pass between them,
+--              only its cases (`pass!`)
+--   Types      the type an expression ends up with, and how it is written
+--   Infer      Algorithm J as an elaboration: a pass from `Core` to `Typed`,
+--              the same program with the type of every expression written on
+--              it -- its variables mutable cells, in a `runSt`, so the query
+--              it runs in stays pure
+--   Eval       running a program
+--   Compiler   a database of queries: a file's text in, its type and value
+--              out, each step remembered (`database!`). Every error, from the
+--              parser, the pass, the checker or the run, is at the bytes it is
+--              about, drawn by Nettle (`Lingua.Diagnostic`)
+--   Names      resolution, as another pass with a context: each use of a name
+--              to where it was bound, for the editor to go to
+--   Editor     a language server over the same queries: diagnostics, types on
+--              hover, going to a definition, references, renaming,
+--              completion, symbols, and colours, folds and selections read off
+--              the tree (`lsp!`)
+--   Units      the build: units -- directories of files, each depending on
+--              others -- compiled in order, those that can be at once, and
+--              each again only when its files or an interface it read changed
+--              (`make!`); inside a unit, the compiler's own queries
+--
+-- and here, the command line: `check`, `run`, `repl`, `build`, `lsp`, with
+-- their flags and help, a completion script, and their mistakes drawn
+-- (`cli!`).
+
+mod Syntax
+mod Desugar
+mod Types
+mod Infer
+mod Eval
+mod Compiler
+mod Names
+mod Editor
+mod Units
+
+use Lingua (cli!)
+use Lingua.Diagnostic (renderAll)
+use MiniML.Compiler
+use MiniML.Editor
+use MiniML.Units
+use Std.Collections.Vector as V
+use Std.Maybe as M
+use Std.Fs (Fs, readToString)
+use Std.Process (Process, exit)
+use Std.Console (Console, readLine, writeOutput)
+use Std.Result.Result.*
+
+cli! {
+  pub Cli "miniml" "MiniML, typed and run by a compiler written with Lingua"
+    | check "Type-check each file and say its type" { files : [String] "the files to check" }
+    | run "Run a program and say its value and type" { file : String "the program" }
+    | repl "Type and run each line of standard input" {}
+    | demo "Type and run a few programs" {}
+    | build "Build a unit and every unit it depends on" { root : Maybe String "the unit's directory; this one if none is given" }
+    | lsp "Be a language server, on standard input and output" {}
+}
+
+def main =
+  match argsCli () with
+  | Cli.Check r -> finish (checkFiles r.files)
+  | Cli.Run r -> finish (runFile r.file)
+  | Cli.Repl -> repl ()
+  | Cli.Demo -> demo ()
+  | Cli.Build r -> finish (buildBuild (M.unwrapOr "." r.root))
+  | Cli.Lsp -> serveServer ()
+
+-- End with status 1 when something went wrong.
+fun finish (ok : Bool) = if ok then () else exit 1
+
+-- Each of `paths` read into `db` -- as file 1, 2, … -- or why one could not be.
+fun load db (paths : [String]) : Result String [(Int, String, String)] ! { Fs, Thread, Mut | e } =
+  V.foldl
+    (\acc p -> match acc with
+               | Err why -> Err why
+               | Ok done ->
+                   (match readToString p with
+                    | Err why -> Err "cannot read ${p}: ${why}"
+                    | Ok text ->
+                        (let i = V.len done + 1 in
+                          let u = setSessionSource db i text in
+                          Ok (V.pushBack done (i, p, text)))))
+    (Ok [])
+    paths
+
+-- Each file's type, or its diagnostics drawn against it -- the files typed
+-- on threads of their own.
+fun checkFiles (paths : [String]) =
+  let db = newSession () in
+  match load db paths with
+  | Err why -> (let u = println why in False)
+  | Ok files ->
+      let typed = sessionTypedEach db (V.map (\f -> match f with | (i, _, _) -> i) files) in
+      V.foldl
+        (\ok i -> match (V.get files i, V.get typed i) with
+                  | (Just (_, p, _), Just (Ok ty)) -> (let u = println "${p}: ${ty}" in ok)
+                  | (Just (_, p, text), Just (Err ds)) -> (let u = writeOutput (renderAll p text ds) in False)
+                  | _ -> ok)
+        True
+        (V.range 0 (V.len files))
+
+-- A program's value and type, or its diagnostics.
+fun runFile (path : String) =
+  let db = newSession () in
+  match load db [path] with
+  | Err why -> (let u = println why in False)
+  | Ok files ->
+      match sessionResult db 1 with
+      | Ok out -> (let u = println out in True)
+      | Err ds -> (let u = writeOutput (renderAll path (sessionSource db 1) ds) in False)
+
+fun repl () =
+  match readLine () with
+  | None -> ()
+  | Just line -> (let u = println (replLine line) in repl ())
+
+fun demo () =
+  V.foldl
+    (\u src -> println "> ${src}\n${replLine src}\n")
+    ()
+    [ "let rec fact n = if n < 2 then 1 else n * fact (n - 1) in fact 10",
+      "let id = fun x -> x in if id true then id 1 else 2",
+      "let add = fun x y -> x + y in let inc = add 1 in inc 41",
+      "fun x -> x x",
+      "1 + true",
+      "1 / 0",
+      "let x = in 1",
+      "let rec loop = loop in loop" ]
+
+-- --- tests ---------------------------------------------------------------------------------
+
+use Std.Test (assertEq)
+use Std.String as S
+use Lingua.Diagnostic (message)
+use Lingua.Cli.Asked.*
+
+fun asked args =
+  match askCli args with
+  | Ok (Cli.Check r) -> "check ${S.join " " r.files}"
+  | Ok (Cli.Run r) -> "run ${r.file}"
+  | Ok Cli.Repl -> "repl"
+  | Ok Cli.Demo -> "demo"
+  | Ok (Cli.Build r) -> "build ${M.unwrapOr "." r.root}"
+  | Ok Cli.Lsp -> "lsp"
+  | Err (Help h) -> V.getOr "" (S.split "\n" h) 0
+  | Err (Complete c) -> "completions"
+  | Err (Wrong d line) -> message d
+  | Err (Ran _ _) -> "?"
+
+@test fun aCommandIsReadIntoItsConstructor () =
+  assertEq
+    (V.map asked [["check", "a.ml", "b.ml"], ["run", "a.ml"], ["repl"], ["check"]])
+    ["check a.ml b.ml", "run a.ml", "repl", "check "]
+    "each command, its fields filled"
+
+@test fun helpIsAskedForAndGiven () =
+  assertEq
+    (V.map asked [[], ["help"], ["--help"], ["help", "run"], ["run", "--help"]])
+    [ "miniml -- MiniML, typed and run by a compiler written with Lingua",
+      "miniml -- MiniML, typed and run by a compiler written with Lingua",
+      "miniml -- MiniML, typed and run by a compiler written with Lingua",
+      "miniml run -- Run a program and say its value and type",
+      "miniml run -- Run a program and say its value and type" ]
+    "the program's help, or the command's"
+
+@test fun aMistakeIsSaidWhereItIs () =
+  let a = assertEq
+  (V.map asked [["chek", "a.ml"], ["run"], ["run", "a.ml", "b.ml"], ["run", "--fast", "a.ml"], ["completions", "fish"]])
+    [ "there is no command `chek`",
+      "`run` needs <file>",
+      "`run` takes nothing more",
+      "`run` has no flag `--fast`",
+      "there are no completions for `fish`" ]
+    "each mistake" in
+  match askCli ["run", "--fast", "a.ml"] with
+  | Err (Wrong d line) ->
+      assertEq
+        (renderAll "command line" line [d])
+        "Error: `run` has no flag `--fast`\n   ╭─[ command line:1:12 ]\n   │\n 1 │ miniml run --fast a.ml\n   │            ───┬──  \n   │               ╰──── `run` has no flag `--fast`\n   │ \n   │ Note: `run` takes no flags\n───╯\n"
+        "drawn under the flag"
+  | _ -> assertEq True False "a mistake"
+
+@test fun aCompletionScriptNamesTheCommands () =
+  match askCli ["completions", "bash"] with
+  | Err (Complete script) ->
+      assertEq (S.contains "compgen -W \"check run repl demo build lsp help completions\"" script) True script
+  | _ -> assertEq True False "a script"

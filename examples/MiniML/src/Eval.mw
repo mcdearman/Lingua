@@ -1,0 +1,77 @@
+-- Running a program. Evaluation runs inside a query, so it is pure: a
+-- recursive function is a closure that knows its own name, rather than a
+-- cell tied into a knot.
+
+use Lingua.Diagnostic (Diagnostic, errorAt)
+use MiniML.Desugar
+use Std.Exn (raise, toResult)
+use Std.Collections.Vector as V
+use Std.Collections.List as L
+use Std.String as S
+
+-- A value. A recursive function binds its own name again each time it is
+-- applied: no cell, and so nothing to mutate.
+data Value = Int Int | Bool Bool | Closure String CoreExpr (List (String, Value)) | Rec String String CoreExpr (List (String, Value))
+
+fun showValue v =
+  match v with
+  | Value.Int n -> S.fromInt n
+  | Value.Bool b -> if b then "true" else "false"
+  | _ -> "<function>"
+
+fun eval env (e : CoreExpr) =
+  match e with
+  | CoreExpr.Int r -> Value.Int r.value
+  | CoreExpr.Bool r -> Value.Bool r.value
+  | CoreExpr.Var r -> (match L.lookupAssoc r.name env with | Just v -> v | None -> raise (errorAt r.meta "unbound at run time: ${r.name}"))
+  | CoreExpr.Lam r -> Value.Closure r.param r.body env
+  | CoreExpr.App r -> apply r.meta (eval env r.func) (eval env r.arg)
+  | CoreExpr.Let r -> eval ((r.name, eval env r.value) :: env) r.body
+  | CoreExpr.LetRec r -> eval ((r.name, Value.Rec r.name r.param r.value env) :: env) r.body
+  | CoreExpr.IfExpr r -> (match eval env r.cond with | Value.Bool True -> eval env r.yes | _ -> eval env r.no)
+  | CoreExpr.Prim r ->
+      (match (V.get r.args 0, V.get r.args 1) with
+       | (Just a, Just b) -> primitive r.meta r.op (eval env a) (eval env b)
+       | _ -> raise (errorAt r.meta "`${r.op}` wants two operands"))
+
+fun apply at f x =
+  match f with
+  | Value.Closure p body env -> eval ((p, x) :: env) body
+  | Value.Rec name p body env -> eval ((p, x) :: (name, f) :: env) body
+  | other -> raise (errorAt at "not a function: ${showValue other}")
+
+fun primitive at op l r =
+  match (l, r) with
+  | (Value.Int a, Value.Int b) ->
+      if op == "+" then Value.Int (a + b)
+      else if op == "-" then Value.Int (a - b)
+      else if op == "*" then Value.Int (a * b)
+      else if op == "/" then (if b == 0 then raise (errorAt at "division by zero") else Value.Int (a / b))
+      else if op == "==" then Value.Bool (a == b)
+      else if op == "<" then Value.Bool (a < b)
+      else if op == ">" then Value.Bool (a > b)
+      else if op == "<=" then Value.Bool (a <= b)
+      else Value.Bool (a >= b)
+  | _ -> raise (errorAt at "`${op}` wants numbers")
+
+-- What a program evaluates to, or what went wrong running it, where.
+@pub fun run (e : CoreExpr) : Result Diagnostic String = toResult (\() -> showValue (eval [;] e))
+
+-- --- tests ---------------------------------------------------------------------------------
+
+use Std.Test (assertEq)
+use Std.Result.Result.*
+use MiniML.Compiler (runSource)
+
+@test fun evaluatesArithmetic () =
+  assertEq (V.map runSource ["1 + 2 * 3", "(1 + 2) * 3", "7 / 2", "1 < 2"]) [Ok "7", Ok "9", Ok "3", Ok "true"] "arithmetic"
+
+@test fun evaluatesClosures () =
+  assertEq (runSource "let add = fun x y -> x + y in let inc = add 1 in inc 41") (Ok "42") "partial application captures"
+
+@test fun evaluatesRecursion () =
+  assertEq (runSource "let rec fact n = if n < 2 then 1 else n * fact (n - 1) in fact 10") (Ok "3628800") "factorial"
+
+@test fun shadowingSeesTheOldBinding () = assertEq (runSource "let x = 1 in let x = x + 1 in x") (Ok "2") "shadowing"
+
+@test fun divisionByZeroIsCaught () = assertEq (runSource "1 / 0") (Err "division by zero") "a run-time error, not a crash"

@@ -1,0 +1,123 @@
+-- The editor: a language server over the compiler's own queries (`lsp!`).
+-- Each feature asks the session, which works out only what the last edit
+-- changed: hovering reads the elaboration, going to a definition the names,
+-- and neither runs again until the file does.
+
+use Lingua (lsp!)
+use Lingua.Lang (Meta)
+use MiniML.Syntax
+use MiniML.Types
+use MiniML.Infer
+use MiniML.Compiler
+use MiniML.Names
+use Std.Collections.Vector as V
+use Std.Maybe as M
+use Std.Exn (toResult)
+use Std.Result.Result.*
+
+lsp! {
+  pub Server "miniml" for Session
+    | text = setSessionSource
+    | diagnostics = diagnosticsOf
+    | tree = treeOf
+    | hover = hoverAt
+    | definition = definitionAt
+    | references = referencesAt
+    | completion = completionAt
+    | symbols = symbolsOf
+}
+
+-- A query's answer, or `fallback` if it has none -- an input never set.
+fun answered fallback act = match toResult act with | Ok x -> x | Err _ -> fallback
+
+fun diagnosticsOf db file = answered [] (\() -> match sessionTyped db file with | Ok _ -> [] | Err ds -> ds)
+
+fun treeOf db file = answered (fst (parseMini "")) (\() -> fst (sessionParsed db file))
+
+fun contains (m : Meta) (at : Int) = match m with | Meta a b -> a <= at and at <= b
+
+-- The type of the innermost expression the editor is on.
+fun hoverAt db file at =
+  answered None (\() ->
+    match sessionElaborated db file with
+    | Err _ -> None
+    | Ok t ->
+        let around = V.filter (\x -> contains (metaTypedExpr x) at) (subexpressions t) in
+        match V.get around (V.len around - 1) with
+        | Just x -> Just (metaTypedExpr x, "```\n${typeName (tyTypedExpr x)}\n```")
+        | None -> None)
+
+fun namesAt db file = answered (Names.Names [] []) (\() -> sessionNames db file)
+
+-- The binder the editor is on, or the one the name it is on means.
+fun binderAt (n : Names) (at : Int) : Maybe Meta =
+  match n with
+  | Names.Names bs us ->
+      (match V.find (\u -> contains (fst u) at) us with
+       | Just u -> Just (snd u)
+       | None -> M.map (\b -> match b with | (_, m, _, _) -> m) (V.find (\b -> match b with | (_, m, _, _) -> contains m at) bs))
+
+fun definitionAt db file at = match binderAt (namesAt db file) at with | Just b -> [(file, b)] | None -> []
+
+-- The binder and every use of it.
+fun referencesAt db file at =
+  let n = namesAt db file in
+  match (n, binderAt n at) with
+  | (Names.Names _ us, Just b) -> V.pushFront (V.map (\u -> (file, fst u)) (V.filter (\u -> snd u == b) us)) (file, b)
+  | _ -> []
+
+-- The names that can be seen where the editor is, innermost first, and the
+-- keywords.
+fun completionAt db file at =
+  match namesAt db file with
+  | Names.Names bs _ ->
+      let seen = V.filter (\b -> match b with | (_, _, _, scopes) -> V.any (\s -> contains s at) scopes) bs in
+      let named = V.foldr (\b acc -> match b with | (n, _, k, _) -> if V.any (\x -> fst x == n) acc then acc else V.pushBack acc (n, k)) [] seen in
+      V.append named (V.map (\k -> (k, "keyword")) ["let", "rec", "in", "fun", "if", "then", "else", "true", "false"])
+
+-- Everything a `let` binds.
+fun symbolsOf db file =
+  match namesAt db file with
+  | Names.Names bs _ -> V.concatMap (\b -> match b with | (n, m, k, _) -> if k == "parameter" then [] else [(n, k, m)]) bs
+
+-- --- tests ---------------------------------------------------------------------------------
+--
+-- What the server answers, asked of a session directly.
+
+use Std.Test (assertEq)
+
+fun editing src =
+  let db = newSession () in
+  let u = setSessionSource db 1 src in
+  db
+
+fun spelled src (ps : [(Int, Meta)]) = V.map (\p -> match snd p with | Meta a b -> "${stringSlice src a b}@${show a}") ps
+
+@test fun aNameGoesToItsBinder () =
+  let src = "let x = 1 in let x = x + 1 in x" in
+  let db = editing src in
+  -- The `x` in `x + 1` is the outer one: a `let` is not recursive.
+  let a = assertEq (spelled src (definitionAt db 1 21)) ["x@4"] "the value's `x`" in
+  assertEq (spelled src (definitionAt db 1 30)) ["x@17"] "the body's `x`"
+
+@test fun aBinderIsFoundWithEveryUse () =
+  let src = "let rec f n = if n < 2 then 1 else f (n - 1) in f 3" in
+  let db = editing src in
+  let a = assertEq (spelled src (referencesAt db 1 17)) ["n@10", "n@17", "n@38"] "a parameter" in
+  assertEq (spelled src (referencesAt db 1 49)) ["f@8", "f@35", "f@48"] "a recursive function, from a use"
+
+@test fun completionOffersWhatCanBeSeen () =
+  let src = "let id = fun x -> x in id 1" in
+  let db = editing src in
+  let names = \at -> V.filter (\n -> V.elem n ["id", "x"]) (V.map fst (completionAt db 1 at)) in
+  -- Inside the function its parameter can be seen, and `id` cannot yet.
+  let a = assertEq (names 18) ["x"] "in the lambda" in
+  assertEq (names 23) ["id"] "in the body"
+
+@test fun hoverSaysTheTypeWhereItIs () =
+  let db = editing "let id = fun x -> x in id 1" in
+  assertEq (hoverAt db 1 23) (Just (Meta 23 25, "```\n(Int -> Int)\n```")) "`id` at its use"
+
+@test fun theSymbolsAreWhatLetsBind () =
+  let db = editing "let id = fun x -> x in let one = id 1 in one" in
+  assertEq (symbolsOf db 1) [("id", "function", Meta 4 6), ("one", "variable", Meta 27 30)] "not the parameter"

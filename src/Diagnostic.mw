@@ -8,6 +8,10 @@
 --
 --   renderAll "main.ml" text [errorAt meta "cannot unify Bool with Int"]
 --
+-- `renderAll` draws without colour, as a test or a log wants; `renderToOutput`
+-- in colour, as ariadne does, when standard output is a terminal and
+-- `NO_COLOR` is not set -- what a compiler's command line writes.
+--
 -- A parse's errors become diagnostics with `parseErrors`, each at the token it
 -- was found at. A pass reports with `report`, the one operation of the
 -- `Report` effect -- in a `pass!` case, `here` is the `meta` of the node being
@@ -18,6 +22,7 @@
 use Std.Collections.Vector as V
 use Std.String as S
 use Std.Maybe.Maybe.*
+use Std.Process (Process, isTerminal, getEnv)
 use Lingua.Lang (Meta, noMeta)
 use Lingua.Lang.Meta.*
 use Lingua.Green (Green)
@@ -102,6 +107,15 @@ use Nettle.Write (render)
 -- The same, in colour, for a terminal.
 @pub fun renderColored (path : String) (text : String) (ds : [Diagnostic]) : String = drawn True path text ds
 
+-- The same, for standard output: in colour if it is a terminal and `NO_COLOR`
+-- (https://no-color.org) is not set, and plainly into a file or a pipe.
+@pub fun renderToOutput (path : String) (text : String) (ds : [Diagnostic]) : String ! { Process | e } =
+  drawn (coloured ()) path text ds
+
+-- Whether what goes to standard output should be coloured.
+@pub fun coloured () : Bool ! { Process | e } =
+  isTerminal 1 and (match getEnv "NO_COLOR" with | Just v -> v == "" | None -> True)
+
 fun drawn color path text ds = S.join "" (V.map (\d -> render (nettle color path d) (NS.namedSource path (NS.source text))) ds)
 
 -- The Nettle report for `d`: its message at the top, its span underlined --
@@ -141,3 +155,7 @@ use Std.Test (assertEq)
 @test fun collectKeepsWhatWasReported () =
   let got = collect (\() -> let a = say (errorAt noMeta "one") in let b = say (warningAt noMeta "two") in 3) in
   assertEq (match got with | (x, ds) -> (x, V.map message ds)) (3, ["one", "two"]) "the answer, and both, in order"
+
+@test fun aTerminalGetsColour () =
+  let d = [errorAt (Meta 12 16) "cannot unify Bool with Int"] in
+  assertEq (renderColored "main.ml" "let x = 1 + true in x" d == renderAll "main.ml" "let x = 1 + true in x" d) False "escapes, around the same drawing"

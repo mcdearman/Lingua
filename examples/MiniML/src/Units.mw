@@ -5,7 +5,7 @@
 
 use Lingua (make!)
 use Lingua.Make (Given, unitSources, unitImports, unitOut)
-use Lingua.Diagnostic (renderAll)
+use Lingua.Diagnostic (renderToOutput)
 use MiniML.Types
 use MiniML.Compiler
 use Std.Macro (Reflect, Datum, toDatum, fromDatum)
@@ -79,7 +79,7 @@ fun compiling (u : Given Interface) =
       (S.join ""
         (V.map
           (\i -> match (V.get sources i, V.get linked i) with
-                 | (Just (path, text), Just (Err ds)) -> renderAll path text ds
+                 | (Just (path, text), Just (Err ds)) -> renderToOutput path text ds
                  | _ -> "")
           (V.range 0 (V.len sources))))
 

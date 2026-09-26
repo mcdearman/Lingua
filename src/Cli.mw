@@ -34,7 +34,7 @@ use Std.Process (Process, argv, exit)
 use Std.Console (Console, writeOutput)
 use Lingua.Lang (Meta)
 use Lingua.Lang.Meta.*
-use Lingua.Diagnostic (Diagnostic, errorAt, withNote, renderAll)
+use Lingua.Diagnostic (Diagnostic, errorAt, withNote, renderToOutput)
 
 -- --- what a command line is made of ------------------------------------------------
 
@@ -224,7 +224,7 @@ fun convert k text =
   | Ok x -> x
   | Err (Help h) -> (let u = writeOutput h in let w = exit 0 in never ())
   | Err (Complete c) -> (let u = writeOutput c in let w = exit 0 in never ())
-  | Err (Wrong d line) -> (let u = writeOutput (renderAll "command line" line [d]) in let w = exit 2 in never ())
+  | Err (Wrong d line) -> (let u = writeOutput (renderToOutput "command line" line [d]) in let w = exit 2 in never ())
   | Err (Ran _ _) -> never ()
 
 -- A command and its fields, if that is what was asked for.

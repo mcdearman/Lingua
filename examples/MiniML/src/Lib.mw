@@ -53,7 +53,7 @@ mod Editor
 mod Units
 
 use Lingua (cli!)
-use Lingua.Diagnostic (renderAll)
+use Lingua.Diagnostic (renderToOutput)
 use MiniML.Compiler
 use MiniML.Editor
 use MiniML.Units
@@ -63,6 +63,7 @@ use Std.Fs (Fs, readToString)
 use Std.Process (Process, exit)
 use Std.Console (Console, readLine, writeOutput)
 use Std.Result.Result.*
+use Std.Exn (toResult)
 
 cli! {
   pub Cli "miniml" "MiniML, typed and run by a compiler written with Lingua"
@@ -112,7 +113,7 @@ fun checkFiles (paths : [String]) =
       V.foldl
         (\ok i -> match (V.get files i, V.get typed i) with
                   | (Just (_, p, _), Just (Ok ty)) -> (let u = println "${p}: ${ty}" in ok)
-                  | (Just (_, p, text), Just (Err ds)) -> (let u = writeOutput (renderAll p text ds) in False)
+                  | (Just (_, p, text), Just (Err ds)) -> (let u = writeOutput (renderToOutput p text ds) in False)
                   | _ -> ok)
         True
         (V.range 0 (V.len files))
@@ -125,16 +126,26 @@ fun runFile (path : String) =
   | Ok files ->
       match sessionResult db 1 with
       | Ok out -> (let u = println out in True)
-      | Err ds -> (let u = writeOutput (renderAll path (sessionSource db 1) ds) in False)
+      | Err ds -> (let u = writeOutput (renderToOutput path (sessionSource db 1) ds) in False)
 
 fun repl () =
   match readLine () with
   | None -> ()
-  | Just line -> (let u = println (replLine line) in repl ())
+  | Just line -> (let u = println (shown line) in repl ())
+
+-- What the REPL prints for a line: `replLine`, its diagnostics in colour
+-- where `renderToOutput` says so.
+fun shown (src : String) =
+  let db = newSession () in
+  let u = setSessionSource db 0 src in
+  match toResult (\() -> sessionResult db 0) with
+  | Ok (Ok out) -> out
+  | Ok (Err ds) -> renderToOutput "input.ml" src ds
+  | Err e -> show e
 
 fun demo () =
   V.foldl
-    (\u src -> println "> ${src}\n${replLine src}\n")
+    (\u src -> println "> ${src}\n${shown src}\n")
     ()
     [ "let rec fact n = if n < 2 then 1 else n * fact (n - 1) in fact 10",
       "let id = fun x -> x in if id true then id 1 else 2",
@@ -149,7 +160,7 @@ fun demo () =
 
 use Std.Test (assertEq)
 use Std.String as S
-use Lingua.Diagnostic (message)
+use Lingua.Diagnostic (message, renderAll)
 use Lingua.Cli.Asked.*
 
 fun asked args =

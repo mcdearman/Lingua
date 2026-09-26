@@ -3,9 +3,9 @@
 -- rust-analyzer's notation for the shape of a syntax tree
 -- (https://rust-analyzer.github.io/blog/2020/10/24/introducing-ungrammar.html):
 --
---   LetStmt = 'let' name:Name '=' value:Expr ';'
---   Expr    = Literal | BinExpr
---   BinExpr = lhs:Expr op:('+' | '*') rhs:Expr
+--   Let  = 'let' name:Name '=' value:Expr ';'
+--   Expr = Literal | Bin
+--   Bin  = lhs:Expr op:('+' | '*') rhs:Expr
 --
 -- A rule is `UpperCamel = rule`; `'…'` is a token, `\'` and `\\` escaping in
 -- it; juxtaposition is a sequence, `|` alternation, `*` and `?` repetition,

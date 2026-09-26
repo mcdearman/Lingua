@@ -28,14 +28,14 @@ syntax! {
   trivia { Whitespace }
   tokens { "let" = Let, "=" = Equals, ";" = Semi, "ident" = Ident _, "int_number" = Number _ }
   grammar r#"
-    File = LetStmt*
-    LetStmt = 'let' name:Name '=' value:Literal ';'
+    File = Let*
+    Let = 'let' name:Name '=' value:Literal ';'
     Name = 'ident'
     Literal = 'int_number'
   "#
 }
 
--- parseMini : String -> (Green MiniKind, [(Int, String)])
+-- parseMini : String -> (Green Mini, [(Int, String)])
 ```
 
 ## What there is
@@ -48,12 +48,15 @@ syntax! {
   [resilient LL parsing](https://matklad.github.io/2023/05/21/resilient-ll-parsing-tutorial.html).
   A mistake in the grammar is reported at the byte of the string it is at.
 - **A typed AST** from the grammar's labels: a type per rule, a cast from
-  the tree, and an accessor per element — `letStmtName`, `binExprLhs`,
-  `argListArgs` — each a `Maybe` or a list, since the tree holds whatever was
-  written. `parseMini` is pure, and `astMini` casts its root.
+  the tree, and an accessor per element — `MiniLet`, `miniLetName`,
+  `miniLetValue` — each a `Maybe` or a list, since the tree holds whatever was
+  written. `parseMini` is pure, and `astMini` casts its root. Everything
+  `syntax! { Mini … }` makes is named after `Mini`, so a rule may have any
+  name — `Let`, as a token is called, or `Int`, as a type is — without
+  meeting one of the program's own.
 - **`lang!`** declares an intermediate language — read off the grammar
   (`lang! { Surface from Calc }`) or as changes to another
-  (`Core extends Surface`, `Expr - BinExpr`, `Expr + Prim { … }`,
+  (`Core extends Surface`, `Expr - Bin`, `Expr + Prim { … }`,
   `Expr * { ty : Type }` for a field on every expression), with type
   parameters if it needs them (`Inferring s`) — written out as plain data
   whose every node carries where it came from.

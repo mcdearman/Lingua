@@ -50,24 +50,24 @@ use Lingua.Green (dump)
     "==" = EqEq, "<=" = Le, ">=" = Ge, "<" = Lt, ">" = Gt, "+" = Plus, "-" = Minus, "*" = Star, "/" = Slash,
     "ident" = Ident _, "int_number" = Number _
   }
-  precedence Expr { left "==" "<=" ">=" "<" ">", left "+" "-", left "*" "/", postfix AppExpr }
+  precedence Expr { left "==" "<=" ">=" "<" ">", left "+" "-", left "*" "/", postfix App }
   grammar r#"
     File = Expr
 
-    Expr = Atom | LamExpr | LetExpr | IfExpr | AppExpr | BinExpr
+    Expr = Atom | Lam | Let | If | App | Bin
 
-    AppExpr = func:Expr arg:Atom
-    BinExpr = lhs:Expr op:('==' | '<=' | '>=' | '<' | '>' | '+' | '-' | '*' | '/') rhs:Expr
+    App = func:Expr arg:Atom
+    Bin = lhs:Expr op:('==' | '<=' | '>=' | '<' | '>' | '+' | '-' | '*' | '/') rhs:Expr
 
-    Atom = Literal | BoolLit | NameRef | ParenExpr
+    Atom = Literal | BoolLit | NameRef | Paren
     Literal   = 'int_number'
     BoolLit   = value:('true' | 'false')
     NameRef   = 'ident'
-    ParenExpr = '(' Expr ')'
+    Paren = '(' Expr ')'
 
-    LamExpr = 'fun' params:Param* '->' body:Expr
-    LetExpr = 'let' recursive:'rec'? name:Name params:Param* '=' value:Expr 'in' body:Expr
-    IfExpr  = 'if' cond:Expr 'then' yes:Expr 'else' no:Expr
+    Lam = 'fun' params:Param* '->' body:Expr
+    Let = 'let' recursive:'rec'? name:Name params:Param* '=' value:Expr 'in' body:Expr
+    If  = 'if' cond:Expr 'then' yes:Expr 'else' no:Expr
 
     Name  = 'ident'
     Param = 'ident'
@@ -96,7 +96,7 @@ use Std.Result.Result.*
   -- `f x + 1` is `(f x) + 1`: the argument is an atom, and application binds
   -- tighter than any operator.
   assertEq
-    (V.len (V.filter (\l -> S.trim l == "AppExpr") (S.split "\n" (drawn "f x + 1"))))
+    (V.len (V.filter (\l -> S.trim l == "App") (S.split "\n" (drawn "f x + 1"))))
     1
     "one application, under the `+`"
 

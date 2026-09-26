@@ -19,7 +19,7 @@ use Std.Result.Result.*
 database! {
   pub Session
     | input source (file : Int) : String
-    | query parsed (file : Int) : (Green MiniKind, [(Int, String)]) = parseMini (querySource file)
+    | query parsed (file : Int) : (Green Mini, [(Int, String)]) = parseMini (querySource file)
     | query program (file : Int) : (Maybe CoreFile, [Diagnostic]) = compile (queryParsed file)
     | query elaborated (file : Int) : Result [Diagnostic] TypedExpr = elaboratedOf (queryProgram file)
     | query typed (file : Int) : Result [Diagnostic] String = typeNameOf (queryElaborated file)
@@ -35,7 +35,7 @@ database! {
 -- The `Core` program a parse makes, and what was said making it: the parse's
 -- errors, each at its token, or what the pass reported. A program with
 -- errors in it goes no further.
-@pub(pkg) fun compile (parsed : (Green MiniKind, [(Int, String)])) : (Maybe CoreFile, [Diagnostic]) =
+@pub(pkg) fun compile (parsed : (Green Mini, [(Int, String)])) : (Maybe CoreFile, [Diagnostic]) =
   match parsed with
   | (g, []) ->
       (match surfaceFromMini g with

@@ -1,7 +1,7 @@
 -- Languages: what an intermediate language is, as `lang!` and `pass!` read it.
 --
 -- A language is a set of sorts -- `Expr`, `Stmt` -- each a choice of
--- productions -- `BinExpr`, `Literal` -- each a record of fields. `syntax!`
+-- productions -- `Bin`, `Literal` -- each a record of fields. `syntax!`
 -- leaves the language its grammar implies as a compile-time binding, `lang!`
 -- makes new ones from it or from each other, and `pass!` reads the two it goes
 -- between. They cross between those macros as `Datum`s, which is what `Reflect`

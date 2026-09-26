@@ -5,7 +5,7 @@
 --     lexer Token
 --     trivia { Whitespace, Comment }
 --     tokens { "let" = Let, "ident" = Ident _, … }
---     precedence Expr { left "+" "-", left "*" "/", postfix CallExpr }
+--     precedence Expr { left "+" "-", left "*" "/", postfix Call }
 --     grammar r#"
 --       File = Stmt*
 --       …
@@ -14,10 +14,12 @@
 --
 -- writes, beside the call:
 --
--- * `CalcKind`, every kind of node and token the tree can hold;
+-- * `Calc`, every kind of node and token the tree can hold;
 -- * a parse function for each rule, emitting events over `Lingua.Parser`;
--- * `parseCalc : String -> (Green CalcKind, [(Int, String)])`, which lexes with
---   the Scythe lexer `lexToken`, parses, and builds the lossless tree.
+-- * `parseCalc : String -> (Green Calc, [(Int, String)])`, which lexes with
+--   the Scythe lexer `lexToken`, parses, and builds the lossless tree;
+-- * the typed AST: `CalcLet`, `asCalcLet`, `calcLetName`, … -- everything
+--   named after `Calc` (see "names" below).
 --
 -- See docs/DESIGN.md for what each rule becomes. Every mistake is reported
 -- where it was written: in the tables, at the token; in the grammar, at the
@@ -339,21 +341,55 @@ fun ctorOf (pat : [TokenTree]) : String =
   | Just (Word w _) -> w
   | _ -> "Unknown"
 
-fun kindType spec = "${spec.name}Kind"
+-- --- names ---------------------------------------------------------------------------
+--
+-- Everything `syntax! { Mini … }` makes is named after `Mini`, so nothing it
+-- makes can be a name of the program's own, or of another `syntax!`'s:
+--
+--   Mini                 the kinds: `Mini.Node<Rule>` for each node rule,
+--                        `Mini.Token<Token>` for each of the lexer's tokens, and
+--                        `Mini.ErrorNode`, `Mini.Eof` and `Mini.Unknown`. A
+--                        rule and a token of one name are two kinds, and none
+--                        of them is one of the three.
+--   Mini<Rule>           the typed AST: `MiniIf`, `MiniExpr`
+--   asMini<Rule>, syntaxMini<Rule>, mini<Rule><Field>
+--                        its casts and accessors
+--   parseMini, astMini   the entry points
+--   linguaMini_<x>       everything else: rule names start upper case, and the
+--                        parser's own helpers lower
+--
+-- A kind displays as its rule's or token's own name, which is what a tree's
+-- dump and an editor's colours read.
 
-fun k spec c = "${kindType spec}.${c}"
+fun kindType spec = spec.name
+
+-- The kind of node rule `r`, of the lexer's token `c`, and the three every
+-- tree may need.
+fun kn spec r = "${spec.name}.Node${r}"
+
+fun kt spec c = "${spec.name}.Token${c}"
+
+fun kx spec c = "${spec.name}.${c}"
+
+-- The kind a quoted token is.
+fun kq spec t =
+  match V.find (\e -> tokName e == t) spec.tokens with
+  | Just (_, _, pat) -> kt spec (ctorOf pat)
+  | None -> kx spec "Unknown"
+
+-- The typed AST's type for rule `r`.
+fun ty spec r = "${spec.name}${r}"
 
 fun fn spec r = "lingua${spec.name}_${r}"
 
-fun anyOf spec env ts = "LinguaP.atAny p [${S.join ", " (V.map (\t -> k spec (tokKind spec t)) ts)}]"
+fun anyOf spec env ts = "LinguaP.atAny p [${S.join ", " (V.map (\t -> kq spec t) ts)}]"
 
--- The kinds: every node rule, every token the table names, the trivia, and
--- the three every tree may need.
-fun kinds spec =
-  let nodes = V.map defName (V.filter (\d -> not (isEnum d)) spec.defs) in
-  let toks = V.map (\e -> match e with | (_, _, pat) -> ctorOf pat) spec.tokens in
-  let triv = V.map ctorOf spec.trivia in
-  union (union (union nodes toks) triv) ["ErrorNode", "Eof", "Unknown"]
+-- The kinds, as constructor and display name: every node rule, every token
+-- the table names and the trivia, and the three every tree may need.
+fun kinds spec : [(String, String)] =
+  let nodes = V.map (\d -> ("Node${defName d}", defName d)) (V.filter (\d -> not (isEnum d)) spec.defs) in
+  let toks = V.map (\c -> ("Token${c}", c)) (union (V.map (\e -> match e with | (_, _, pat) -> ctorOf pat) spec.tokens) (V.map ctorOf spec.trivia)) in
+  V.concat [nodes, toks, V.map (\c -> (c, c)) ["ErrorNode", "Eof", "Unknown"]]
 
 fun generate spec : [TokenTree] ! { Mut | e } =
   let env = firsts spec in
@@ -378,27 +414,33 @@ use Lingua.Green as LinguaG
 use Scythe as LinguaScythe
 use Std.Collections.Vector as LinguaV
 
-@derive(Debug, Display, PartialEq)
-${pub}data ${kindType spec} = ${S.join " | " (kinds spec)}
+@derive(Debug, PartialEq)
+${pub}data ${kindType spec} = ${S.join " | " (V.map fst (kinds spec))}
+
+impl Display ${kindType spec} {
+  fun display x =
+    match x with
+${S.join "\n" (V.map (\c -> "    | ${kx spec (fst c)} -> \"${snd c}\"") (kinds spec))}
+}
 
 -- How a kind is named in a message: a token as it is written, a node by its rule.
 fun ${fn spec "name"} (x : ${kindType spec}) : String =
   match x with
-${S.join "\n" (V.map (\e -> match e with | (t, _, pat) -> "  | ${k spec (ctorOf pat)} -> \"`${escape t}`\"") spec.tokens)}
+${S.join "\n" (V.map (\e -> match e with | (t, _, pat) -> "  | ${kt spec (ctorOf pat)} -> \"`${escape t}`\"") spec.tokens)}
   | other -> display other
 "
 
 -- The lexer's tokens as kinds, each pattern where the table wrote it; and
 -- which of them are trivia.
 fun classify spec : [TokenTree] =
-  let arm = \pat -> V.concat [[Punct "|" Nowhere], qualify spec pat, [Code "-> ${k spec (ctorOf pat)}"]] in
+  let arm = \pat -> V.concat [[Punct "|" Nowhere], qualify spec pat, [Code "-> ${kt spec (ctorOf pat)}"]] in
   V.concat
     [ [Code "fun ${fn spec "kindOf"} (t : ${spec.lexer}) : ${kindType spec} =\n  match t with"],
       V.concatMap (\e -> match e with | (_, _, pat) -> arm pat) spec.tokens,
       V.concatMap arm spec.trivia,
-      [Code "  | _ -> ${k spec "Unknown"}\n\nfun ${fn spec "isTrivia"} (x : ${kindType spec}) : Bool =\n  match x with"],
-      V.concatMap (\pat -> [Code "| ${k spec (ctorOf pat)} -> True"]) spec.trivia,
-      [Code "| ${k spec "Unknown"} -> True\n  | _ -> False\n"] ]
+      [Code "  | _ -> ${kx spec "Unknown"}\n\nfun ${fn spec "isTrivia"} (x : ${kindType spec}) : Bool =\n  match x with"],
+      V.concatMap (\pat -> [Code "| ${kt spec (ctorOf pat)} -> True"]) spec.trivia,
+      [Code "| ${kx spec "Unknown"} -> True\n  | _ -> False\n"] ]
 
 -- `Ident _` as `Token.Ident _`, still where it was written.
 fun qualify spec pat =
@@ -432,20 +474,20 @@ fun ruleFun spec env counter root d =
     if LinguaP.atEnd p then () else (let _ = LinguaP.advanceWithError p \"unexpected ${escape name} content\" in go ())
   in
   let _ = go () in
-  LinguaP.close p m ${k spec name}
+  LinguaP.close p m ${kn spec name}
 "
   else
     "fun ${fn spec name} p =
   let m = LinguaP.open p in
   let _ = ${body spec env counter "" (defBody d)} in
-  LinguaP.close p m ${k spec name}
+  LinguaP.close p m ${kn spec name}
 "
 
 -- The code that reads `r`, answering `()`. `self` is the enum a Pratt tail is
 -- read for: its last element, if it is that enum, is read at a binding power.
 fun body spec env counter self (r : Rule) : String ! { Mut | e } =
   match r with
-  | Tok t _ -> "LinguaP.expect p ${k spec (tokKind spec t)}"
+  | Tok t _ -> "LinguaP.expect p ${kq spec t}"
   | Ref n _ -> "(let _ = ${fn spec n} p in ())"
   | Label _ x -> body spec env counter self x
   | Seq xs -> "(" ++ V.foldl (\acc x -> acc ++ "let _ = ${body spec env counter self x} in ") "" xs ++ "())"
@@ -511,7 +553,7 @@ fun branch spec env counter e a triggers lbp rbp =
   "if ${anyOf spec env triggers} and ${show lbp} > minBp then
     let m = LinguaP.openBefore p lhs in
     let _ = ${tail spec env counter e (restOf spec a) rbp} in
-    ${fn spec ("led" ++ e)} p minBp (LinguaP.close p m ${k spec a})
+    ${fn spec ("led" ++ e)} p minBp (LinguaP.close p m ${kn spec a})
   else "
 
 -- What follows the left side, its last element -- the right side, when it is
@@ -540,28 +582,28 @@ fun ${fn spec "lexemes"} (input : String) ts =
     | (out, at) ->
         let s = LinguaScythe.start l in
         let e = LinguaScythe.stop l in
-        let out2 = if s > at then LinguaV.pushBack out (LinguaB.lexeme ${k spec "Unknown"} (stringSlice input at s) True) else out in
+        let out2 = if s > at then LinguaV.pushBack out (LinguaB.lexeme ${kx spec "Unknown"} (stringSlice input at s) True) else out in
         let kd = ${fn spec "kindOf"} (LinguaScythe.token l) in
         (LinguaV.pushBack out2 (LinguaB.lexeme kd (stringSlice input s e) (${fn spec "isTrivia"} kd)), e)
   in
   match LinguaV.foldl step ([], 0) ts with
-  | (out, at) -> if at < n then LinguaV.pushBack out (LinguaB.lexeme ${k spec "Unknown"} (stringSlice input at n) True) else out
+  | (out, at) -> if at < n then LinguaV.pushBack out (LinguaB.lexeme ${kx spec "Unknown"} (stringSlice input at n) True) else out
 
 -- `input` as a lossless tree, and every error with the byte it is at: a pure
 -- function of the text.
 ${pub}fun parse${spec.name} (input : String) =
   match lex${lx} input with
   | Err err ->
-      (LinguaG.node ${k spec root} [LinguaG.token ${k spec "Unknown"} input], [(LinguaScythe.errorAt err, \"the lexer stopped here\")])
+      (LinguaG.node ${kn spec root} [LinguaG.token ${kx spec "Unknown"} input], [(LinguaScythe.errorAt err, \"the lexer stopped here\")])
   | Ok ts ->
       let lexemes = ${fn spec "lexemes"} input ts in
       let kinds = LinguaV.toArray (LinguaV.map LinguaB.lexemeKind (LinguaV.filter (\\l -> not (LinguaB.lexemeTrivia l)) lexemes)) in
       let events =
         runSt (\\() ->
-          let p = LinguaP.parser kinds ${k spec "Eof"} ${k spec "ErrorNode"} ${fn spec "name"} in
+          let p = LinguaP.parser kinds ${kx spec "Eof"} ${kx spec "ErrorNode"} ${fn spec "name"} in
           let _ = ${fn spec root} p in
           LinguaP.events p) in
-      LinguaB.build ${k spec root} events lexemes
+      LinguaB.build ${kn spec root} events lexemes
 "
 
 -- --- the typed AST -----------------------------------------------------------------
@@ -635,16 +677,16 @@ fun typed spec pub root =
 
 ${S.join "\n" (V.map (\d -> if isEnum d then enumType spec pub d else nodeType spec pub d) spec.defs)}
 -- The typed root of a tree `parse${spec.name}` made.
-${pub}fun ast${spec.name} g : Maybe ${root} = as${root} (LinguaR.root g)
+${pub}fun ast${spec.name} g : Maybe ${ty spec root} = as${ty spec root} (LinguaR.root g)
 "
 
 fun nodeType spec pub d =
-  let r = defName d in
+  let r = ty spec (defName d) in
   let kt = kindType spec in
   let fs = fieldsOfDef spec d in
   "${pub}data ${r} = ${r} (Syntax ${kt})
 
-${pub}fun as${r} (s : Syntax ${kt}) : Maybe ${r} = if LinguaR.kindOf s == ${k spec r} then Just (${r}.${r} s) else None
+${pub}fun as${r} (s : Syntax ${kt}) : Maybe ${r} = if LinguaR.kindOf s == ${kn spec (defName d)} then Just (${r}.${r} s) else None
 
 ${pub}fun syntax${r} (x : ${r}) : Syntax ${kt} = match x with | ${r}.${r} s -> s
 ${S.join "" (V.map (\i -> accessor spec pub r fs i) (V.range 0 (V.len fs)))}"
@@ -659,37 +701,37 @@ fun accessor spec pub r fs i =
   let name = "${lowerFirst r}${upperFirst (match V.get fs i with | Just f -> fieldName f | None -> "")}" in
   let subject = "(syntax${r} x)" in
   match V.get fs i with
-  | Just (NodeField _ n True) -> "\n${pub}fun ${name} (x : ${r}) : [${n}] = LinguaA.childrenOf as${n} ${subject}\n"
+  | Just (NodeField _ n True) -> "\n${pub}fun ${name} (x : ${r}) : [${ty spec n}] = LinguaA.childrenOf as${ty spec n} ${subject}\n"
   | Just (NodeField _ n False) ->
       let prior = V.take fs i in
       let overlapping = V.any (\f -> match f with | NodeField _ m _ -> m != n and overlaps spec m n | _ -> False) prior in
       let single = V.all (\f -> match f with | NodeField _ _ many -> not many | _ -> True) prior in
       if overlapping and single then
         let at = V.len (V.filter (\f -> match f with | NodeField _ _ _ -> True | _ -> False) prior) in
-        "\n${pub}fun ${name} (x : ${r}) : Maybe ${n} = LinguaA.nthNodeAs as${n} ${show at} ${subject}\n"
+        "\n${pub}fun ${name} (x : ${r}) : Maybe ${ty spec n} = LinguaA.nthNodeAs as${ty spec n} ${show at} ${subject}\n"
       else
         let before = V.len (V.filter (\f -> match f with | NodeField _ m False -> m == n | _ -> False) prior) in
-        "\n${pub}fun ${name} (x : ${r}) : Maybe ${n} = LinguaA.nthChild as${n} ${show before} ${subject}\n"
-  | Just (TokField _ ts True) -> "\n${pub}fun ${name} (x : ${r}) : [Syntax ${kt}] = LinguaA.tokensOf [${S.join ", " (V.map (\t -> k spec (tokKind spec t)) ts)}] ${subject}\n"
-  | Just (TokField _ ts False) -> "\n${pub}fun ${name} (x : ${r}) : Maybe (Syntax ${kt}) = LinguaA.tokenOf [${S.join ", " (V.map (\t -> k spec (tokKind spec t)) ts)}] ${subject}\n"
+        "\n${pub}fun ${name} (x : ${r}) : Maybe ${ty spec n} = LinguaA.nthChild as${ty spec n} ${show before} ${subject}\n"
+  | Just (TokField _ ts True) -> "\n${pub}fun ${name} (x : ${r}) : [Syntax ${kt}] = LinguaA.tokensOf [${S.join ", " (V.map (\t -> kq spec t) ts)}] ${subject}\n"
+  | Just (TokField _ ts False) -> "\n${pub}fun ${name} (x : ${r}) : Maybe (Syntax ${kt}) = LinguaA.tokenOf [${S.join ", " (V.map (\t -> kq spec t) ts)}] ${subject}\n"
   | None -> ""
 
 fun enumType spec pub d =
-  let e = defName d in
+  let e = ty spec (defName d) in
   let kt = kindType spec in
   let alts = alternatives d in
   let cast =
     V.foldr
-      (\a acc -> "(match as${a} s with | Just y -> Just (${e}.${a} y) | None -> ${acc})")
+      (\a acc -> "(match as${ty spec a} s with | Just y -> Just (${e}.${a} y) | None -> ${acc})")
       "None"
       alts in
-    "${pub}data ${e} = ${S.join " | " (V.map (\a -> "${a} ${a}") alts)}
+    "${pub}data ${e} = ${S.join " | " (V.map (\a -> "${a} ${ty spec a}") alts)}
 
 ${pub}fun as${e} (s : Syntax ${kt}) : Maybe ${e} = ${cast}
 
 ${pub}fun syntax${e} (x : ${e}) : Syntax ${kt} =
   match x with
-${S.join "\n" (V.map (\a -> "  | ${e}.${a} y -> syntax${a} y") alts)}
+${S.join "\n" (V.map (\a -> "  | ${e}.${a} y -> syntax${ty spec a} y") alts)}
 "
 
 -- --- the language the grammar implies ------------------------------------------------
@@ -722,7 +764,7 @@ fun prodOf spec r =
   | None -> Prod r []
 
 fun fieldOf spec r slot opt =
-  let accessorOf = \name -> "${lowerFirst r}${upperFirst name}" in
+  let accessorOf = \name -> "${lowerFirst (ty spec r)}${upperFirst name}" in
   let shape = \many base -> if many then TMany base else if opt then TOpt base else base in
   match slot with
   | Just (NodeField name n many) -> [Field name (shape many (TSort n)) (accessorOf name) False]

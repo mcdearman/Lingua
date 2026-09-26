@@ -38,20 +38,20 @@ syntax! {
     "+" = Plus, "-" = Minus, "*" = Star, "/" = Slash,
     "ident" = Ident _, "int_number" = Number _
   }
-  precedence Expr { left "+" "-", left "*" "/", postfix CallExpr }
+  precedence Expr { left "+" "-", left "*" "/", postfix Call }
   grammar r#"
     File = Stmt*
 
-    Stmt = LetStmt | ExprStmt
-    LetStmt  = 'let' name:Name '=' value:Expr ';'
+    Stmt = Let | ExprStmt
+    Let  = 'let' name:Name '=' value:Expr ';'
     ExprStmt = Expr ';'
 
-    Expr = Literal | NameRef | ParenExpr | BinExpr | CallExpr
+    Expr = Literal | NameRef | Paren | Bin | Call
     Literal   = 'int_number'
     NameRef   = 'ident'
-    ParenExpr = '(' Expr ')'
-    BinExpr   = lhs:Expr op:('+' | '-' | '*' | '/') rhs:Expr
-    CallExpr  = callee:Expr ArgList
+    Paren = '(' Expr ')'
+    Bin   = lhs:Expr op:('+' | '-' | '*' | '/') rhs:Expr
+    Call  = callee:Expr ArgList
     ArgList   = '(' args:(Expr (',' Expr)*)? ')'
 
     Name = 'ident'
@@ -85,7 +85,7 @@ fun roundTrips input =
 @test fun multiplicationBindsTighter () =
   assertEq
     (drawn "1 + 2 * 3;")
-    "File\n  ExprStmt\n    BinExpr\n      Literal\n        Number \"1\"\n      Whitespace \" \"\n      Plus \"+\"\n      Whitespace \" \"\n      BinExpr\n        Literal\n          Number \"2\"\n        Whitespace \" \"\n        Star \"*\"\n        Whitespace \" \"\n        Literal\n          Number \"3\"\n    Semi \";\""
+    "File\n  ExprStmt\n    Bin\n      Literal\n        Number \"1\"\n      Whitespace \" \"\n      Plus \"+\"\n      Whitespace \" \"\n      Bin\n        Literal\n          Number \"2\"\n        Whitespace \" \"\n        Star \"*\"\n        Whitespace \" \"\n        Literal\n          Number \"3\"\n    Semi \";\""
     "2 * 3 is the right side"
 
 @test fun subtractionAssociatesLeft () =
@@ -93,7 +93,7 @@ fun roundTrips input =
   | (g, errs) ->
       let a = assertEq errs [] "no errors" in
       assertEq
-        (V.len (V.filter (\l -> l == "      BinExpr") (lines (dump display g))))
+        (V.len (V.filter (\l -> l == "      Bin") (lines (dump display g))))
         1
         "(1 - 2) - 3: the left side is the nested one"
 
@@ -103,7 +103,7 @@ fun lines (s : String) : [String] = S.split "\n" s
   match parseCalc "f(1)(2);" with
   | (g, errs) ->
       let a = assertEq errs [] "no errors" in
-      assertEq (V.len (V.filter (\l -> l == "    CallExpr") (lines (dump display g)))) 1 "one call at the top, holding the other"
+      assertEq (V.len (V.filter (\l -> l == "    Call") (lines (dump display g)))) 1 "one call at the top, holding the other"
 
 @test fun aMissingPieceIsSaidWhereItWouldBe () =
   match parseCalc "let x = ;\nlet y = 2;" with
@@ -126,27 +126,27 @@ fun run (input : String) : [(String, Int)] =
   match parseCalc input with
   | (g, _) ->
       match astCalc g with
-      | Just file -> V.foldl step [] (fileStmts file)
+      | Just file -> V.foldl step [] (calcFileStmts file)
       | None -> []
 
 fun step env s =
   match s with
-  | Stmt.LetStmt l ->
-      (match (letStmtName l, letStmtValue l) with
-       | (Just n, Just v) -> V.pushBack env (R.text (syntaxName n), value env v)
+  | CalcStmt.Let l ->
+      (match (calcLetName l, calcLetValue l) with
+       | (Just n, Just v) -> V.pushBack env (R.text (syntaxCalcName n), value env v)
        | _ -> env)
-  | Stmt.ExprStmt _ -> env
+  | CalcStmt.ExprStmt _ -> env
 
-fun value env (e : Expr) : Int =
+fun value env (e : CalcExpr) : Int =
   match e with
-  | Expr.Literal l -> (match literalNumberToken l with | Just t -> (match S.toInt (R.text t) with | Just n -> n | None -> 0) | None -> 0)
-  | Expr.NameRef n -> (match nameRefIdentToken n with | Just t -> lookup env (R.text t) | None -> 0)
-  | Expr.ParenExpr p -> (match parenExprExpr p with | Just x -> value env x | None -> 0)
-  | Expr.BinExpr b ->
-      (match (binExprLhs b, binExprOp b, binExprRhs b) with
+  | CalcExpr.Literal l -> (match calcLiteralNumberToken l with | Just t -> (match S.toInt (R.text t) with | Just n -> n | None -> 0) | None -> 0)
+  | CalcExpr.NameRef n -> (match calcNameRefIdentToken n with | Just t -> lookup env (R.text t) | None -> 0)
+  | CalcExpr.Paren p -> (match calcParenExpr p with | Just x -> value env x | None -> 0)
+  | CalcExpr.Bin b ->
+      (match (calcBinLhs b, calcBinOp b, calcBinRhs b) with
        | (Just l, Just op, Just r) -> apply (R.text op) (value env l) (value env r)
        | _ -> 0)
-  | Expr.CallExpr c -> 0
+  | CalcExpr.Call c -> 0
 
 fun lookup env name = match V.find (\p -> fst p == name) env with | Just p -> snd p | None -> 0
 
@@ -163,12 +163,12 @@ fun apply op a b = if op == "+" then a + b else if op == "-" then a - b else if 
   | (g, _) ->
       match astCalc g with
       | Just file ->
-          (match V.get (fileStmts file) 0 with
-           | Just (Stmt.ExprStmt s) ->
-               (match exprStmtExpr s with
-                | Just (Expr.CallExpr c) ->
-                    (match callExprArgList c with
-                     | Just args -> assertEq (V.len (argListArgs args)) 3 "three"
+          (match V.get (calcFileStmts file) 0 with
+           | Just (CalcStmt.ExprStmt s) ->
+               (match calcExprStmtExpr s with
+                | Just (CalcExpr.Call c) ->
+                    (match calcCallArgList c with
+                     | Just args -> assertEq (V.len (calcArgListArgs args)) 3 "three"
                      | None -> assertEq 0 1 "an argument list")
                 | _ -> assertEq 0 1 "a call")
            | _ -> assertEq 0 1 "a statement")
@@ -182,14 +182,14 @@ lang! { pub Surface from Calc }
 
 lang! {
   pub Core extends Surface
-  Expr - BinExpr
+  Expr - Bin
   Expr + Prim { op : String, args : [Expr] }
 }
 
--- Everything but `BinExpr` is copied, its children lowered first.
+-- Everything but `Bin` is copied, its children lowered first.
 pass! {
   pub lower : Surface -> Core
-    | BinExpr { lhs, op, rhs } -> Prim { op = op, args = [lhs, rhs] }
+    | Bin { lhs, op, rhs } -> Prim { op = op, args = [lhs, rhs] }
 }
 
 use Std.Maybe as M
@@ -207,19 +207,19 @@ fun runCore (input : String) : [(String, Int)] =
 
 fun stepCore env s =
   match s with
-  | CoreStmt.LetStmt r -> (match r.name with | CoreName.Name n -> V.pushBack env (n.ident, evalCore env r.value))
+  | CoreStmt.Let r -> (match r.name with | CoreName.Name n -> V.pushBack env (n.ident, evalCore env r.value))
   | CoreStmt.ExprStmt _ -> env
 
 fun evalCore env (e : CoreExpr) : Int =
   match e with
   | CoreExpr.Literal r -> (match S.toInt r.number with | Just n -> n | None -> 0)
   | CoreExpr.NameRef r -> lookup env r.ident
-  | CoreExpr.ParenExpr r -> evalCore env r.expr
+  | CoreExpr.Paren r -> evalCore env r.expr
   | CoreExpr.Prim r ->
       (match (V.get r.args 0, V.get r.args 1) with
        | (Just a, Just b) -> apply r.op (evalCore env a) (evalCore env b)
        | _ -> 0)
-  | CoreExpr.CallExpr _ -> 0
+  | CoreExpr.Call _ -> 0
 
 @test fun aPassRewritesWhatChangedAndCopiesTheRest () =
   assertEq (runCore "let x = 2 * (3 + 4);\nlet y = x - 10 - 1;") [("x", 14), ("y", 3)] "lowered, and the same answers"
@@ -228,7 +228,7 @@ fun evalCore env (e : CoreExpr) : Int =
   match core "let x = 1 + 2;" with
   | Just (CoreFile.File r) ->
       (match V.get r.stmts 0 with
-       | Just (CoreStmt.LetStmt l) -> assertEq (metaCoreExpr l.value) (Meta.Meta 8 13) "the bytes of `1 + 2`"
+       | Just (CoreStmt.Let l) -> assertEq (metaCoreExpr l.value) (Meta.Meta 8 13) "the bytes of `1 + 2`"
        | _ -> assertEq 0 1 "a let")
   | _ -> assertEq 0 1 "a program"
 
@@ -244,7 +244,7 @@ fun tick () = put (get () + 1)
 
 pass! {
   pub lowerCounting : Surface -> Core
-    | BinExpr { lhs, op, rhs } -> (let u = tick () in Prim { op = op, args = [lhs, rhs] })
+    | Bin { lhs, op, rhs } -> (let u = tick () in Prim { op = op, args = [lhs, rhs] })
 }
 
 @test fun aPassMayPerformEffects () =
@@ -268,7 +268,7 @@ use Std.Result.Result.*
 database! {
   pub Session
     | input source (file : Int) : String
-    | query tree (file : Int) : Green CalcKind = fst (parseCalc (querySource file))
+    | query tree (file : Int) : Green Calc = fst (parseCalc (querySource file))
     | query program (file : Int) : Maybe CoreFile = M.map lower (surfaceFromCalc (queryTree file))
     | query bindings (file : Int) : [(String, Int)] = (match queryProgram file with | Just (CoreFile.File r) -> V.foldl stepCore [] r.stmts | None -> [])
     | persisted query sum (files : [Int]) : Int = V.foldl (\acc bs -> acc + V.foldl (\a b -> a + snd b) 0 bs) 0 (queryBindingsEach files)

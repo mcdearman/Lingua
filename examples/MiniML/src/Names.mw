@@ -21,11 +21,11 @@ lang! {
 pass! {
   pub resolve : Surface -> Resolved with env
     | NameRef { ident } -> NameRef { ident = ident, binder = L.lookupAssoc ident env }
-    | LamExpr { params, later body } -> LamExpr { params = params, body = body (bindParams params env) }
-    | LetExpr { recursive, name, params, later value, later body } ->
+    | Lam { params, later body } -> Lam { params = params, body = body (bindParams params env) }
+    | Let { recursive, name, params, later value, later body } ->
         (let self = (nameIdent name, metaResolvedName name) :: env in
           let inner = bindParams params (if M.isSome recursive then self else env) in
-          LetExpr { recursive = recursive, name = name, params = params, value = value inner, body = body self })
+          Let { recursive = recursive, name = name, params = params, value = value inner, body = body self })
 }
 
 fun nameIdent (n : ResolvedName) : String = match n with | ResolvedName.Name r -> r.ident
@@ -40,7 +40,7 @@ fun bindParams (ps : [ResolvedParam]) env = V.foldl (\acc p -> (paramIdent p, me
 @derive(Debug, PartialEq)
 @pub data Names = Names [(String, Meta, String, [Meta])] [(Meta, Meta)]
 
-@pub(pkg) fun namesOf (parsed : (Green MiniKind, [(Int, String)])) : Names =
+@pub(pkg) fun namesOf (parsed : (Green Mini, [(Int, String)])) : Names =
   match M.map (resolve [;]) (surfaceFromMini (fst parsed)) with
   | Just (ResolvedFile.File r) -> (match namesIn r.expr with | (bs, us) -> Names.Names bs us)
   | None -> Names.Names [] []
@@ -50,11 +50,11 @@ fun both a b = (V.append (fst a) (fst b), V.append (snd a) (snd b))
 fun namesIn (e : ResolvedExpr) =
   match e with
   | ResolvedExpr.Atom r -> namesInAtom r.atom
-  | ResolvedExpr.AppExpr r -> both (namesIn r.func) (namesInAtom r.arg)
-  | ResolvedExpr.BinExpr r -> both (namesIn r.lhs) (namesIn r.rhs)
-  | ResolvedExpr.IfExpr r -> both (namesIn r.cond) (both (namesIn r.yes) (namesIn r.no))
-  | ResolvedExpr.LamExpr r -> both (paramsSeenIn r.params [metaResolvedExpr r.body], []) (namesIn r.body)
-  | ResolvedExpr.LetExpr r ->
+  | ResolvedExpr.App r -> both (namesIn r.func) (namesInAtom r.arg)
+  | ResolvedExpr.Bin r -> both (namesIn r.lhs) (namesIn r.rhs)
+  | ResolvedExpr.If r -> both (namesIn r.cond) (both (namesIn r.yes) (namesIn r.no))
+  | ResolvedExpr.Lam r -> both (paramsSeenIn r.params [metaResolvedExpr r.body], []) (namesIn r.body)
+  | ResolvedExpr.Let r ->
       let value = metaResolvedExpr r.value in
       let body = metaResolvedExpr r.body in
       let kind = if not (V.isEmpty r.params) or isLam r.value then "function" else "variable" in
@@ -63,10 +63,10 @@ fun namesIn (e : ResolvedExpr) =
 
 fun paramsSeenIn ps scope = V.map (\p -> (paramIdent p, metaResolvedParam p, "parameter", scope)) ps
 
-fun isLam (e : ResolvedExpr) = match e with | ResolvedExpr.LamExpr _ -> True | _ -> False
+fun isLam (e : ResolvedExpr) = match e with | ResolvedExpr.Lam _ -> True | _ -> False
 
 fun namesInAtom (a : ResolvedAtom) =
   match a with
   | ResolvedAtom.NameRef r -> ([], match r.binder with | Just b -> [(r.meta, b)] | None -> [])
-  | ResolvedAtom.ParenExpr r -> namesIn r.expr
+  | ResolvedAtom.Paren r -> namesIn r.expr
   | _ -> ([], [])

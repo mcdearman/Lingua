@@ -17,10 +17,10 @@ use Std.Maybe as M
 @pub(pkg) lang! {
   pub Core extends Surface
   Expr - Atom
-  Expr - AppExpr
-  Expr - BinExpr
-  Expr - LamExpr
-  Expr - LetExpr
+  Expr - App
+  Expr - Bin
+  Expr - Lam
+  Expr - Let
   Expr + Int { value : Int }
   Expr + Bool { value : Bool }
   Expr + Var { name : String }
@@ -38,10 +38,10 @@ use Std.Maybe as M
 pass! {
   pub desugar : Surface -> Core
     | Atom { atom } -> atomExpr atom
-    | AppExpr { func, arg } -> App { func = func, arg = atomExpr arg }
-    | BinExpr { lhs, op, rhs } -> Prim { op = op, args = [lhs, rhs] }
-    | LamExpr { params, body } -> V.foldr (\p acc -> Lam { param = paramName p, body = acc }) body params
-    | LetExpr { recursive, name, params, value, body } ->
+    | App { func, arg } -> App { func = func, arg = atomExpr arg }
+    | Bin { lhs, op, rhs } -> Prim { op = op, args = [lhs, rhs] }
+    | Lam { params, body } -> V.foldr (\p acc -> Lam { param = paramName p, body = acc }) body params
+    | Let { recursive, name, params, value, body } ->
         (let n = nameOf name in
           match (recursive, V.get params 0) with
           | (Just _, Just first) ->
@@ -58,7 +58,7 @@ fun atomExpr (a : CoreAtom) : CoreExpr =
   | CoreAtom.Literal r -> CoreExpr.Int { meta = r.meta, value = M.unwrapOr 0 (S.toInt r.number) }
   | CoreAtom.BoolLit r -> CoreExpr.Bool { meta = r.meta, value = r.value == "true" }
   | CoreAtom.NameRef r -> CoreExpr.Var { meta = r.meta, name = r.ident }
-  | CoreAtom.ParenExpr r -> r.expr
+  | CoreAtom.Paren r -> r.expr
 
 fun paramName (p : CoreParam) : String = match p with | CoreParam.Param r -> r.ident
 

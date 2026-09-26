@@ -28,7 +28,7 @@ fun eval env (e : CoreExpr) =
   | CoreExpr.App r -> apply r.meta (eval env r.func) (eval env r.arg)
   | CoreExpr.Let r -> eval ((r.name, eval env r.value) :: env) r.body
   | CoreExpr.LetRec r -> eval ((r.name, Value.Rec r.name r.param r.value env) :: env) r.body
-  | CoreExpr.IfExpr r -> (match eval env r.cond with | Value.Bool True -> eval env r.yes | _ -> eval env r.no)
+  | CoreExpr.If r -> (match eval env r.cond with | Value.Bool True -> eval env r.yes | _ -> eval env r.no)
   | CoreExpr.Prim r ->
       (match (V.get r.args 0, V.get r.args 1) with
        | (Just a, Just b) -> primitive r.meta r.op (eval env a) (eval env b)

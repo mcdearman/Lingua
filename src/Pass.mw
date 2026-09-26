@@ -4,13 +4,13 @@
 --
 --   lang! {
 --     pub Core extends Surface
---     Expr - BinExpr
+--     Expr - Bin
 --     Expr + Prim { op : String, args : [Expr] }
 --   }
 --
 --   pass! {
 --     pub lower : Surface -> Core
---     | BinExpr { lhs, op, rhs } -> Prim { op = op, args = [lhs, rhs] }
+--     | Bin { lhs, op, rhs } -> Prim { op = op, args = [lhs, rhs] }
 --   }
 --
 -- A language is written out as ordinary `data`, a type per sort -- `CoreExpr`
@@ -249,20 +249,20 @@ fun fromSort pub l lower s =
   let single = V.len prods == 1 and (match V.get prods 0 with | Just p -> prodName p == sortName s | None -> False) in
   if single then
     "
-${pub}fun ${lower}Of${sortName s} (y : ${sortName s}) : Maybe ${t} = ${build l lower t (V.getOr (Prod "" []) prods 0)}
+${pub}fun ${lower}Of${sortName s} (y : ${langGrammar l}${sortName s}) : Maybe ${t} = ${build l lower t (V.getOr (Prod "" []) prods 0)}
 "
   else
     "
-${pub}fun ${lower}Of${sortName s} (x : ${sortName s}) : Maybe ${t} =
+${pub}fun ${lower}Of${sortName s} (x : ${langGrammar l}${sortName s}) : Maybe ${t} =
   match x with
-${S.join "\n" (V.map (\p -> "  | ${sortName s}.${prodName p} y -> ${build l lower t p}") prods)}
+${S.join "\n" (V.map (\p -> "  | ${langGrammar l}${sortName s}.${prodName p} y -> ${build l lower t p}") prods)}
 "
 
 -- A production from typed node `y`: each field converted, in turn, and the
 -- node only if every one was there.
 fun build l lower t p =
   let fs = prodFields p in
-  let made = "Just (${t}.${prodName p} { ${S.join ", " (V.pushFront (V.map (\i -> "${fieldName (V.getOr (Field "" (TPrim "") "" False) fs i)} = v${show i}") (V.range 0 (V.len fs))) (metaFrom p))} })" in
+  let made = "Just (${t}.${prodName p} { ${S.join ", " (V.pushFront (V.map (\i -> "${fieldName (V.getOr (Field "" (TPrim "") "" False) fs i)} = v${show i}") (V.range 0 (V.len fs))) (metaFrom l p))} })" in
   V.foldr
     (\i acc -> match V.get fs i with | Just f -> "LinguaM.andThen (\\v${show i} -> ${acc}) (${convert lower f})" | None -> acc)
     made
@@ -270,7 +270,7 @@ fun build l lower t p =
 
 -- Where a production's node is: its syntax's range -- for one that only wraps
 -- another rule, `Atom` in `Expr`, the wrapped node's, which is the same bytes.
-fun metaFrom p = "meta = LinguaL.metaOf (syntax${prodName p} y)"
+fun metaFrom l p = "meta = LinguaL.metaOf (syntax${langGrammar l}${prodName p} y)"
 
 -- One field of typed node `y`, converted: `Maybe` the value.
 fun convert lower f =

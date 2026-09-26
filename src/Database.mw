@@ -3,7 +3,7 @@
 --   database! {
 --     pub Session
 --     | input source (file : Int) : String
---     | query tree (file : Int) : Green CalcKind = fst (parseCalc (querySource file))
+--     | query tree (file : Int) : Green Calc = fst (parseCalc (querySource file))
 --     | query program (file : Int) : Maybe CoreFile = M.map lower (surfaceFromCalc (queryTree file))
 --     | persisted query sum (files : [Int]) : Int = V.sum (queryCountEach files)
 --   }
@@ -131,9 +131,9 @@ fun databaseCode pub db decls : [TokenTree] =
       cases (\d -> match d with | Decl _ _ n _ _ _ v _ -> ("${upperFirst n}Value", v)) decls,
       [Code "\n"],
       V.concatMap (\d -> accessor pub key value several d) decls,
-      [Code "\nfun ${lower}Compute key =\n  match key with"],
+      [Code "\nfun lingua${db}_compute key =\n  match key with"],
       V.concatMap (\d -> computeArm key value d) decls,
-      [Code "\n\n-- A `${db}` database, every input unset.\n${pub}fun new${db} () = LinguaQ.newDb ${lower}Compute\n"],
+      [Code "\n\n-- A `${db}` database, every input unset.\n${pub}fun new${db} () = LinguaQ.newDb lingua${db}_compute\n"],
       V.concatMap (\d -> outside pub db key value several d) decls,
       if keeps then [Code (codec pub db key value decls)] else [] ]
 
@@ -191,7 +191,7 @@ fun codec pub db key value decls =
   "
 -- How a `${db}` database is written down: its `persisted` queries, and the
 -- keys of the inputs they read.
-${pub}def ${lower}Codec =
+def lingua${db}_codec =
   LinguaQ.Codec
     (\\k -> match k with${encodeKey}${if every then "" else "\n    | _ -> LinguaQ.untagged ()"})
     (\\v -> match v with${encodeValue}${if everyValue then "" else "\n    | _ -> LinguaQ.untagged ()"})
@@ -204,11 +204,11 @@ ${pub}def ${lower}Codec =
           (match k with${decodeValue}${if everyValue then "" else "\n    | _ -> LinguaQ.notComputed ()"}))
 
 -- Write what `db` has worked out of its `persisted` queries to `path`.
-${pub}fun save${db} db path = LinguaQ.saveTo ${lower}Codec db path
+${pub}fun save${db} db path = LinguaQ.saveTo lingua${db}_codec db path
 
 -- Read what `save${db}` wrote to `path` back into `db`: how many answers it
 -- kept, and none when there is no file yet. Set the inputs first.
-${pub}fun load${db} db path = LinguaQ.loadFrom ${lower}Codec db path
+${pub}fun load${db} db path = LinguaQ.loadFrom lingua${db}_codec db path
 "
 
 fun upperFirst (s : String) : String = caseFirst "ABCDEFGHIJKLMNOPQRSTUVWXYZ" 97 122 s

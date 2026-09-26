@@ -26,16 +26,16 @@ The syntax of a language is written once, in
 ```
 File = Stmt*
 
-Stmt = LetStmt | ExprStmt
-LetStmt  = 'let' name:Name '=' value:Expr ';'
+Stmt = Let | ExprStmt
+Let      = 'let' name:Name '=' value:Expr ';'
 ExprStmt = Expr ';'
 
-Expr = Literal | NameRef | ParenExpr | BinExpr | CallExpr
-Literal   = 'int_number'
-NameRef   = 'ident'
-ParenExpr = '(' Expr ')'
-BinExpr   = lhs:Expr op:('+' | '-' | '*' | '/') rhs:Expr
-CallExpr  = callee:Expr ArgList
+Expr = Literal | NameRef | Paren | Bin | Call
+Literal = 'int_number'
+NameRef = 'ident'
+Paren   = '(' Expr ')'
+Bin     = lhs:Expr op:('+' | '-' | '*' | '/') rhs:Expr
+Call    = callee:Expr ArgList
 ArgList   = '(' args:(Expr (',' Expr)*)? ')'
 Name = 'ident'
 ```
@@ -54,14 +54,14 @@ written beside it in the same declaration:
 - **What each token is.** `'ident'` and `'int_number'` are names for token
   kinds of the Scythe lexer; `'let'`, `'+'` are its fixed tokens. A `tokens`
   table maps the quoted names to the lexer's constructors.
-- **How left recursion reads.** `BinExpr = lhs:Expr op:(…) rhs:Expr` and
-  `CallExpr = callee:Expr ArgList` start with the enum they belong to. A
+- **How left recursion reads.** `Bin = lhs:Expr op:(…) rhs:Expr` and
+  `Call = callee:Expr ArgList` start with the enum they belong to. A
   `precedence` table gives each binary operator its binding power and side,
   and names the postfix forms; those alternatives are parsed as a Pratt loop
   instead of by descent. A left-recursive alternative without an entry is an
   error, reported on its rule.
 - **Application by juxtaposition** -- `f x y` -- is a postfix form whose
-  argument is an atom: `AppExpr = func:Expr arg:Atom`, with `Atom` an enum of
+  argument is an atom: `App = func:Expr arg:Atom`, with `Atom` an enum of
   its own among `Expr`'s alternatives. The Pratt loop wraps the left side
   whenever an atom can start next, so `f x y` is `(f x) y` and `f x + 1` is
   `(f x) + 1`, as Meadow's own parser reads them (`examples/MiniML`).
@@ -75,7 +75,7 @@ syntax! {
   precedence Expr {
     left "+" "-"
     left "*" "/"
-    postfix CallExpr
+    postfix Call
   }
   grammar r#"
     File = Stmt*
@@ -139,14 +139,14 @@ From the grammar:
 - an **enum** is a dispatch on the next token over its alternatives' FIRST
   sets, then — for an enum with a precedence table — the Pratt loop:
   `openBefore` the left side, read the operator, recurse with its binding
-  power, `close` as `BinExpr`; a postfix form the same, without the recursion;
+  power, `close` as `Bin`; a postfix form the same, without the recursion;
 - a **token** is `expect`; a `?` is an `if at FIRST`; a `*` is a loop while at
   FIRST.
 
 **Recovery** is by recovery sets, computed rather than written: a loop over
 `X*` inside rule `R` gives up — breaking out without consuming — on a token in
 FOLLOW(`R`) or in any enclosing loop's set, and skips anything else as an
-error node. So `let x = ;` is one `LetStmt` with a missing `Expr` and an error,
+error node. So `let x = ;` is one `Let` with a missing `Expr` and an error,
 and the next statement still parses. Every token ends up somewhere in the
 tree; nothing is dropped.
 
@@ -188,27 +188,47 @@ Each **node** rule becomes a type wrapping a red node, and each **enum** a sum
 of its alternatives, with a checked cast from `Syntax` and the way back:
 
 ```meadow
-data LetStmt = LetStmt (Syntax CalcKind)
-asLetStmt : Syntax CalcKind -> Maybe LetStmt
-syntaxLetStmt : LetStmt -> Syntax CalcKind
+data CalcLet = CalcLet (Syntax Calc)
+asCalcLet : Syntax Calc -> Maybe CalcLet
+syntaxCalcLet : CalcLet -> Syntax Calc
 
-data Expr = Literal Literal | NameRef NameRef | BinExpr BinExpr | …
-asExpr : Syntax CalcKind -> Maybe Expr
+data CalcExpr = Literal CalcLiteral | NameRef CalcNameRef | Bin CalcBin | …
+asCalcExpr : Syntax Calc -> Maybe CalcExpr
 ```
+
+**Names.** Everything `syntax! { Calc … }` makes is named after `Calc`, so a
+rule may be called anything -- `Let`, as the lexer's token is, or `Int`, as a
+built-in type is -- and meet nothing of the program's, or of another grammar's:
+
+| what                  | named                                                                                     |
+| --------------------- | ----------------------------------------------------------------------------------------- |
+| the kinds             | `Calc`: `Calc.NodeLet`, `Calc.TokenLet`, and `Calc.ErrorNode`, `Calc.Eof`, `Calc.Unknown` |
+| a rule's type         | `CalcLet`, `CalcExpr`                                                                     |
+| its cast and way back | `asCalcLet`, `syntaxCalcLet`                                                              |
+| an accessor           | `calcLetName`                                                                             |
+| the entry points      | `parseCalc`, `astCalc`                                                                    |
+| the parser's own      | `linguaCalc_<x>`, `x` lower case where a rule's is upper                                  |
+
+A node rule and a token of one name are two kinds, and none of them is one of
+the three a tree needs. A kind displays as its rule's or token's own name --
+`Let` -- which is what a dump of the tree and an editor's colours read. The
+other macros name what they make the same way, after what they declare:
+`CoreExpr`, `metaCoreExpr`; `SessionKey`, `newSession`, `sessionTree`,
+`linguaSession_<x>`; `askCli`; `serveServer`; `buildBuild`.
 
 Accessors come from the rule's elements, named by their labels — ungrammar's
 contract — or, unlabelled, by what the child is: `name` for a `Name`, `names`
 for a `Name*`, `letToken` for a `'let'`. Meadow has no methods to hang them
-on, so each is prefixed with its rule:
+on, so each is prefixed with its rule's type:
 
-| in `LetStmt`, `BinExpr`, `ArgList` | accessor                                           |
-| ---------------------------------- | -------------------------------------------------- |
-| `name:Name`                        | `letStmtName : LetStmt -> Maybe Name`              |
-| `value:Expr`                       | `letStmtValue : LetStmt -> Maybe Expr`             |
-| `'let'`                            | `letStmtLetToken : LetStmt -> Maybe Syntax`        |
-| `lhs:Expr` … `rhs:Expr`            | `binExprLhs`, `binExprRhs : BinExpr -> Maybe Expr` |
-| `op:('+' \| …)`                    | `binExprOp : BinExpr -> Maybe Syntax`              |
-| `args:(Expr (',' Expr)*)?`         | `argListArgs : ArgList -> [Expr]`                  |
+| in `Let`, `Bin`, `ArgList` | accessor                                               |
+| -------------------------- | ------------------------------------------------------ |
+| `name:Name`                | `calcLetName : CalcLet -> Maybe CalcName`              |
+| `value:Expr`               | `calcLetValue : CalcLet -> Maybe CalcExpr`             |
+| `'let'`                    | `calcLetLetToken : CalcLet -> Maybe Syntax`            |
+| `lhs:Expr` … `rhs:Expr`    | `calcBinLhs`, `calcBinRhs : CalcBin -> Maybe CalcExpr` |
+| `op:('+' \| …)`            | `calcBinOp : CalcBin -> Maybe Syntax`                  |
+| `args:(Expr (',' Expr)*)?` | `calcArgListArgs : CalcArgList -> [CalcExpr]`          |
 
 Every accessor is a `Maybe` or a list: the tree is lossless, so it holds
 whatever was written, including what is missing. Two single children of one
@@ -222,7 +242,7 @@ since counting `Atom`s would find `func` again whenever it is one.
 ## 5. `lang` and `pass`
 
 A language is a set of **sorts** — `Expr`, `Stmt` — each a choice of
-**productions** — `BinExpr`, `Literal` — each a record of **fields**. They
+**productions** — `Bin`, `Literal` — each a record of **fields**. They
 cross between the macros as `Lingua.Lang` values, stored as compile-time
 bindings.
 
@@ -241,7 +261,7 @@ lang! { pub Surface from Calc }
 
 lang! {
   pub Core extends Surface
-  Expr - BinExpr
+  Expr - Bin
   Expr + Prim { op : String, args : [Expr] }
 }
 ```
@@ -260,7 +280,7 @@ written out as ordinary `data`, a type per sort named with the language —
 `CoreExpr`, `CoreStmt` — whose productions each hold an anonymous record: the
 fields, and a `meta : Meta` nobody writes, the bytes of the source the node
 came from. `metaCoreExpr` reads it. A language read off a grammar also gets its
-conversion from the typed AST, `surfaceFromCalc : Green CalcKind -> Maybe
+conversion from the typed AST, `surfaceFromCalc : Green Calc -> Maybe
 SurfaceFile` — `None` when the tree has something missing in it, since only an
 error-free tree is a program.
 
@@ -270,7 +290,7 @@ cases that change something:
 ```meadow
 pass! {
   pub lower : Surface -> Core
-  | BinExpr { lhs, op, rhs } -> Prim { op = op, args = [lhs, rhs] }
+  | Bin { lhs, op, rhs } -> Prim { op = op, args = [lhs, rhs] }
 }
 ```
 
@@ -332,7 +352,7 @@ recording what it read, re-run only when something it read has changed.
 database! {
   pub Session
   | input source (file : Int) : String
-  | query tree (file : Int) : Green CalcKind = fst (parseCalc (querySource file))
+  | query tree (file : Int) : Green Calc = fst (parseCalc (querySource file))
   | query program (file : Int) : Maybe CoreFile = M.map lower (surfaceFromCalc (queryTree file))
   | query bindings (file : Int) : [(String, Int)] = evaluate (queryProgram file)
   | query sum (files : [Int]) : Int = V.foldl (\acc f -> acc + total (queryBindings f)) 0 files

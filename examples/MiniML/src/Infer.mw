@@ -206,10 +206,10 @@ pass! {
           let w = generalize ctx tf in
           let b = body (bind ctx name tf) in
           LetRec { name = name, param = param, value = v, body = b, ty = tyInferringExpr b })
-    | IfExpr { cond, yes, no } ->
+    | If { cond, yes, no } ->
         (let u = unify (metaInferringExpr cond) (tyInferringExpr cond) MType.Bool in
           let w = unify (metaInferringExpr no) (tyInferringExpr yes) (tyInferringExpr no) in
-          IfExpr { cond = cond, yes = yes, no = no, ty = tyInferringExpr yes })
+          If { cond = cond, yes = yes, no = no, ty = tyInferringExpr yes })
     | Prim { op, args } ->
         (if V.len args != 2 then raise (errorAt here "`${op}` wants two operands")
           else
@@ -228,7 +228,7 @@ pass! {
     | App { func, arg, ty } -> App { func = func, arg = arg, ty = frozen ty }
     | Let { name, value, body, ty } -> Let { name = name, value = value, body = body, ty = frozen ty }
     | LetRec { name, param, value, body, ty } -> LetRec { name = name, param = param, value = value, body = body, ty = frozen ty }
-    | IfExpr { cond, yes, no, ty } -> IfExpr { cond = cond, yes = yes, no = no, ty = frozen ty }
+    | If { cond, yes, no, ty } -> If { cond = cond, yes = yes, no = no, ty = frozen ty }
     | Prim { op, args, ty } -> Prim { op = op, args = args, ty = frozen ty }
 }
 
@@ -242,7 +242,7 @@ fun children (e : TypedExpr) : [TypedExpr] =
   | TypedExpr.Lam r -> [r.body]
   | TypedExpr.Let r -> [r.value, r.body]
   | TypedExpr.LetRec r -> [r.value, r.body]
-  | TypedExpr.IfExpr r -> [r.cond, r.yes, r.no]
+  | TypedExpr.If r -> [r.cond, r.yes, r.no]
   | _ -> []
 
 -- A program elaborated -- every expression in it with its type -- or why it

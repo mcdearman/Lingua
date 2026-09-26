@@ -53,11 +53,18 @@ syntax! {
   written. `parseMini` is pure, and `astMini` casts its root.
 - **`lang!`** declares an intermediate language — read off the grammar
   (`lang! { Surface from Calc }`) or as changes to another
-  (`Core extends Surface`, `Expr - BinExpr`, `Expr + Prim { … }`) — written out
-  as plain data whose every node carries where it came from.
+  (`Core extends Surface`, `Expr - BinExpr`, `Expr + Prim { … }`,
+  `Expr * { ty : Type }` for a field on every expression), with type
+  parameters if it needs them (`Inferring s`) — written out as plain data
+  whose every node carries where it came from.
 - **`pass!`** is the cases that change something between two languages; the
   traversal, the copies of what did not change, and the provenance of what did
-  are written for it. Case bodies are ordinary Meadow, effects and all.
+  are written for it. Case bodies are ordinary Meadow, effects and all. A pass
+  may carry a context down the tree -- an environment -- and a case may take a
+  child `later`, to translate it in a context of its own. MiniML's type
+  inference is such a pass: Algorithm J, its type variables `runSt` cells,
+  elaborating the program into one with every expression's type written on
+  it.
 - **`Lingua.Green`**, the lossless tree: kinds, widths and text, no positions.
 - **`Lingua.Red`**, a view with offsets and parents: `range`, `children`,
   `parent`, `ancestors`, `tokenAt`, `nodeAt`.

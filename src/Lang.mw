@@ -35,18 +35,21 @@ use Ty.*
 @derive(Reflect, PartialEq)
 @pub data Sort = Sort String [Prod]
 
--- A language: its name, the sort a whole program is, its sorts, and -- when
--- it was read off a grammar -- which grammar.
+-- A language: its name, the sort a whole program is, its sorts, -- when it
+-- was read off a grammar -- which grammar, and the type parameters its types
+-- take: `Inferring s`, whose nodes hold types made of cells of a `runSt`'s.
 @derive(Reflect, PartialEq)
-@pub data Lang = Lang String String [Sort] String
+@pub data Lang = Lang String String [Sort] String [String]
 
-@pub fun langName (l : Lang) : String = match l with | Lang n _ _ _ -> n
+@pub fun langName (l : Lang) : String = match l with | Lang n _ _ _ _ -> n
 
-@pub fun langRoot (l : Lang) : String = match l with | Lang _ r _ _ -> r
+@pub fun langRoot (l : Lang) : String = match l with | Lang _ r _ _ _ -> r
 
-@pub fun langSorts (l : Lang) : [Sort] = match l with | Lang _ _ ss _ -> ss
+@pub fun langSorts (l : Lang) : [Sort] = match l with | Lang _ _ ss _ _ -> ss
 
-@pub fun langGrammar (l : Lang) : String = match l with | Lang _ _ _ g -> g
+@pub fun langGrammar (l : Lang) : String = match l with | Lang _ _ _ g _ -> g
+
+@pub fun langParams (l : Lang) : [String] = match l with | Lang _ _ _ _ ps -> ps
 
 @pub fun sortName (s : Sort) : String = match s with | Sort n _ -> n
 
@@ -100,7 +103,7 @@ use Ty.*
 use Std.Test (assertEq)
 
 @test fun aLanguageSurvivesItsTripThroughADatum () =
-  let l = Lang "Core" "File" [Sort "Expr" [Prod "Lit" [Field "value" (TPrim "String") "" False]]] "" in
+  let l = Lang "Core" "File" [Sort "Expr" [Prod "Lit" [Field "value" (TPrim "String") "" False]]] "" ["s"] in
   assertEq (fromDatum (toDatum l)) (Ok l) "the same language back"
 
 @test fun allOfIsNoneIfAnyIs () =

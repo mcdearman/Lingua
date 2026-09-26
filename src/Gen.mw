@@ -707,7 +707,7 @@ fun grammarLang spec : Lang =
   let enumSorts = V.map (\d -> Sort (defName d) (V.map (\a -> prodOf spec a) (alternatives d))) enums in
   let loners = V.map (\d -> Sort (defName d) [prodOf spec (defName d)]) (V.filter (\d -> not (isEnum d) and not (V.elem (defName d) alts)) spec.defs) in
   let root = (match V.get spec.defs 0 with | Just d -> defName d | None -> "File") in
-  Lang spec.name root (V.append enumSorts loners) spec.name
+  Lang spec.name root (V.append enumSorts loners) spec.name []
 
 -- The production of rule `r`: an enum inside an enum is a production holding
 -- that enum's sort.

@@ -247,7 +247,14 @@ lang! {
 ```
 
 `Sort - Prod` removes a production; `Sort + Prod { field : Type, … }` adds one
-(to a new sort, if there is none by that name). A field's type is a sort of
+(to a new sort, if there is none by that name); `Sort * { field : Type, … }`
+adds the fields to every production the sort has -- what an elaboration's
+target wants, `Expr * { ty : Type }` being `Core` with a type on every
+expression. A field every production of a sort has gets an accessor like
+`meta`'s, `tyTypedExpr`. A language may take **type parameters** -- `lang! {
+pub Inferring s extends Core … }` -- which its types take in turn, and a field
+may be of a type applied to them, `MType s`; a language extending it takes
+them too. A field's type is a sort of
 the language, `[T]`, `Maybe T`, or any other type by name. Each language is
 written out as ordinary `data`, a type per sort named with the language —
 `CoreExpr`, `CoreStmt` — whose productions each hold an anonymous record: the
@@ -282,6 +289,36 @@ A case's body is **ordinary Meadow**, and may call any function — effects and
 all. The functions a pass writes are left to inference, so a pass performs what
 its cases do: one that counts with `Std.State` is run under `runState`. A
 `match` in a body is parenthesised, since `|` begins the next case.
+
+A pass may carry a **context** down the tree -- an inherited attribute, in the
+old words -- and a case may take a child **`later`**:
+
+```meadow
+pass! {
+  pub elaborate : Core -> Typed with env
+  | Lam { param, later body } ->
+      (let a = fresh () in
+        let b = body ((param, Forall [] a) :: env) in
+        Lam { param = param, body = b, ty = TFun a (tyTypedExpr b) })
+  …
+}
+```
+
+Every function the pass writes then takes `env` first and hands it to the
+children it translates. A field taken `later` is not translated before the
+case: it is a function from a context to the translated child, for the case to
+call with the one the child is in -- under a binder, the environment with the
+binder in it; a `let`'s value, one level deeper. This is what makes type
+inference a pass rather than a function beside one. Without a context, a
+`later` field is a function of `()`.
+
+MiniML's inference is **Algorithm J** as nine cases, and shows what a case
+body being ordinary Meadow buys. Its type variables are mutable cells --
+`Std.St`'s -- so its cases perform `St s`, and fail with `Std.Exn`; `infer`
+goes from `Core` to `Inferring s`, whose nodes hold types made of those cells,
+and `settle` from there to `Typed`, reading each. Both run inside one
+`runSt`, which takes the `St s` away: `typed` is pure, and runs inside a
+query like anything else, though every step of it writes.
 
 ## 6. Queries: incremental and parallel
 

@@ -12,16 +12,19 @@
 --   Surface, Core   two languages, the first read off the grammar and the
 --                   second declared as what changes (`lang!`)
 --   desugar         the pass between them, only its cases (`pass!`)
+--   inference       Algorithm J as an elaboration: a pass from `Core` to
+--                   `Typed`, the same program with the type of every
+--                   expression written on it -- its variables mutable cells,
+--                   in a `runSt`, so the query it runs in stays pure
 --   the compiler    a database of queries: a file's text in, its type and
 --                   value out, each step remembered (`database!`)
 --   diagnostics     every error, from the parser, the pass, the checker or
 --                   the run, at the bytes it is about, drawn by Nettle
 --                   (`Lingua.Diagnostic`)
 --
--- Type inference and evaluation are ordinary Meadow over `Core`. They run
--- inside queries, so both are pure: inference threads its substitution with
--- `Std.State`, and `let rec` is a closure that knows its own name rather than
--- a cell tied into a knot.
+-- Inference and evaluation run inside queries, so both are pure: inference
+-- mutates only cells of its own `runSt`, and `let rec` is a closure that
+-- knows its own name rather than a cell tied into a knot.
 
 use Scythe (lexer!)
 use Lingua (syntax!, lang!, pass!, database!)
@@ -172,125 +175,256 @@ fun nameOf (n : CoreName) : String = match n with | CoreName.Name r -> r.ident
 -- The expression a program is.
 fun programExpr (f : CoreFile) : CoreExpr = match f with | CoreFile.File r -> r.expr
 
--- --- types: Hindley-Milner, Algorithm W -----------------------------------------------------
+-- --- types: Hindley-Milner, Algorithm J, as an elaboration ---------------------------------
 --
--- MiniML's checker is Algorithm J, a type variable a mutable cell. This one
--- runs inside a query, where nothing may be mutated, so it is W: unification
--- adds to a substitution, threaded with `Std.State` along with the next fresh
--- variable, and a failure is `Std.Exn`. Both are handled before `typeOf`
--- answers, which is as pure as any function.
+-- MiniML's checker is Algorithm J, and so is this one: a type variable is a
+-- cell, and unifying two types writes into cells instead of building up a
+-- substitution. A `let` generalizes by levels, as OCaml's checker does, and
+-- a failure is `Std.Exn`.
+--
+-- It runs inside a query, where nothing anyone could see may be mutated. So
+-- the cells are `Std.St`'s: made inside a `runSt` and gone by the time it
+-- returns, which is what lets `typed` be pure while every step of it writes.
+-- Lingua's passes are ordinary Meadow, effects and all, and these two
+-- perform `St s` as the functions they call do:
+--
+--   infer    `Core` to `Inferring s` -- `Core` with each expression's type as
+--            inference holds it, cells and all, `s` being the `runSt`'s
+--   settle   `Inferring s` to `Typed`, reading every cell once all are written
 
+-- The type an expression ends up with.
 @derive(Debug, PartialEq)
 data Type = TInt | TBool | TFun Type Type | TVar Int
 
 use Type.*
 
-data Scheme = Forall [Int] Type
+-- A type while it is inferred: a variable is a cell of the `runSt`'s.
+data MType s = MInt | MBool | MFun (MType s) (MType s) | MVar (StRef s (TyVar s))
 
-use Scheme.*
+use MType.*
 
-use Std.State (get, put, runState)
+-- What a variable's cell holds: nothing yet -- its number, and the level of
+-- the `let` it was made under -- or the type it was unified with.
+data TyVar s = Unbound Int Int | Bound (MType s)
 
--- The next variable's number, and what each variable has been solved as.
-fun fresh () =
-  match get () with
-  | (n, s) ->
-      let u = put (n + 1, s) in
-      TVar n
+use TyVar.*
 
--- `t`, solved as far as the substitution says.
-fun resolve t =
+use Std.St as St
+
+-- The level of a variable a `let` has generalized: deeper than any.
+def generic = 1000000000
+
+-- What inference carries down the tree: the names in scope and their types,
+-- how many `let`s deep it is, and the cell the next variable's number is in.
+data Ctx s = Ctx (List (String, MType s)) Int (StRef s Int)
+
+use Ctx.*
+
+fun envOf (c : Ctx s) = match c with | Ctx env _ _ -> env
+
+fun levelOf (c : Ctx s) : Int = match c with | Ctx _ l _ -> l
+
+-- `c` with `n` bound to `t`.
+fun bind (c : Ctx s) (n : String) (t : MType s) : Ctx s = match c with | Ctx env l k -> Ctx ((n, t) :: env) l k
+
+-- `c` one `let` deeper: where a `let`'s value is inferred.
+fun deeper (c : Ctx s) : Ctx s = match c with | Ctx env l k -> Ctx env (l + 1) k
+
+-- A new variable, at the context's level.
+fun fresh (c : Ctx s) =
+  match c with
+  | Ctx _ l k ->
+      let n = St.getRef k in
+      let u = St.setRef k (n + 1) in
+      MVar (St.newRef (Unbound n l))
+
+-- `t`, past every variable that is bound -- each one on the way made to hold
+-- the end directly, so that the next walk is short.
+fun repr t =
   match t with
-  | TVar v -> (match HashMap.lookup v (snd (get ())) with | Just u -> resolve u | None -> t)
-  | TFun a b -> TFun (resolve a) (resolve b)
+  | MVar r ->
+      (match St.getRef r with
+       | Bound u -> (let v = repr u in let w = St.setRef r (Bound v) in v)
+       | Unbound _ _ -> t)
   | _ -> t
 
-fun solve v t =
-  match get () with
-  | (n, s) -> put (n, HashMap.insert v t s)
-
-fun occurs v t =
-  match t with
-  | TVar w -> v == w
-  | TFun a b -> occurs v a or occurs v b
-  | _ -> False
-
--- Make `a` and `b` one type, or say why not -- about the node at `at`.
+-- Make `a` and `b` one type, by writing into their variables, or say why not
+-- -- about the node at `at`.
 fun unify at a b =
-  match (resolve a, resolve b) with
-  | (TInt, TInt) -> ()
-  | (TBool, TBool) -> ()
-  | (TFun a1 b1, TFun a2 b2) ->
+  match (repr a, repr b) with
+  | (MInt, MInt) -> ()
+  | (MBool, MBool) -> ()
+  | (MFun a1 b1, MFun a2 b2) ->
       let u = unify at a1 a2 in
       unify at b1 b2
-  | (TVar x, TVar y) -> if x == y then () else solve x (TVar y)
-  | (TVar x, t) -> if occurs x t then raise (errorAt at "occurs check: a type would contain itself") else solve x t
-  | (t, TVar x) -> if occurs x t then raise (errorAt at "occurs check: a type would contain itself") else solve x t
-  | (x, y) -> raise (errorAt at "cannot unify ${typeName x} with ${typeName y}")
+  | (MVar r, t) -> bindVar at r t
+  | (t, MVar r) -> bindVar at r t
+  | (x, y) -> raise (errorAt at "cannot unify ${typeName (frozen x)} with ${typeName (frozen y)}")
+
+-- Write `t` into unbound variable `r` -- unless `t` is `r`, or holds it.
+-- What `t` holds is made no deeper than `r`: a `let` that cannot generalize
+-- `r` cannot generalize what `r` now is either.
+fun bindVar at r t =
+  match St.getRef r with
+  | Unbound id level ->
+      if isVar id t then ()
+      else
+        let u = adjust at id level t in
+        St.setRef r (Bound t)
+  | Bound u -> unify at u t
+
+fun isVar id t =
+  match t with
+  | MVar r -> (match St.getRef r with | Unbound j _ -> j == id | Bound _ -> False)
+  | _ -> False
+
+fun adjust at id level t =
+  match repr t with
+  | MVar r ->
+      (match St.getRef r with
+       | Unbound j l ->
+           if j == id then raise (errorAt at "occurs check: a type would contain itself")
+           else if l > level then St.setRef r (Unbound j level)
+           else ()
+       | Bound _ -> ())
+  | MFun a b ->
+      let u = adjust at id level a in
+      adjust at id level b
+  | _ -> ()
+
+-- Generalize what `t` holds that was made deeper than `c`: those variables
+-- belong to the `let` whose value `t` is, and nothing outside it can see them.
+fun generalize (c : Ctx s) t =
+  match repr t with
+  | MVar r ->
+      (match St.getRef r with
+       | Unbound j l -> if l > levelOf c then St.setRef r (Unbound j generic) else ()
+       | Bound _ -> ())
+  | MFun a b ->
+      let u = generalize c a in
+      generalize c b
+  | _ -> ()
+
+-- `t` with a new variable for each generalized one -- the same new one
+-- wherever the same one was.
+fun instantiate (c : Ctx s) t = fst (copy c t [])
+
+fun copy c t seen =
+  let u = repr t in
+  match u with
+  | MVar r ->
+      (match St.getRef r with
+       | Unbound j l ->
+           if l == generic then
+             (match V.find (\p -> fst p == j) seen with
+              | Just p -> (snd p, seen)
+              | None -> (let v = fresh c in (v, V.pushBack seen (j, v))))
+           else (u, seen)
+       | Bound _ -> (u, seen))
+  | MFun a b ->
+      (match copy c a seen with
+       | (a2, s1) -> (match copy c b s1 with | (b2, s2) -> (MFun a2 b2, s2)))
+  | _ -> (u, seen)
+
+-- `t` as it stands, every variable read out of its cell.
+fun frozen t =
+  match repr t with
+  | MInt -> TInt
+  | MBool -> TBool
+  | MFun a b -> TFun (frozen a) (frozen b)
+  | MVar r -> (match St.getRef r with | Unbound j _ -> TVar j | Bound u -> frozen u)
+
+-- `Core`, every expression holding its type as inference has it so far.
+lang! {
+  pub Inferring s extends Core
+  Expr * { ty : MType s }
+}
+
+-- `Core`, every expression holding its type.
+lang! {
+  pub Typed extends Core
+  Expr * { ty : Type }
+}
+
+-- Algorithm J, written as the cases of a pass. The context is carried down
+-- the tree: every child is inferred in the one its parent is, but a binder's
+-- body is taken `later` and inferred with the name bound, and a `let`'s value
+-- one level deeper, so that what it makes and nothing else is generalized. A
+-- node's type is worked out from its children's, which it already holds.
+pass! {
+  pub infer : Core -> Inferring with ctx
+    | Int { value } -> Int { value = value, ty = MInt }
+    | Bool { value } -> Bool { value = value, ty = MBool }
+    | Var { name } ->
+        (match L.lookupAssoc name (envOf ctx) with
+         | Just t -> Var { name = name, ty = instantiate ctx t }
+         | None -> raise (errorAt here "unbound variable: ${name}"))
+    | Lam { param, later body } ->
+        (let a = fresh ctx in
+          let b = body (bind ctx param a) in
+          Lam { param = param, body = b, ty = MFun a (tyInferringExpr b) })
+    | App { func, arg } ->
+        (let out = fresh ctx in
+          let u = unify here (tyInferringExpr func) (MFun (tyInferringExpr arg) out) in
+          App { func = func, arg = arg, ty = out })
+    | Let { name, later value, later body } ->
+        (let v = value (deeper ctx) in
+          let u = generalize ctx (tyInferringExpr v) in
+          let b = body (bind ctx name (tyInferringExpr v)) in
+          Let { name = name, value = v, body = b, ty = tyInferringExpr b })
+    | LetRec { name, param, later value, later body } ->
+        (let inner = deeper ctx in
+          let tf = fresh inner in
+          let ta = fresh inner in
+          let v = value (bind (bind inner name tf) param ta) in
+          let u = unify here tf (MFun ta (tyInferringExpr v)) in
+          let w = generalize ctx tf in
+          let b = body (bind ctx name tf) in
+          LetRec { name = name, param = param, value = v, body = b, ty = tyInferringExpr b })
+    | IfExpr { cond, yes, no } ->
+        (let u = unify (metaInferringExpr cond) (tyInferringExpr cond) MBool in
+          let w = unify (metaInferringExpr no) (tyInferringExpr yes) (tyInferringExpr no) in
+          IfExpr { cond = cond, yes = yes, no = no, ty = tyInferringExpr yes })
+    | Prim { op, args } ->
+        (if V.len args != 2 then raise (errorAt here "`${op}` wants two operands")
+          else
+            let u = V.foldl (\acc a -> unify (metaInferringExpr a) (tyInferringExpr a) MInt) () args in
+            Prim { op = op, args = args, ty = if V.elem op ["+", "-", "*", "/"] then MInt else MBool })
+}
+
+-- A type the tree holds is a cell inference may have written into since the
+-- node was made. Once every one is written, each is read.
+pass! {
+  pub settle : Inferring -> Typed
+    | Int { value, ty } -> Int { value = value, ty = frozen ty }
+    | Bool { value, ty } -> Bool { value = value, ty = frozen ty }
+    | Var { name, ty } -> Var { name = name, ty = frozen ty }
+    | Lam { param, body, ty } -> Lam { param = param, body = body, ty = frozen ty }
+    | App { func, arg, ty } -> App { func = func, arg = arg, ty = frozen ty }
+    | Let { name, value, body, ty } -> Let { name = name, value = value, body = body, ty = frozen ty }
+    | LetRec { name, param, value, body, ty } -> LetRec { name = name, param = param, value = value, body = body, ty = frozen ty }
+    | IfExpr { cond, yes, no, ty } -> IfExpr { cond = cond, yes = yes, no = no, ty = frozen ty }
+    | Prim { op, args, ty } -> Prim { op = op, args = args, ty = frozen ty }
+}
+
+-- Every expression in `e`, outermost first.
+@pub fun subexpressions (e : TypedExpr) : [TypedExpr] = V.pushFront (V.concatMap subexpressions (children e)) e
+
+fun children (e : TypedExpr) : [TypedExpr] =
+  match e with
+  | TypedExpr.App r -> [r.func, r.arg]
+  | TypedExpr.Prim r -> r.args
+  | TypedExpr.Lam r -> [r.body]
+  | TypedExpr.Let r -> [r.value, r.body]
+  | TypedExpr.LetRec r -> [r.value, r.body]
+  | TypedExpr.IfExpr r -> [r.cond, r.yes, r.no]
+  | _ -> []
 
 fun freeVars t =
   match t with
   | TVar v -> [v]
   | TFun a b -> V.append (freeVars a) (freeVars b)
   | _ -> []
-
-fun schemeFree (s : Scheme) = match s with | Forall bound t -> V.filter (\v -> not (V.elem v bound)) (freeVars (resolve t))
-
--- Quantify what `t` has free that nothing in the environment does.
-fun generalize env t =
-  let inEnv = L.foldl (\acc b -> V.append acc (schemeFree (snd b))) [] env in
-  Forall (V.filter (\v -> not (V.elem v inEnv)) (freeVars (resolve t))) (resolve t)
-
-fun instantiate (s : Scheme) =
-  match s with
-  | Forall bound t ->
-      let fresh2 = V.map (\v -> (v, fresh ())) bound in
-      rename fresh2 t
-
-fun rename pairs t =
-  match t with
-  | TVar v -> (match V.find (\p -> fst p == v) pairs with | Just p -> snd p | None -> t)
-  | TFun a b -> TFun (rename pairs a) (rename pairs b)
-  | _ -> t
-
-fun infer env (e : CoreExpr) =
-  match e with
-  | CoreExpr.Int _ -> TInt
-  | CoreExpr.Bool _ -> TBool
-  | CoreExpr.Var r ->
-      (match L.lookupAssoc r.name env with
-       | Just s -> instantiate s
-       | None -> raise (errorAt r.meta "unbound variable: ${r.name}"))
-  | CoreExpr.Lam r ->
-      let a = fresh () in
-      TFun a (infer ((r.param, Forall [] a) :: env) r.body)
-  | CoreExpr.App r ->
-      let tf = infer env r.func in
-      let tx = infer env r.arg in
-      let out = fresh () in
-      let u = unify r.meta tf (TFun tx out) in
-      out
-  | CoreExpr.Let r ->
-      let tv = infer env r.value in
-      infer ((r.name, generalize env tv) :: env) r.body
-  | CoreExpr.LetRec r ->
-      let tf = fresh () in
-      let ta = fresh () in
-      let tr = infer ((r.param, Forall [] ta) :: (r.name, Forall [] tf) :: env) r.value in
-      let u = unify r.meta tf (TFun ta tr) in
-      infer ((r.name, generalize env tf) :: env) r.body
-  | CoreExpr.IfExpr r ->
-      let u = unify (metaCoreExpr r.cond) (infer env r.cond) TBool in
-      let ty = infer env r.yes in
-      let w = unify (metaCoreExpr r.no) ty (infer env r.no) in
-      ty
-  | CoreExpr.Prim r ->
-      (match (V.get r.args 0, V.get r.args 1) with
-       | (Just a, Just b) ->
-           let u = unify (metaCoreExpr a) (infer env a) TInt in
-           let w = unify (metaCoreExpr b) (infer env b) TInt in
-           if V.elem r.op ["+", "-", "*", "/"] then TInt else TBool
-       | _ -> raise (errorAt r.meta "`${r.op}` wants two operands"))
 
 -- How a type is written, its variables named in the order they appear.
 fun typeName t = shown (V.foldl (\acc v -> if V.elem v acc then acc else V.pushBack acc v) [] (freeVars t)) t
@@ -302,9 +436,24 @@ fun shown vars t =
   | TFun a b -> "(${shown vars a} -> ${shown vars b})"
   | TVar v -> "t${show (V.len (V.takeWhile (\w -> w != v) vars))}"
 
--- The type of a program, or why it has none -- where.
+-- A program elaborated -- every expression in it with its type -- or why it
+-- has none, where. Every cell is made and written inside the `runSt`, and
+-- only `Typed`, which has none, comes out of it.
+@pub fun typed (e : CoreExpr) : Result Diagnostic TypedExpr =
+  toResult (\() -> runSt (\() -> settleExpr (inferExpr (Ctx [;] 0 (St.newRef 0)) e)))
+
+-- The type of a program, or why it has none.
 @pub fun typeOf (e : CoreExpr) : Result Diagnostic String =
-  toResult (\() -> match runState (0, HashMap.empty) (\() -> resolve (infer [;] e)) with | (t, _) -> typeName t)
+  match typed e with
+  | Ok t -> Ok (typeName (tyTypedExpr t))
+  | Err d -> Err d
+
+-- Each expression of a program as it was written, with its type, outermost
+-- first.
+@pub fun annotated (src : String) (e : TypedExpr) : [String] =
+  V.map
+    (\x -> match metaTypedExpr x with | Meta a b -> "${S.trim (stringSlice src a b)} : ${typeName (tyTypedExpr x)}")
+    (subexpressions e)
 
 -- --- running -------------------------------------------------------------------------------
 
@@ -368,7 +517,8 @@ database! {
     | input source (file : Int) : String
     | query parsed (file : Int) : (Green MiniKind, [(Int, String)]) = parseMini (querySource file)
     | query program (file : Int) : (Maybe CoreFile, [Diagnostic]) = compile (queryParsed file)
-    | query typed (file : Int) : Result [Diagnostic] String = typedOf (queryProgram file)
+    | query elaborated (file : Int) : Result [Diagnostic] TypedExpr = elaboratedOf (queryProgram file)
+    | query typed (file : Int) : Result [Diagnostic] String = typeNameOf (queryElaborated file)
     | query result (file : Int) : Result [Diagnostic] String = resultOf (queryTyped file) (queryProgram file)
     | query shown (file : Int) : String = shownOf (querySource file) (queryResult file)
     | persisted query signatures (files : [Int]) : [String] = V.map signature (queryTypedEach files)
@@ -385,10 +535,17 @@ fun compile (parsed : (Green MiniKind, [(Int, String)])) : (Maybe CoreFile, [Dia
        | None -> (None, []))
   | (g, errs) -> (None, parseErrors g errs)
 
-fun typedOf (p : (Maybe CoreFile, [Diagnostic])) : Result [Diagnostic] String =
+fun elaboratedOf (p : (Maybe CoreFile, [Diagnostic])) : Result [Diagnostic] TypedExpr =
   match p with
-  | (Just f, _) -> (match typeOf (programExpr f) with | Ok t -> Ok t | Err d -> Err [d])
+  | (Just f, _) -> (match typed (programExpr f) with | Ok t -> Ok t | Err d -> Err [d])
   | (None, ds) -> Err ds
+
+-- The program's type, read off its elaboration: a change that moves nothing
+-- but where things are -- a comment -- stops here.
+fun typeNameOf (e : Result [Diagnostic] TypedExpr) : Result [Diagnostic] String =
+  match e with
+  | Ok t -> Ok (typeName (tyTypedExpr t))
+  | Err ds -> Err ds
 
 -- The value and its type, or everything that went wrong on the way.
 fun resultOf (typed : Result [Diagnostic] String) (p : (Maybe CoreFile, [Diagnostic])) : Result [Diagnostic] String =
@@ -498,6 +655,34 @@ fun runSource src =
 @test fun aGenuinelyLocalLetIsGeneralized () =
   assertEq (typeOfSource "let g = fun x -> x in if g true then g 1 else 2") (Ok "Int") "local"
 
+-- The elaboration.
+
+fun annotatedSource src =
+  match compile (parseMini src) with
+  | (Just f, _) -> (match typed (programExpr f) with | Ok t -> annotated src t | Err d -> [message d])
+  | (None, ds) -> V.map message ds
+
+@test fun everyExpressionHoldsItsType () =
+  -- `id` at its use is an instance, `Int -> Int`; the `x` inside is the
+  -- variable the definition was generalized over.
+  assertEq
+    (annotatedSource "let id = fun x -> x in id 1")
+    ["let id = fun x -> x in id 1 : Int", "fun x -> x : (t0 -> t0)", "x : t0", "id 1 : Int", "id : (Int -> Int)", "1 : Int"]
+    "outermost first"
+
+@test fun aTypeLearnedLaterIsSettledEverywhere () =
+  -- `n`'s type is a variable when `n` is met, and `Int` only once `n < 2` is:
+  -- every node says `Int`.
+  assertEq
+    (annotatedSource "let rec f n = if n < 2 then n else f (n - 1) in f")
+    [ "let rec f n = if n < 2 then n else f (n - 1) in f : (Int -> Int)",
+      "if n < 2 then n else f (n - 1) : Int",
+      "n < 2 : Bool", "n : Int", "2 : Int",
+      "n : Int",
+      "f (n - 1) : Int", "f : (Int -> Int)", "n - 1 : Int", "n : Int", "1 : Int",
+      "f : (Int -> Int)" ]
+    "no variable left"
+
 -- Evaluation.
 
 @test fun evaluatesArithmetic () =
@@ -563,14 +748,15 @@ fun twoFiles () =
   let b = assertEq (toResult (\() -> sessionResult db 2)) (Ok (Ok "720 : Int")) "the new answer" in
   assertEq
     (Q.takeLog db)
-    [SessionKey.Parsed 2, SessionKey.Program 2, SessionKey.Typed 2, SessionKey.Result 2]
+    [SessionKey.Parsed 2, SessionKey.Program 2, SessionKey.Elaborated 2, SessionKey.Typed 2, SessionKey.Result 2]
     "file 1 untouched, and its type too"
 
-@test fun aCommentStopsAtTheType () =
-  -- The comment is in the tree and inside the program's `meta`, so both are
-  -- worked out again; the type is not changed by it, so the signatures --
-  -- which read only types -- are not.
+@test fun aCommentStopsAtTheElaboration () =
+  -- The comment is in the tree and inside the file's `meta`, so both are
+  -- worked out again, and the elaboration from them. But it is inside no
+  -- expression: the elaborated program is the one it was, and nothing that
+  -- reads it -- the type, the signatures -- runs again.
   let db = twoFiles () in
   let a = setSessionSource db 1 "let id = fun x -> x in id -- the identity" in
   let b = assertEq (toResult (\() -> sessionSignatures db [1, 2])) (Ok ["(t0 -> t0)", "Int"]) "the same types" in
-  assertEq (Q.takeLog db) [SessionKey.Parsed 1, SessionKey.Program 1, SessionKey.Typed 1] "cut off at the type"
+  assertEq (Q.takeLog db) [SessionKey.Parsed 1, SessionKey.Program 1, SessionKey.Elaborated 1] "cut off at the elaboration"

@@ -28,6 +28,22 @@
 -- effects and all, and a `match` in it is parenthesised, since `|` starts the
 -- next case. `here` is the `meta` of the node being rewritten: where a
 -- diagnostic about it points (`Lingua.Diagnostic`).
+--
+-- A pass may carry a **context** down the tree -- what an elaboration needs,
+-- an environment say:
+--
+--   pass! {
+--     pub elaborate : Core -> Typed with env
+--     | Lam { param, later body } -> (let a = fresh () in
+--         let b = body ((param, a) :: env) in Lam { param = param, body = b, ty = … })
+--   }
+--
+-- Every function the pass is made of then takes `env` first, and hands it on
+-- to the children it translates. A field a case names `later` is not
+-- translated before the case runs: it is a function from a context to the
+-- translated child, for the case to call with the context the child is in --
+-- under a binder, the one with the binder in it. Without a context, a
+-- `later` field is a function of `()`.
 
 use Std.Collections.Vector as V
 use Std.String as S
@@ -39,7 +55,7 @@ use Std.Macro.Delim.*
 use Std.Macro.Parse (Tokens, parseTokens, ident, keyword, punct, group, treesUntil)
 use Std.String.Parse as P
 use Std.String.Parse (Parser)
-use Lingua.Lang (Lang, Sort, Prod, Field, Ty, langName, langRoot, langSorts, langGrammar, sortName, sortProds, prodName, prodFields, fieldName, fieldTy, fieldAccessor, fieldIsToken, sortOfProd, findSort)
+use Lingua.Lang (Lang, Sort, Prod, Field, Ty, langName, langRoot, langSorts, langGrammar, langParams, sortName, sortProds, prodName, prodFields, fieldName, fieldTy, fieldAccessor, fieldIsToken, sortOfProd, findSort)
 use Lingua.Lang.Lang.*
 use Lingua.Lang.Sort.*
 use Lingua.Lang.Prod.*
@@ -53,7 +69,9 @@ def named : Parser Tokens (String, Loc) = P.label "a name" (P.token (\t -> match
 
 fun comma p = P.thenSkip p (P.optional (punct ","))
 
--- A field's type as written: a name, `[T]` or `Maybe T`.
+-- A field's type as written: a name -- applied, maybe, to type variables of
+-- the language's, `MType s` -- `[T]` or `Maybe T`. Fields are separated by
+-- commas, which is what tells a variable from the next field's name.
 data Written = WName String | WMany Written | WMaybe Written
 
 use Written.*
@@ -62,12 +80,19 @@ def written : Parser Tokens Written =
   P.choice
     [ P.map WMany (group Bracket (P.defer (\u -> written))),
       P.skipThen (keyword "Maybe") (P.map WMaybe (P.defer (\u -> written))),
-      P.map WName ident ]
+      P.bind ident (\n -> P.map (\vs -> WName (S.join " " (V.pushFront vs n))) (P.many typeVar)) ]
+
+-- A type variable a written type is applied to: a lower-case name.
+def typeVar : Parser Tokens String =
+  P.token (\t -> match t with | Word w _ -> (if lowerStart w then Just w else None) | _ -> None) []
+
+fun lowerStart (w : String) : Bool = stringByteLength w > 0 and toInt (stringByteAt w 0) >= 97 and toInt (stringByteAt w 0) <= 122
 
 def fieldDecl : Parser Tokens (String, Written) = comma (P.bind ident (\n -> P.skipThen (punct ":") (P.map (\t -> (n, t)) written)))
 
--- A change to the language extended: `Sort - Prod`, or `Sort + Prod { fields }`.
-data Delta = Remove String String Loc | Add String String [(String, Written)]
+-- A change to the language extended: `Sort - Prod`, `Sort + Prod { fields }`,
+-- or `Sort * { fields }` -- the fields added to every production of the sort.
+data Delta = Remove String String Loc | Add String String [(String, Written)] | Every String Loc [(String, Written)]
 
 use Delta.*
 
@@ -75,20 +100,23 @@ def delta : Parser Tokens Delta =
   P.bind named (\s ->
     P.alt
       (P.skipThen (punct "-") (P.map (\p -> Remove (fst s) (fst p) (snd p)) named))
-      (P.skipThen (punct "+") (P.bind ident (\p -> P.map (\fs -> Add (fst s) p fs) (group Brace (P.many fieldDecl))))))
+      (P.alt
+        (P.skipThen (punct "+") (P.bind ident (\p -> P.map (\fs -> Add (fst s) p fs) (group Brace (P.many fieldDecl)))))
+        (P.skipThen (punct "*") (P.map (\fs -> Every (fst s) (snd s) fs) (group Brace (P.many fieldDecl))))))
 
 -- Where a language comes from.
 data Source = FromGrammar String Loc | Extends String Loc [Delta]
 
 use Source.*
 
-def langCall : Parser Tokens (Bool, String, Source) =
+def langCall : Parser Tokens (Bool, String, [String], Source) =
   P.bind (P.optional (keyword "pub")) (\pub ->
     P.bind ident (\name ->
-      P.map (\src -> (M.isSome pub, name, src))
-        (P.alt
-          (P.skipThen (keyword "from") (P.map (\g -> FromGrammar (fst g) (snd g)) named))
-          (P.skipThen (keyword "extends") (P.bind named (\b -> P.map (\ds -> Extends (fst b) (snd b) ds) (P.many delta)))))))
+      P.bind (P.many (P.token (\t -> match t with | Word w _ -> (if lowerStart w and w != "from" and w != "extends" then Just w else None) | _ -> None) [])) (\params ->
+          P.map (\src -> (M.isSome pub, name, params, src))
+          (P.alt
+            (P.skipThen (keyword "from") (P.map (\g -> FromGrammar (fst g) (snd g)) named))
+            (P.skipThen (keyword "extends") (P.bind named (\b -> P.map (\ds -> Extends (fst b) (snd b) ds) (P.many delta))))))))
 
 -- --- lang! ------------------------------------------------------------------------------
 
@@ -96,25 +124,27 @@ def langCall : Parser Tokens (Bool, String, Source) =
 @pub fun lang (ts : [TokenTree]) : [TokenTree] ! { Expand | e } =
   match parseTokens langCall ts with
   | Err failed -> failed
-  | Ok (pub, name, src) ->
+  | Ok (pub, name, params, src) ->
       let from = (match src with | FromGrammar g at -> (g, at) | Extends b at _ -> (b, at)) in
       match lookupAs (fst from) with
       | Err why -> [Fail "no language or grammar is called `${fst from}`" (snd from)]
       | Ok base ->
-          match built name base src with
+          match built name params base src with
           | Err failed -> failed
           | Ok l ->
               let u = defineAs name l in
               [Code (langCode (if pub then "@pub " else "") l)]
 
 -- The language `name` makes of `base`.
-fun built (name : String) (base : Lang) (src : Source) : Result [TokenTree] Lang =
+-- A language takes its base's type parameters, and any it declares.
+fun built (name : String) (params : [String]) (base : Lang) (src : Source) : Result [TokenTree] Lang =
+  let ps = V.append (langParams base) (V.filter (\p -> not (V.elem p (langParams base))) params) in
   match src with
-  | FromGrammar g _ -> Ok (Lang name (langRoot base) (langSorts base) g)
+  | FromGrammar g _ -> Ok (Lang name (langRoot base) (langSorts base) g ps)
   | Extends _ _ ds ->
       V.foldl
         (\acc d -> match acc with | Err e -> Err e | Ok l -> change l d)
-        (Ok (Lang name (langRoot base) (langSorts base) ""))
+        (Ok (Lang name (langRoot base) (langSorts base) "" ps))
         ds
 
 fun change (l : Lang) (d : Delta) : Result [TokenTree] Lang =
@@ -130,13 +160,20 @@ fun change (l : Lang) (d : Delta) : Result [TokenTree] Lang =
       let l2 = withSort l sort in
       let fields = V.map (\f -> Field (fst f) (resolve l2 (snd f)) "" False) fs in
       Ok (withSort l2 (Sort s (V.pushBack (V.filter (\q -> prodName q != p) (sortProds sort)) (Prod p fields))))
+  | Every s at fs ->
+      (match findSort l s with
+       | None -> Err [Fail "no sort is called `${s}`" at]
+       | Just sort ->
+           let fields = V.map (\f -> Field (fst f) (resolve l (snd f)) "" False) fs in
+           let widened = \q -> Prod (prodName q) (V.append (V.filter (\g -> not (V.any (\f -> fieldName f == fieldName g) fields)) (prodFields q)) fields) in
+           Ok (withSort l (Sort s (V.map widened (sortProds sort)))))
 
 -- `l` with `sort` in place of its sort of that name, or added.
 fun withSort l sort =
   let others = V.filter (\x -> sortName x != sortName sort) (langSorts l) in
   let had = V.any (\x -> sortName x == sortName sort) (langSorts l) in
   let sorts = if had then V.map (\x -> if sortName x == sortName sort then sort else x) (langSorts l) else V.pushBack others sort in
-  Lang (langName l) (langRoot l) sorts (langGrammar l)
+  Lang (langName l) (langRoot l) sorts (langGrammar l) (langParams l)
 
 -- A written type: a sort of the language, or any other type by its name.
 fun resolve l w =
@@ -147,7 +184,7 @@ fun resolve l w =
 
 fun typeName l t =
   match t with
-  | TSort n -> "${langName l}${n}"
+  | TSort n -> applied l "${langName l}${n}"
   | TMany x -> "[${typeName l x}]"
   | TOpt x -> "(Maybe ${typeName l x})"
   | TPrim n -> n
@@ -164,16 +201,37 @@ fun langCode pub (l : Lang) : String =
   let ln = langName l in
   header ++ S.join "\n" (V.map (\s -> sortCode pub l s) (langSorts l)) ++ (if langGrammar l == "" then "" else fromCode pub l)
 
+-- The type `t` of language `l`, applied to the language's type parameters.
+fun applied l t = if V.isEmpty (langParams l) then t else "(${t} ${S.join " " (langParams l)})"
+
 fun sortCode pub l s =
   let t = "${langName l}${sortName s}" in
   let prods = sortProds s in
   "
-${pub}data ${t} = ${S.join " | " (V.map (\p -> "${prodName p} ({ ${S.join ", " (V.pushFront (V.map (\f -> "${fieldName f} : ${typeName l (fieldTy f)}") (prodFields p)) "meta : Meta")} })") prods)}
+${pub}data ${t}${S.join "" (V.map (\p -> " ${p}") (langParams l))} = ${S.join " | " (V.map (\p -> "${prodName p} ({ ${S.join ", " (V.pushFront (V.map (\f -> "${fieldName f} : ${typeName l (fieldTy f)}") (prodFields p)) "meta : Meta")} })") prods)}
 
 -- Where a `${t}` came from.
-${pub}fun meta${t} (x : ${t}) : Meta =
+${pub}fun meta${t} (x : ${applied l t}) : Meta =
   match x with
 ${S.join "\n" (V.map (\p -> "  | ${t}.${prodName p} r -> r.meta") prods)}
+${S.join "" (V.map (\f -> shared pub l t prods f) (common prods))}"
+
+-- The fields every one of `prods` has, as the first has them -- what a `*`
+-- in a `lang!` gives a whole sort. A sort of one production has none: its
+-- fields are its record's.
+fun common prods =
+  match V.get prods 0 with
+  | Just first -> if V.len prods < 2 then [] else V.filter (\f -> V.all (\p -> V.any (\g -> g == f) (prodFields p)) prods) (prodFields first)
+  | None -> []
+
+-- A field every production of a sort has, read off whichever it is.
+fun shared pub l t prods f =
+  let n = fieldName f in
+  "
+-- The `${n}` of a `${t}`, whichever production it is.
+${pub}fun ${n}${t} (x : ${applied l t}) : ${typeName l (fieldTy f)} =
+  match x with
+${S.join "\n" (V.map (\p -> "  | ${t}.${prodName p} r -> r.${n}") prods)}
 "
 
 -- The conversion from the typed AST of the grammar the language was read off:
@@ -232,44 +290,53 @@ fun convert lower f =
 
 -- --- pass! ------------------------------------------------------------------------------
 
--- A case: the production, where it was written, the fields it names, and its body.
-data Case = Case String Loc [(String, Loc)] [TokenTree]
+-- A case: the production, where it was written, the fields it names, the
+-- ones of those it takes `later`, and its body.
+data Case = Case String Loc [(String, Loc)] [String] [TokenTree]
 
 use Case.*
+
+-- A field a case names: `later` or not, and the name.
+def caseField : Parser Tokens (Bool, (String, Loc)) =
+  comma (P.bind (P.optional (keyword "later")) (\l -> P.map (\n -> (M.isSome l, n)) named))
 
 def caseP : Parser Tokens Case =
   P.skipThen
     (punct "|")
     (P.bind named (\p ->
-      P.bind (group Brace (P.many (comma named))) (\fs ->
-        P.skipThen (punct "->") (P.map (\body -> Case (fst p) (snd p) fs body) (treesUntil (isPunct "|"))))))
+      P.bind (group Brace (P.many caseField)) (\fs ->
+        P.skipThen (punct "->")
+          (P.map
+            (\body -> Case (fst p) (snd p) (V.map snd fs) (V.map (\f -> fst (snd f)) (V.filter fst fs)) body)
+            (treesUntil (isPunct "|"))))))
 
-def passCall : Parser Tokens (Bool, (String, Loc), (String, Loc), (String, Loc), [Case]) =
+def passCall : Parser Tokens (Bool, (String, Loc), (String, Loc), (String, Loc), Maybe String, [Case]) =
   P.bind (P.optional (keyword "pub")) (\pub ->
     P.bind named (\name ->
       P.skipThen (punct ":") (P.bind named (\src ->
         P.skipThen (punct "->") (P.bind named (\dst ->
-          P.map (\cs -> (M.isSome pub, name, src, dst, cs)) (P.many caseP)))))))
+          P.bind (P.optional (P.skipThen (keyword "with") ident)) (\ctx ->
+            P.map (\cs -> (M.isSome pub, name, src, dst, ctx, cs)) (P.many caseP))))))))
 
 @macro
 @pub fun pass (ts : [TokenTree]) : [TokenTree] ! { Expand | e } =
   match parseTokens passCall ts with
   | Err failed -> failed
-  | Ok (pub, name, src, dst, cases) ->
+  | Ok (pub, name, src, dst, ctx, cases) ->
       match (lookupAs (fst src), lookupAs (fst dst)) with
       | (Err _, _) -> [Fail "no language is called `${fst src}`" (snd src)]
       | (_, Err _) -> [Fail "no language is called `${fst dst}`" (snd dst)]
       | (Ok from, Ok to) ->
           match passProblems name from to cases with
           | Just failed -> failed
-          | None -> passCode (if pub then "@pub " else "") (fst name) from to cases
+          | None -> passCode (if pub then "@pub " else "") (fst name) ctx from to cases
 
 -- What a pass cannot be written for, each where it is.
 fun passProblems name from to cases =
   let unknown =
     V.concatMap
       (\c -> match c with
-             | Case p at fs _ ->
+             | Case p at fs _ _ ->
                  (match prodIn from p with
                   | None -> [Fail "`${langName from}` has no production `${p}`" at]
                   | Just prod -> V.concatMap (\f -> if V.any (\g -> fieldName g == fst f) (prodFields prod) then [] else [Fail "`${p}` has no field `${fst f}`" (snd f)]) fs))
@@ -288,7 +355,7 @@ fun passProblems name from to cases =
       | Just f -> Just [f]
       | None -> None
 
-fun caseName c = match c with | Case p _ _ _ -> p
+fun caseName c = match c with | Case p _ _ _ _ -> p
 
 fun prodIn l p = V.find (\q -> prodName q == p) (V.concatMap sortProds (langSorts l))
 
@@ -299,39 +366,51 @@ fun copies to s p =
   | Just t -> V.any (\q -> prodName q == prodName p and V.map fieldName (prodFields q) == V.map fieldName (prodFields p)) (sortProds t)
   | None -> False
 
-fun passCode pub pass from to cases : [TokenTree] =
+fun passCode pub pass ctx from to cases : [TokenTree] =
   let sorts = V.filter (\s -> M.isSome (findSort to (sortName s))) (langSorts from) in
+  let c = given ctx in
   V.concat
     [ [Code "use Std.Maybe as LinguaM\nuse Std.Collections.Vector as LinguaV\n"],
-      V.concatMap (\s -> sortPass pub pass from to cases s) sorts,
-      [Code "-- `${pass}`: a `${langName from}` program as a `${langName to}` one.\n${pub}fun ${pass} x = ${pass}${langRoot from} x\n"] ]
+      V.concatMap (\s -> sortPass pub pass ctx from to cases s) sorts,
+      [Code "-- `${pass}`: a `${langName from}` program as a `${langName to}` one.\n${pub}fun ${pass} ${c}x = ${pass}${langRoot from} ${c}x\n"] ]
 
-fun sortPass pub pass from to cases s =
+-- The context as a function takes it, a parameter or an argument: its name
+-- and a space, or nothing.
+fun given ctx = match ctx with | Just c -> "${c} " | None -> ""
+
+fun sortPass pub pass ctx from to cases s =
   let st = "${langName from}${sortName s}" in
   V.concat
-    [ [Code "${pub}fun ${pass}${sortName s} x =\n  match x with"],
-      V.concatMap (\p -> arm pass from to cases s p) (sortProds s) ]
+    [ [Code "${pub}fun ${pass}${sortName s} ${given ctx}x =\n  match x with"],
+      V.concatMap (\p -> arm pass ctx from to cases s p) (sortProds s) ]
 
-fun arm pass from to cases s p =
+fun arm pass ctx from to cases s p =
   let st = "${langName from}${sortName s}" in
-  match V.find (\c -> caseName c == prodName p) cases with
-  | Just (Case _ _ fs body) ->
-      let binds = S.join "" (V.map (\f -> "let ${fst f} = ${translate pass (fieldTyOf p (fst f)) "r.${fst f}"} in ") fs) in
-      [Code "| ${st}.${prodName p} r -> let lingua_meta = r.meta in let here = lingua_meta in ${binds}", Group Paren (rewrite to body) Nowhere]
+  let c = given ctx in
+  match V.find (\k -> caseName k == prodName p) cases with
+  | Just (Case _ _ fs lates body) ->
+      let bind = \f ->
+        let t = fieldTyOf p (fst f) in
+        if V.elem (fst f) lates then
+          (match ctx with
+           | Just _ -> "let ${fst f} = \\lingua_c -> ${translate pass "lingua_c " t "r.${fst f}"} in "
+           | None -> "let ${fst f} = \\() -> ${translate pass "" t "r.${fst f}"} in ")
+        else "let ${fst f} = ${translate pass c t "r.${fst f}"} in " in
+        [Code "| ${st}.${prodName p} r -> let lingua_meta = r.meta in let here = lingua_meta in ${S.join "" (V.map bind fs)}", Group Paren (rewrite to body) Nowhere]
   | None ->
       let tt = "${langName to}${sortName s}" in
-      let fields = V.map (\f -> "${fieldName f} = ${translate pass (fieldTy f) "r.${fieldName f}"}") (prodFields p) in
+      let fields = V.map (\f -> "${fieldName f} = ${translate pass c (fieldTy f) "r.${fieldName f}"}") (prodFields p) in
       [Code "| ${st}.${prodName p} r -> ${tt}.${prodName p} { ${S.join ", " (V.pushFront fields "meta = r.meta")} }"]
 
 fun fieldTyOf p n = M.unwrapOr (TPrim "") (M.map fieldTy (V.find (\f -> fieldName f == n) (prodFields p)))
 
--- A child, translated by the pass: a node by its sort's function, a list or
--- an option inside, anything else as it is.
-fun translate pass t v =
+-- A child, translated by the pass in context `c` (see `given`): a node by its
+-- sort's function, a list or an option inside, anything else as it is.
+fun translate pass c t v =
   match t with
-  | TSort n -> "${pass}${n} (${v})"
-  | TMany x -> "LinguaV.map (\\y -> ${translate pass x "y"}) (${v})"
-  | TOpt x -> "LinguaM.map (\\y -> ${translate pass x "y"}) (${v})"
+  | TSort n -> "${pass}${n} ${c}(${v})"
+  | TMany x -> "LinguaV.map (\\y -> ${translate pass c x "y"}) (${v})"
+  | TOpt x -> "LinguaM.map (\\y -> ${translate pass c x "y"}) (${v})"
   | TPrim _ -> v
 
 -- A case's body with each `Prod { … }` of the target language made that

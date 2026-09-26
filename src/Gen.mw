@@ -6,10 +6,10 @@
 --     trivia { Whitespace, Comment }
 --     tokens { "let" = Let, "ident" = Ident _, … }
 --     precedence Expr { left "+" "-", left "*" "/", postfix Call }
---     grammar r#"
+--     grammar {
 --       File = Stmt*
 --       …
---     "#
+--     }
 --   }
 --
 -- writes, beside the call:
@@ -35,7 +35,7 @@ use Std.Macro.Delim.*
 use Std.Macro.Parse (Tokens, parseTokens, ident, keyword, punct, group, treesUntil)
 use Std.String.Parse as P
 use Std.String.Parse (Parser)
-use Lingua.Ungrammar (Rule, Def, parseGrammar, defName, defAt, defBody)
+use Lingua.Ungrammar (Rule, Def, parseGrammar, parseGrammarTrees, defName, defAt, defBody)
 use Lingua.Ungrammar.Rule.*
 use Lingua.Lang (Lang, Sort, Prod, Field, Ty)
 use Lingua.Lang.Lang.*
@@ -54,6 +54,7 @@ data Section
   | Table [(String, Loc, [TokenTree])]
   | Precedence String [(String, [String])]
   | Grammar String Loc Int
+  | GrammarTrees [TokenTree] Int
   | Public
 
 use Section.*
@@ -86,7 +87,17 @@ def section : Parser Tokens Section =
       P.skipThen (keyword "trivia") (P.map Trivia (group Brace (P.many pattern))),
       P.skipThen (keyword "tokens") (P.map Table (group Brace (P.many tokenEntry))),
       P.skipThen (keyword "precedence") (P.bind ident (\e -> P.map (\ls -> Precedence e ls) (group Brace (P.many level)))),
-      P.skipThen (keyword "grammar") (P.map (\l -> match l with | (s, at, start) -> Grammar s at start) literal) ]
+      P.skipThen
+        (keyword "grammar")
+        (P.choice
+          [ P.map (\l -> match l with | (s, at, start) -> Grammar s at start) literal,
+            P.map (\ts -> GrammarTrees ts (lastEnd ts)) (group Brace (treesUntil (\t -> False))) ]) ]
+
+-- Where the last of `ts` ends: what a grammar in braces is said to stop at.
+fun lastEnd (ts : [TokenTree]) : Int =
+  match V.get ts (V.len ts - 1) with
+  | Just t -> (match spanOf t with | At _ b -> b | Nowhere -> 0)
+  | None -> 0
 
 def tokenEntry : Parser Tokens (String, Loc, [TokenTree]) =
   P.bind literal (\l -> P.skipThen (punct "=") (P.map (\pat -> match l with | (s, at, _) -> (s, at, pat)) pattern))
@@ -113,14 +124,14 @@ def call : Parser Tokens (String, [Section]) =
 
 fun written name sections =
   let lexer = V.foldl (\acc s -> match s with | Lexer l -> Just l | _ -> acc) None sections in
-  let grammar = V.foldl (\acc s -> match s with | Grammar g at start -> Just (g, at, start) | _ -> acc) None sections in
+  let grammar = grammarOf sections in
   match (lexer, grammar) with
   | (None, _) -> [Fail "`syntax!` needs `lexer`, the Scythe token type it reads" Nowhere]
   | (_, None) -> [Fail "`syntax!` needs a `grammar`, in ungrammar" Nowhere]
-  | (Just lx, Just (g, at, start)) ->
-      match parseGrammar g with
-      | Err (off, why) -> [Fail why (inGrammar start off 1)]
-      | Ok defs ->
+  | (Just lx, Just (parsed, base)) ->
+      match parsed with
+      | Err (off, why) -> [Fail why (inGrammar (if base > 0 then base else 0) off 1)]
+      | Ok (defs, start) ->
           let spec = {
           name = name,
             lexer = lx,
@@ -138,8 +149,26 @@ fun written name sections =
               let u = defineAs name (grammarLang spec) in
               generate spec
 
--- Where byte `off` of the grammar is in the file, `n` bytes of it.
-fun inGrammar (start : Int) (off : Int) (n : Int) : Loc = if start <= 0 then Nowhere else At (start + off) (start + off + n)
+-- The rules, and where their offsets count from: a string's text, or -- for
+-- a grammar in braces, whose pieces are where they are in the file -- the
+-- file's start. -1 is a string the compiler cannot place.
+fun grammarOf sections =
+  V.foldl
+    (\acc s ->
+      match s with
+      | Grammar g at start -> Just (withBase (parseGrammar g) (if start > 0 then start else 0 - 1), start)
+      | GrammarTrees ts stop -> Just (withBase (parseGrammarTrees ts stop) 0, 0)
+      | _ -> acc)
+    None
+    sections
+
+-- Where byte `off` of the grammar is in the file, `n` bytes of it: `start`
+-- is where the grammar's text begins -- 0 for one in braces, whose offsets
+-- are the file's own -- and -1 where that is not known.
+fun inGrammar (start : Int) (off : Int) (n : Int) : Loc = if start < 0 or off < 0 then Nowhere else At (start + off) (start + off + n)
+
+-- A parse's rules, with where their offsets count from.
+fun withBase r (base : Int) = match r with | Ok ds -> Ok (ds, base) | Err e -> Err e
 
 -- --- what the grammar says -------------------------------------------------------
 
@@ -169,7 +198,7 @@ fun alternatives (d : Def) : [String] =
 fun leading (r : Rule) : Maybe String =
   match r with
   | Ref n _ -> Just n
-  | Label _ x -> leading x
+  | Label _ _ x -> leading x
   | Seq xs -> (match V.get xs 0 with | Just x -> leading x | None -> None)
   | _ -> None
 
@@ -197,7 +226,7 @@ fun quoted (r : Rule) : [(String, Int)] =
   | Alt xs -> V.concatMap quoted xs
   | Opt x -> quoted x
   | Rep x -> quoted x
-  | Label _ x -> quoted x
+  | Label _ _ x -> quoted x
 
 fun refs (r : Rule) : [(String, Int)] =
   match r with
@@ -207,7 +236,7 @@ fun refs (r : Rule) : [(String, Int)] =
   | Alt xs -> V.concatMap refs xs
   | Opt x -> refs x
   | Rep x -> refs x
-  | Label _ x -> refs x
+  | Label _ _ x -> refs x
 
 -- --- FIRST sets ----------------------------------------------------------------
 
@@ -222,7 +251,7 @@ fun firstOf env (r : Rule) : ([String], Bool) =
   match r with
   | Tok t _ -> ([t], False)
   | Ref n _ -> (match V.find (\e -> fst e == n) env with | Just e -> snd e | None -> ([], False))
-  | Label _ x -> firstOf env x
+  | Label _ _ x -> firstOf env x
   | Opt x -> (fst (firstOf env x), True)
   | Rep x -> (fst (firstOf env x), True)
   | Alt xs -> V.foldl (\acc x -> let f = firstOf env x in (union (fst acc) (fst f), snd acc or snd f)) ([], False) xs
@@ -401,8 +430,8 @@ fun generate spec : [TokenTree] ! { Mut | e } =
     [ [Code (header spec pub)],
       classify spec,
       [Code (V.foldl (\acc d -> acc ++ "\n" ++ ruleFun spec env counter root d) "" spec.defs),
-        Code (entry spec pub root lx),
-        Code (typed spec pub root)] ]
+        Code (entry spec pub root lx)],
+      typed spec pub root ]
 
 fun header spec pub =
   "use Lingua.Parser as LinguaP
@@ -489,7 +518,7 @@ fun body spec env counter self (r : Rule) : String ! { Mut | e } =
   match r with
   | Tok t _ -> "LinguaP.expect p ${kq spec t}"
   | Ref n _ -> "(let _ = ${fn spec n} p in ())"
-  | Label _ x -> body spec env counter self x
+  | Label _ _ x -> body spec env counter self x
   | Seq xs -> "(" ++ V.foldl (\acc x -> acc ++ "let _ = ${body spec env counter self x} in ") "" xs ++ "())"
   | Opt x -> "(if ${anyOf spec env (fst (firstOf env x))} then ${body spec env counter self x} else ())"
   | Rep x ->
@@ -625,7 +654,7 @@ fun fieldsOf spec (r : Rule) (many : Bool) : [Slot] =
   match r with
   | Tok t _ -> [TokField (lowerFirst (tokKind spec t) ++ "Token") [t] many]
   | Ref n _ -> [NodeField (lowerFirst n ++ (if many then "s" else "")) n many]
-  | Label l x -> labelled spec l x many
+  | Label l _ x -> labelled spec l x many
   | Opt x -> fieldsOf spec x many
   | Rep x -> fieldsOf spec x True
   | Seq xs -> V.concatMap (\x -> fieldsOf spec x many) xs
@@ -643,6 +672,34 @@ fun labelled spec l x many =
       [TokField l toks (many or V.any (\f -> match f with | TokField _ _ m -> m | _ -> False) inner)]
 
 fun fieldsOfDef spec d = if isEnum d then [] else fieldsOf spec (defBody d) False
+
+-- Where each of `fieldsOf`'s slots was written, in the same order: its name
+-- -- the label, or the rule or token it is named for -- and, for a node, the
+-- rule it holds. -1 for a place there is none.
+fun slotsAt (r : Rule) : [(Int, Int)] =
+  match r with
+  | Tok _ at -> [(at, 0 - 1)]
+  | Ref _ at -> [(at, at)]
+  | Label _ at x -> [(at, firstRef x)]
+  | Opt x -> slotsAt x
+  | Rep x -> slotsAt x
+  | Seq xs -> V.concatMap slotsAt xs
+  | Alt xs -> V.concatMap slotsAt xs
+
+fun firstRef (r : Rule) : Int = match V.get (refs r) 0 with | Just (_, at) -> at | None -> 0 - 1
+
+fun slotsAtDef d = if isEnum d then [] else slotsAt (defBody d)
+
+-- `name` as a token of the generated code: written where the grammar wrote
+-- what it is named for, `n` bytes of it, so that hovering there shows it and
+-- going to its definition arrives there; or, placed nowhere, as text.
+fun named spec (name : String) (at : Int) (n : Int) : TokenTree =
+  match inGrammar spec.start at n with
+  | Nowhere -> Code name
+  | loc -> Word name loc
+
+-- Code, and spanned names, as one list of tokens.
+fun tokensOf (parts : [TokenTree]) : [TokenTree] = parts
 
 fun fieldClashes spec =
   V.concatMap
@@ -672,67 +729,87 @@ fun upperFirst (s : String) : String =
     let b = toInt (stringByteAt s 0) in
     (if b >= 97 and b <= 122 then stringSlice "ABCDEFGHIJKLMNOPQRSTUVWXYZ" (b - 97) (b - 96) else stringSlice s 0 1) ++ stringSlice s 1 (stringByteLength s)
 
-fun typed spec pub root =
-  "-- --- the typed AST ---------------------------------------------------------
+-- The typed AST. The names it gives a rule -- its type and its cast -- are
+-- written where the rule's name is, an accessor where its label is, and the
+-- rule a field holds where the grammar names it: a grammar in braces then
+-- hovers as what it generates, and what it generates goes to its definition
+-- in the grammar.
+fun typed spec pub root : [TokenTree] =
+  V.concat
+    [ [Code "-- --- the typed AST ---------------------------------------------------------\n\n"],
+      V.concatMap (\d -> if isEnum d then enumType spec pub d else nodeType spec pub d) spec.defs,
+      [Code "\n-- The typed root of a tree `parse${spec.name}` made.\n${pub}fun ast${spec.name} g : Maybe ${ty spec root} = as${ty spec root} (LinguaR.root g)\n"] ]
 
-${S.join "\n" (V.map (\d -> if isEnum d then enumType spec pub d else nodeType spec pub d) spec.defs)}
--- The typed root of a tree `parse${spec.name}` made.
-${pub}fun ast${spec.name} g : Maybe ${ty spec root} = as${ty spec root} (LinguaR.root g)
-"
+-- `name` where rule `d`'s name is.
+fun atRule spec d name = named spec name (defAt d) (stringByteLength (defName d))
 
-fun nodeType spec pub d =
+fun nodeType spec pub d : [TokenTree] =
   let r = ty spec (defName d) in
   let kt = kindType spec in
   let fs = fieldsOfDef spec d in
-  "${pub}data ${r} = ${r} (Syntax ${kt})
-
-${pub}fun as${r} (s : Syntax ${kt}) : Maybe ${r} = if LinguaR.kindOf s == ${kn spec (defName d)} then Just (${r}.${r} s) else None
-
-${pub}fun syntax${r} (x : ${r}) : Syntax ${kt} = match x with | ${r}.${r} s -> s
-${S.join "" (V.map (\i -> accessor spec pub r fs i) (V.range 0 (V.len fs)))}"
+  let ats = slotsAtDef d in
+  V.concat
+    [ [Code "${pub}data ", atRule spec d r, Code " = ${r} (Syntax ${kt})\n\n${pub}fun ", atRule spec d "as${r}",
+       Code " (s : Syntax ${kt}) : Maybe ${r} = if LinguaR.kindOf s == ${kn spec (defName d)} then Just (${r}.${r} s) else None\n\n${pub}fun syntax${r} (x : ${r}) : Syntax ${kt} = match x with | ${r}.${r} s -> s\n"],
+      V.concatMap (\i -> accessor spec pub r fs ats i) (V.range 0 (V.len fs)),
+      [Code "\n"] ]
 
 -- The accessor for field `i` of rule `r`. Two single children of one rule are
 -- told apart by position: `lhs` is the first `Expr`, `rhs` the second. When an
 -- earlier child's type can hold a node this one's can -- `func:Expr arg:Atom`,
 -- where every `Atom` is an `Expr` -- counting by type would find the earlier
 -- child again, so the position among all child nodes is what says which it is.
-fun accessor spec pub r fs i =
+fun accessor spec pub r fs ats i : [TokenTree] =
   let kt = kindType spec in
-  let name = "${lowerFirst r}${upperFirst (match V.get fs i with | Just f -> fieldName f | None -> "")}" in
-  let subject = "(syntax${r} x)" in
+  let field = match V.get fs i with | Just f -> fieldName f | None -> "" in
+  let name = "${lowerFirst r}${upperFirst field}" in
+  let at = V.getOr (0 - 1, 0 - 1) ats i in
+  -- The accessor where its label -- or the rule or token it is named for --
+  -- is, and the cast to the rule it holds where the grammar names that rule:
+  -- a cast, not the type, since a function hovers with its type and goes to
+  -- its definition, which is at the rule.
+  let fn = named spec name (fst at) (stringByteLength (fieldBare field)) in
+  let cast = \n -> named spec "as${ty spec n}" (snd at) (stringByteLength n) in
+  let subject = " ${subject0 r}\n" in
+  let head = \ret -> [Code "\n${pub}fun ", fn, Code " (x : ${r}) : ${ret} = "] in
   match V.get fs i with
-  | Just (NodeField _ n True) -> "\n${pub}fun ${name} (x : ${r}) : [${ty spec n}] = LinguaA.childrenOf as${ty spec n} ${subject}\n"
+  | Just (NodeField _ n True) -> V.concat [head "[${ty spec n}]", [Code "LinguaA.childrenOf ", cast n, Code subject]]
   | Just (NodeField _ n False) ->
       let prior = V.take fs i in
       let overlapping = V.any (\f -> match f with | NodeField _ m _ -> m != n and overlaps spec m n | _ -> False) prior in
       let single = V.all (\f -> match f with | NodeField _ _ many -> not many | _ -> True) prior in
       if overlapping and single then
-        let at = V.len (V.filter (\f -> match f with | NodeField _ _ _ -> True | _ -> False) prior) in
-        "\n${pub}fun ${name} (x : ${r}) : Maybe ${ty spec n} = LinguaA.nthNodeAs as${ty spec n} ${show at} ${subject}\n"
+        let k = V.len (V.filter (\f -> match f with | NodeField _ _ _ -> True | _ -> False) prior) in
+        V.concat [head "Maybe ${ty spec n}", [Code "LinguaA.nthNodeAs ", cast n, Code " ${show k}${subject}"]]
       else
         let before = V.len (V.filter (\f -> match f with | NodeField _ m False -> m == n | _ -> False) prior) in
-        "\n${pub}fun ${name} (x : ${r}) : Maybe ${ty spec n} = LinguaA.nthChild as${ty spec n} ${show before} ${subject}\n"
-  | Just (TokField _ ts True) -> "\n${pub}fun ${name} (x : ${r}) : [Syntax ${kt}] = LinguaA.tokensOf [${S.join ", " (V.map (\t -> kq spec t) ts)}] ${subject}\n"
-  | Just (TokField _ ts False) -> "\n${pub}fun ${name} (x : ${r}) : Maybe (Syntax ${kt}) = LinguaA.tokenOf [${S.join ", " (V.map (\t -> kq spec t) ts)}] ${subject}\n"
-  | None -> ""
+        V.concat [head "Maybe ${ty spec n}", [Code "LinguaA.nthChild ", cast n, Code " ${show before}${subject}"]]
+  | Just (TokField _ ts True) -> V.concat [head "[Syntax ${kt}]", [Code "LinguaA.tokensOf [${S.join ", " (V.map (\t -> kq spec t) ts)}]${subject}"]]
+  | Just (TokField _ ts False) -> V.concat [head "Maybe (Syntax ${kt})", [Code "LinguaA.tokenOf [${S.join ", " (V.map (\t -> kq spec t) ts)}]${subject}"]]
+  | None -> []
 
-fun enumType spec pub d =
+fun subject0 r = "(syntax${r} x)"
+
+-- Enum `e`'s cast: each alternative tried in turn, its cast where the enum
+-- names it -- in groups, since a piece of code has to balance its own
+-- brackets.
+fun enumCast spec e (written : [(String, Int)]) : TokenTree =
+  V.foldr (\w acc -> Group Paren (alternative spec e w acc) Nowhere) (Code "None") written
+
+fun alternative spec e w acc =
+  match w with
+  | (a, at) -> [Code "match ", named spec "as${ty spec a}" at (stringByteLength a), Code " s with | Just y -> Just (${e}.${a} y) | None -> ", acc]
+
+fun enumType spec pub d : [TokenTree] =
   let e = ty spec (defName d) in
   let kt = kindType spec in
   let alts = alternatives d in
-  let cast =
-    V.foldr
-      (\a acc -> "(match as${ty spec a} s with | Just y -> Just (${e}.${a} y) | None -> ${acc})")
-      "None"
-      alts in
-    "${pub}data ${e} = ${S.join " | " (V.map (\a -> "${a} ${ty spec a}") alts)}
-
-${pub}fun as${e} (s : Syntax ${kt}) : Maybe ${e} = ${cast}
-
-${pub}fun syntax${e} (x : ${e}) : Syntax ${kt} =
-  match x with
-${S.join "\n" (V.map (\a -> "  | ${e}.${a} y -> syntax${ty spec a} y") alts)}
-"
+  let written = refs (defBody d) in
+  let cast = enumCast spec e written in
+  V.concat
+    [ [Code "${pub}data ", atRule spec d e, Code " = ${S.join " | " (V.map (\a -> "${a} ${ty spec a}") alts)}\n\n${pub}fun ", atRule spec d "as${e}",
+       Code " (s : Syntax ${kt}) : Maybe ${e} = ", cast,
+       Code "\n\n${pub}fun syntax${e} (x : ${e}) : Syntax ${kt} =\n  match x with\n${S.join "\n" (V.map (\a -> "  | ${e}.${a} y -> syntax${ty spec a} y") alts)}\n\n"] ]
 
 -- --- the language the grammar implies ------------------------------------------------
 --
@@ -788,7 +865,7 @@ fun optsOf (r : Rule) (opt : Bool) : [Bool] =
   match r with
   | Tok _ _ -> [opt]
   | Ref _ _ -> [opt]
-  | Label _ x -> [opt or isOptional x]
+  | Label _ _ x -> [opt or isOptional x]
   | Opt x -> optsOf x True
   | Rep x -> optsOf x opt
   | Seq xs -> V.concatMap (\x -> optsOf x opt) xs

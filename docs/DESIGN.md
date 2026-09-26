@@ -27,22 +27,23 @@ The syntax of a language is written once, in
 File = Stmt*
 
 Stmt = Let | ExprStmt
-Let      = 'let' name:Name '=' value:Expr ';'
-ExprStmt = Expr ';'
+Let      = "let" name:Name "=" value:Expr ";"
+ExprStmt = Expr ";"
 
 Expr = Literal | NameRef | Paren | Bin | Call
-Literal = 'int_number'
-NameRef = 'ident'
-Paren   = '(' Expr ')'
-Bin     = lhs:Expr op:('+' | '-' | '*' | '/') rhs:Expr
+Literal = "int_number"
+NameRef = "ident"
+Paren   = "(" Expr ")"
+Bin     = lhs:Expr op:("+" | "-" | "*" | "/") rhs:Expr
 Call    = callee:Expr ArgList
-ArgList   = '(' args:(Expr (',' Expr)*)? ')'
-Name = 'ident'
+ArgList   = "(" args:(Expr ("," Expr)*)? ")"
+Name = "ident"
 ```
 
-Rules are `UpperCamel = rule`; `'…'` is a token; juxtaposition is a sequence,
-`|` alternation, `*` and `?` repetition, `( )` grouping, `label:` names a child,
-and `//` comments. A rule whose body is only an alternation of other rules
+Rules are `UpperCamel = rule`; `"…"` is a token; juxtaposition is a sequence,
+`|` alternation, `*` and `?` repetition, `( )` grouping, `label:` names a child.
+(Ungrammar itself quotes tokens `'…'`; in `syntax!` they are Meadow's string
+literals.) A rule whose body is only an alternation of other rules
 (`Stmt`, `Expr`) is an _enum_: it has no node of its own, and each alternative
 is. Every other rule is a _node_.
 
@@ -51,8 +52,8 @@ rust-analyzer pairs it with a parser written by hand. Lingua generates the
 parser from the same grammar, which needs two things ungrammar leaves out,
 written beside it in the same declaration:
 
-- **What each token is.** `'ident'` and `'int_number'` are names for token
-  kinds of the Scythe lexer; `'let'`, `'+'` are its fixed tokens. A `tokens`
+- **What each token is.** `"ident"` and `"int_number"` are names for token
+  kinds of the Scythe lexer; `"let"`, `"+"` are its fixed tokens. A `tokens`
   table maps the quoted names to the lexer's constructors.
 - **How left recursion reads.** `Bin = lhs:Expr op:(…) rhs:Expr` and
   `Call = callee:Expr ArgList` start with the enum they belong to. A
@@ -77,21 +78,31 @@ syntax! {
     left "*" "/"
     postfix Call
   }
-  grammar r#"
+  grammar {
     File = Stmt*
-    // … the ungrammar above, exactly as written
-  "#
+    -- … the grammar above
+  }
 }
 ```
 
-The grammar is ungrammar verbatim, in a raw string. It cannot be written as the
-macro's own tokens: those are lexed as Meadow, where `'let'` is a malformed
-character and `//` an operator. A raw string holds it untouched — and later can
-come from a `.ungram` file — and Lingua reads it with an ungrammar lexer of its
-own. A raw string has no escapes, so a byte inside it is at a known distance
-from the literal's `Loc`, and a mistake in the grammar is still reported at
-the exact place it was written. The tables around it are Meadow tokens, read
-with `Std.Macro.Parse`.
+The grammar is Meadow tokens, as the tables around it are: a rule name is a
+word, a token a string literal, a comment Meadow's own. Every token keeps the
+place it was written, so a mistake is reported at the token it is about --
+`no rule is called Nmae`, under `Nmae` -- and the code written from the
+grammar is written _there_, too:
+
+- a rule's name is where its type and cast are, so hovering `Let` shows
+  `asCalcLet : Syntax Calc -> Maybe CalcLet`, and going to the definition of
+  `CalcLet` anywhere in the program arrives at the rule;
+- a label is where its accessor is: hovering `name:` shows
+  `calcLetName : CalcLet -> Maybe CalcName`;
+- a rule named inside another -- `value:Expr`, an enum's alternatives -- is
+  where the cast to it is, so it hovers as that and goes to that rule.
+
+A grammar may still be given as a string, `grammar r#"…"#`, in ungrammar's own
+notation (`'let'`, `//` comments): read by an ungrammar lexer of Lingua's own,
+its mistakes at their byte in the string. Written that way it has no places
+for the editor to use.
 
 The declaration is a procedural macro. It reads the grammar and the tables,
 checks them (below), writes the code of §2–§4, and leaves the grammar as a

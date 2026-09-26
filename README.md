@@ -27,12 +27,12 @@ syntax! {
   lexer Token
   trivia { Whitespace }
   tokens { "let" = Let, "=" = Equals, ";" = Semi, "ident" = Ident _, "int_number" = Number _ }
-  grammar r#"
+  grammar {
     File = Let*
-    Let = 'let' name:Name '=' value:Literal ';'
-    Name = 'ident'
-    Literal = 'int_number'
-  "#
+    Let = "let" name:Name "=" value:Literal ";"
+    Name = "ident"
+    Literal = "int_number"
+  }
 }
 
 -- parseMini : String -> (Green Mini, [(Int, String)])

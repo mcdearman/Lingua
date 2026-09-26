@@ -39,23 +39,23 @@ syntax! {
     "ident" = Ident _, "int_number" = Number _
   }
   precedence Expr { left "+" "-", left "*" "/", postfix Call }
-  grammar r#"
+  grammar {
     File = Stmt*
 
     Stmt = Let | ExprStmt
-    Let  = 'let' name:Name '=' value:Expr ';'
-    ExprStmt = Expr ';'
+    Let  = "let" name:Name "=" value:Expr ";"
+    ExprStmt = Expr ";"
 
     Expr = Literal | NameRef | Paren | Bin | Call
-    Literal   = 'int_number'
-    NameRef   = 'ident'
-    Paren = '(' Expr ')'
-    Bin   = lhs:Expr op:('+' | '-' | '*' | '/') rhs:Expr
+    Literal   = "int_number"
+    NameRef   = "ident"
+    Paren = "(" Expr ")"
+    Bin   = lhs:Expr op:("+" | "-" | "*" | "/") rhs:Expr
     Call  = callee:Expr ArgList
-    ArgList   = '(' args:(Expr (',' Expr)*)? ')'
+    ArgList   = "(" args:(Expr ("," Expr)*)? ")"
 
-    Name = 'ident'
-  "#
+    Name = "ident"
+  }
 }
 
 -- The tree of `input`, drawn.

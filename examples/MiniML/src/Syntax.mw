@@ -52,27 +52,27 @@ use Lingua.Green (dump)
     "ident" = Ident _, "int_number" = Number _
   }
   precedence Expr { left "==" "<=" ">=" "<" ">", left "+" "-", left "*" "/", postfix App }
-  grammar r#"
+  grammar {
     File = Expr
 
     Expr = Atom | Lam | Let | If | App | Bin
 
     App = func:Expr arg:Atom
-    Bin = lhs:Expr op:('==' | '<=' | '>=' | '<' | '>' | '+' | '-' | '*' | '/') rhs:Expr
+    Bin = lhs:Expr op:("==" | "<=" | ">=" | "<" | ">" | "+" | "-" | "*" | "/") rhs:Expr
 
     Atom = Literal | BoolLit | NameRef | Paren
-    Literal   = 'int_number'
-    BoolLit   = value:('true' | 'false')
-    NameRef   = 'ident'
-    Paren = '(' Expr ')'
+    Literal   = "int_number"
+    BoolLit   = value:("true" | "false")
+    NameRef   = "ident"
+    Paren = "(" Expr ")"
 
-    Lam = 'fun' params:Param* '->' body:Expr
-    Let = 'let' recursive:'rec'? name:Name params:Param* '=' value:Expr 'in' body:Expr
-    If  = 'if' cond:Expr 'then' yes:Expr 'else' no:Expr
+    Lam = "fun" params:Param* "->" body:Expr
+    Let = "let" recursive:"rec"? name:Name params:Param* "=" value:Expr "in" body:Expr
+    If  = "if" cond:Expr "then" yes:Expr "else" no:Expr
 
-    Name  = 'ident'
-    Param = 'ident'
-  "#
+    Name  = "ident"
+    Param = "ident"
+  }
 }
 
 -- The language the grammar implies: what name resolution reads.

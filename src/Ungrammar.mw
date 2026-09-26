@@ -12,11 +12,21 @@
 -- `( )` grouping, `label:` names what follows; `//` runs to the end of the
 -- line. A rule ends where the next `Name =` begins.
 --
+-- `syntax!` takes a grammar either way: as Meadow tokens in braces --
+-- `grammar { Let = "let" name:Name … }`, a token a string literal, a comment
+-- Meadow's own -- which `parseGrammarTrees` reads, or as a string, which
+-- `parseGrammar` does.
+--
 -- Every piece keeps the byte it was written at, so what is wrong with a grammar
--- is said at the place it is wrong.
+-- is said at the place it is wrong: in the string, or -- written in braces --
+-- in the file.
 
 use Std.Collections.Vector as V
 use Std.String as S
+use Std.Macro (TokenTree, Loc)
+use Std.Macro.TokenTree.*
+use Std.Macro.Loc.*
+use Std.Macro.Delim.*
 use Rule.*
 use Piece.*
 
@@ -28,7 +38,7 @@ use Piece.*
   | Alt [Rule]
   | Opt Rule
   | Rep Rule
-  | Label String Rule
+  | Label String Int Rule
 
 -- A rule: its name, the byte it was written at, and its body.
 @pub data Def = Def String Int Rule
@@ -82,6 +92,60 @@ fun quotedEnd (s : String) (i : Int) (acc : String) : Result (Int, String) (Stri
   else if b == 92 then quotedEnd s (i + 2) (acc ++ stringSlice s (i + 1) (i + 2))
   else quotedEnd s (i + 1) (acc ++ stringSlice s i (i + 1))
 
+-- --- tokens, in braces -------------------------------------------------------------
+
+-- The grammar written as Meadow tokens, as the lexer's pieces: a name, a
+-- string literal for a token, and the punctuation -- which Meadow reads as
+-- one operator when it runs together (`*?`), and which is taken apart again
+-- here. Where each was written, in the file; `Nowhere` is 0.
+fun piecesOf (ts : [TokenTree]) : Result (Int, String) [Piece] =
+  V.foldl
+    (\acc t ->
+      match acc with
+      | Err e -> Err e
+      | Ok done ->
+          match t with
+          | Word w at -> Ok (V.pushBack done (LName w (startOf at)))
+          | Str s at -> Ok (V.pushBack done (LTok s (startOf at)))
+          | Punct p at ->
+              let a = startOf at in
+              V.foldl
+                (\r i ->
+                  match r with
+                  | Err e -> Err e
+                  | Ok xs ->
+                      let c = stringSlice p i (i + 1) in
+                      if V.elem c ["=", "|", "*", "?", ":"] then Ok (V.pushBack xs (LPunct c (a + i)))
+                      else Err (a + i, "`${c}` is not ungrammar"))
+                (Ok done)
+                (V.range 0 (stringByteLength p))
+          | Group Paren inner at ->
+              (match piecesOf inner with
+               | Ok xs -> Ok (V.append (V.pushBack done (LPunct "(" (startOf at))) (V.pushBack xs (LPunct ")" (endOf at - 1))))
+               | Err e -> Err e)
+          | other -> Err (startOf (locOf other), "not ungrammar: a rule, a string, `|`, `*`, `?`, `:` or `( )`"))
+    (Ok [])
+    ts
+
+fun startOf (at : Loc) : Int = match at with | At a _ -> a | Nowhere -> 0
+
+fun endOf (at : Loc) : Int = match at with | At _ b -> b | Nowhere -> 0
+
+fun locOf (t : TokenTree) : Loc =
+  match t with
+  | Word _ at -> at
+  | Str _ at -> at
+  | Punct _ at -> at
+  | Group _ _ at -> at
+  | _ -> Nowhere
+
+-- Every rule of a grammar written in braces, or the byte of the file where it
+-- went wrong and why; `stop` is where the braces close.
+@pub fun parseGrammarTrees (ts : [TokenTree]) (stop : Int) : Result (Int, String) [Def] =
+  match piecesOf ts with
+  | Err e -> Err e
+  | Ok ls -> defs ls 0 [] stop
+
 -- --- the parser ------------------------------------------------------------------
 
 -- Every rule of `text`, or the byte where it went wrong and why.
@@ -132,9 +196,9 @@ fun seqLoop ls i stop acc =
 
 fun atom ls i stop =
   match (V.get ls i, V.get ls (i + 1)) with
-  | (Just (LName l _), Just (LPunct ":" _)) ->
+  | (Just (LName l at), Just (LPunct ":" _)) ->
       (match atom ls (i + 2) stop with
-       | Ok (a, j) -> Ok (Label l a, j)
+       | Ok (a, j) -> Ok (Label l at a, j)
        | Err e -> Err e)
   | _ ->
       match base ls i stop with
@@ -172,7 +236,7 @@ use Std.Test (assertEq)
       let a = assertEq (V.map defName ds) ["LetStmt", "List"] "two rules" in
       assertEq
         (V.map defBody ds)
-        [Seq [Tok "let" 10, Label "name" (Ref "Name" 21), Opt (Seq [Tok "=" 27, Ref "Expr" 31]), Tok ";" 38], Rep (Ref "Item" 49)]
+        [Seq [Tok "let" 10, Label "name" 16 (Ref "Name" 21), Opt (Seq [Tok "=" 27, Ref "Expr" 31]), Tok ";" 38], Rep (Ref "Item" 49)]
         "each with where it was written"
   | Err e -> assertEq e (0, "") "it reads"
 

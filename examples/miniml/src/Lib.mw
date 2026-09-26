@@ -371,7 +371,7 @@ database! {
     | query typed (file : Int) : Result [Diagnostic] String = typedOf (queryProgram file)
     | query result (file : Int) : Result [Diagnostic] String = resultOf (queryTyped file) (queryProgram file)
     | query shown (file : Int) : String = shownOf (querySource file) (queryResult file)
-    | query signatures (files : [Int]) : [String] = V.map (\f -> signature (queryTyped f)) files
+    | persisted query signatures (files : [Int]) : [String] = V.map signature (queryTypedEach files)
 }
 
 -- The `Core` program a parse makes, and what was said making it: the parse's
@@ -407,7 +407,7 @@ fun shownOf (text : String) (r : Result [Diagnostic] String) : String =
 fun signature (t : Result [Diagnostic] String) : String = match t with | Ok ty -> ty | Err _ -> "?"
 
 -- One program through the whole compiler: what MiniML's REPL prints for a line.
-@pub fun replLine (src : String) : String ! { Mut | e } =
+@pub fun replLine (src : String) : String ! { Thread, Mut | e } =
   let db = newSession () in
   let u = setSessionSource db 0 src in
   match toResult (\() -> sessionShown db 0) with

@@ -67,8 +67,11 @@ syntax! {
   outside, and derived queries whose bodies are ordinary Meadow reading the
   others by name -- and **`Lingua.Query`** runs them in the style of salsa:
   each remembered, re-run only when something it read has changed, and cut
-  off where it answers what it did before. An input never set, or queries
-  that read each other in a circle, are a `QueryError`.
+  off where it answers what it did before. Several keys can be asked at once,
+  each on a thread of its own, and a query marked `persisted` is kept between
+  runs, standing for as long as the inputs it read are what they were. An
+  input never set, or queries that read each other in a circle -- on one
+  thread or across several -- are a `QueryError`.
 - **`Lingua.Diagnostic`**, what a compiler says about a program and where,
   drawn by [Nettle](https://github.com/mcdearman/Nettle), the port of
   ariadne. A parse's errors become diagnostics at the tokens they were found
@@ -102,5 +105,6 @@ Two examples, in [`examples/`](examples):
 
 ## Next
 
-Parallel and persistent queries: independent keys on separate threads, and the
-memo table kept between runs — see the milestones in the design.
+All five milestones of the design are in, and pass on every Meadow runtime.
+Next is what the design leaves open: a pass per item rather than per file, and
+name resolution as a query of its own.

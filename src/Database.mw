@@ -5,30 +5,41 @@
 --     | input source (file : Int) : String
 --     | query tree (file : Int) : Green CalcKind = fst (parseCalc (querySource file))
 --     | query program (file : Int) : Maybe CoreFile = M.map lower (surfaceFromCalc (queryTree file))
+--     | persisted query sum (files : [Int]) : Int = V.sum (queryCountEach files)
 --   }
 --
 -- Each declaration is a query: an **input**, set from outside, or a derived
 -- **query**, whose body is ordinary Meadow of its key -- the parameter -- and
 -- of the other queries, each called as `query` and its name: `querySource
 -- file`, `queryTree file` -- a name of their own, so that a query called
--- `tree` never meets a function called `tree`. It may
--- call anything pure; it may not print, or mutate, or perform any effect but
--- the reading of other queries, since what it answers is reused whenever
--- nothing it read has changed. A `match` in it is parenthesised, since `|`
+-- `tree` never meets a function called `tree`. `queryTreeEach files` asks for
+-- several at once, each on a thread of its own. A body may call anything pure;
+-- it may not print, or mutate, or perform any effect but the reading of other
+-- queries, since what it answers is reused whenever nothing it read has
+-- changed, on whatever thread asks. A `match` in it is parenthesised, since `|`
 -- starts the next declaration.
+--
+-- A query marked `persisted` is kept between runs: `saveSession` writes what
+-- it has answered, with the inputs each answer read, and `loadSession` reads
+-- it back, to stand for as long as those inputs are set to what they were.
+-- Its key and answer are written as `Datum`s, so their types are `Reflect`,
+-- and so are the inputs' keys.
 --
 -- What is written, for a database `Session`:
 --
 -- - `SessionKey` and `SessionValue`, a case per query;
--- - a function per query, for the bodies to call: `queryTree file`;
+-- - a function per query, for the bodies to call -- `queryTree file` -- and
+--   one for several at once -- `queryTreeEach files`;
 -- - `newSession ()`, a database with every input unset;
 -- - `setSessionSource db file text` for each input;
--- - `sessionTree db file` for each query, to ask from outside -- which raises
---   `QueryError` (`Lingua.Query`) for an input that was never set or queries
---   that read each other in a circle.
+-- - `sessionTree db file` and `sessionTreeEach db files` for each query, to
+--   ask from outside -- which raise `QueryError` (`Lingua.Query`) for an input
+--   that was never set or queries that read each other in a circle;
+-- - when a query is `persisted`, `saveSession db path` and `loadSession db
+--   path`.
 --
 -- The engine underneath is `Lingua.Query`: what reruns when, early cutoff,
--- and the log of what ran.
+-- threads, snapshots, and the log of what ran.
 
 use Std.Collections.Vector as V
 use Std.String as S
@@ -43,10 +54,10 @@ use Std.String.Parse (Parser)
 
 -- --- reading ------------------------------------------------------------------------
 
--- A declaration: whether it is an input, its name and where that was written,
--- its parameter, the key's type, the value's type, and -- for a derived query
--- -- its body.
-data Decl = Decl Bool String Loc String [TokenTree] [TokenTree] [TokenTree]
+-- A declaration: whether it is an input, whether it is kept between runs, its
+-- name and where that was written, its parameter, the key's type, the value's
+-- type, and -- for a derived query -- its body.
+data Decl = Decl Bool Bool String Loc String [TokenTree] [TokenTree] [TokenTree]
 
 use Decl.*
 
@@ -60,13 +71,14 @@ def param : Parser Tokens (String, [TokenTree]) =
 
 def decl : Parser Tokens Decl =
   P.skipThen (punct "|") (
-    P.bind kind (\input ->
-      P.bind named (\n ->
-        P.bind param (\pk ->
-          P.skipThen (punct ":") (
-            P.bind (treesUntil (\t -> isPunct "=" t or isPunct "|" t)) (\vt ->
-              if input then P.pure (Decl True (fst n) (snd n) (fst pk) (snd pk) vt [])
-              else P.skipThen (punct "=") (P.map (\body -> Decl False (fst n) (snd n) (fst pk) (snd pk) vt body) (treesUntil (isPunct "|")))))))))
+    P.bind (P.optional (keyword "persisted")) (\kept ->
+      P.bind kind (\input ->
+        P.bind named (\n ->
+          P.bind param (\pk ->
+            P.skipThen (punct ":") (
+              P.bind (treesUntil (\t -> isPunct "=" t or isPunct "|" t)) (\vt ->
+                if input then P.pure (Decl True (M.isSome kept) (fst n) (snd n) (fst pk) (snd pk) vt [])
+                else P.skipThen (punct "=") (P.map (\body -> Decl False (M.isSome kept) (fst n) (snd n) (fst pk) (snd pk) vt body) (treesUntil (isPunct "|"))))))))))
 
 def databaseCall : Parser Tokens (Bool, (String, Loc), [Decl]) =
   P.bind (P.optional (keyword "pub")) (\pub ->
@@ -83,37 +95,47 @@ def databaseCall : Parser Tokens (Bool, (String, Loc), [Decl]) =
       | Just failed -> failed
       | None -> databaseCode (if pub then "@pub " else "") (fst name) decls
 
--- A name declared twice, at its second place.
+-- A name declared twice, at its second place; an input marked `persisted`,
+-- which is set from outside every run and so has nothing to keep.
 fun problems (decls : [Decl]) : Maybe [TokenTree] =
   let names = V.map declName decls in
-  let twice =
+  let wrong =
     V.concatMap
       (\i -> match V.get decls i with
-             | Just (Decl _ n at _ _ _ _) -> if V.any (\m -> m == n) (V.take names i) then [Fail "`${n}` is declared twice" at] else []
+             | Just (Decl input kept n at _ _ _ _) ->
+                 if V.any (\m -> m == n) (V.take names i) then [Fail "`${n}` is declared twice" at]
+                 else if input and kept then [Fail "`${n}` is an input: it is set every run, so there is nothing of it to keep" at]
+                 else []
              | None -> [])
       (V.range 0 (V.len decls)) in
-    match V.get twice 0 with
+    match V.get wrong 0 with
     | Just f -> Just [f]
     | None -> None
 
-fun declName d = match d with | Decl _ n _ _ _ _ _ -> n
+fun declName d = match d with | Decl _ _ n _ _ _ _ _ -> n
+
+fun isInput d = match d with | Decl i _ _ _ _ _ _ _ -> i
+
+fun isKept d = match d with | Decl _ k _ _ _ _ _ _ -> k
 
 fun databaseCode pub db decls : [TokenTree] =
   let key = "${db}Key" in
   let value = "${db}Value" in
   let lower = lowerFirst db in
   let several = V.len decls > 1 in
+  let keeps = V.any isKept decls in
   V.concat
-    [ [Code "use Lingua.Query as LinguaQ\n\n-- A key of `${db}`: which query, and of what.\n@derive(PartialEq)\n${pub}data ${key} = "],
-      cases (\d -> match d with | Decl _ n _ _ k _ _ -> (upperFirst n, k)) decls,
+    [ [Code "use Lingua.Query as LinguaQ\nuse Std.Collections.Vector as LinguaV\n\n-- A key of `${db}`: which query, and of what.\n@derive(PartialEq)\n${pub}data ${key} = "],
+      cases (\d -> match d with | Decl _ _ n _ _ k _ _ -> (upperFirst n, k)) decls,
       [Code "\n\n-- An answer of `${db}`, by the query that gave it.\n${pub}data ${value} = "],
-      cases (\d -> match d with | Decl _ n _ _ _ v _ -> ("${upperFirst n}Value", v)) decls,
+      cases (\d -> match d with | Decl _ _ n _ _ _ v _ -> ("${upperFirst n}Value", v)) decls,
       [Code "\n"],
       V.concatMap (\d -> accessor pub key value several d) decls,
       [Code "\nfun ${lower}Compute key =\n  match key with"],
       V.concatMap (\d -> computeArm key value d) decls,
       [Code "\n\n-- A `${db}` database, every input unset.\n${pub}fun new${db} () = LinguaQ.newDb ${lower}Compute\n"],
-      V.concatMap (\d -> outside pub db key value several d) decls ]
+      V.concatMap (\d -> outside pub db key value several d) decls,
+      if keeps then [Code (codec pub db key value decls)] else [] ]
 
 -- `A (T) | B (U)`: a constructor per declaration, its type as it was written.
 fun cases (f : Decl -> (String, [TokenTree])) (decls : [Decl]) : [TokenTree] =
@@ -128,25 +150,66 @@ fun cases (f : Decl -> (String, [TokenTree])) (decls : [Decl]) : [TokenTree] =
 -- key's answer is always its own query's.
 fun unwrap value several n = " with | ${value}.${upperFirst n}Value x -> x${if several then " | _ -> LinguaQ.unreachable ()" else ""}"
 
--- The function a query body calls: `queryTree file` reads the tree.
+-- `\v -> …`: the same, as a function, for a list of answers.
+fun unwrapping value several n = "(\\v -> match v${unwrap value several n})"
+
+-- The functions a query body calls: `queryTree file` reads the tree, and
+-- `queryTreeEach files` reads several, each on a thread of its own.
 fun accessor pub key value several d =
   match d with
-  | Decl _ n _ _ _ _ _ ->
-      [Code "\n-- `${n}`, read from within a query.\n${pub}fun query${upperFirst n} key = match LinguaQ.ask (${key}.${upperFirst n} key)${unwrap value several n}\n"]
+  | Decl _ _ n _ _ _ _ _ ->
+      let q = upperFirst n in
+      [Code "\n-- `${n}`, read from within a query.\n${pub}fun query${q} key = match LinguaQ.ask (${key}.${q} key)${unwrap value several n}\n\n-- `${n}` of each of `keys`, read at once.\n${pub}fun query${q}Each keys = LinguaV.map ${unwrapping value several n} (LinguaQ.askAll (LinguaV.map ${key}.${q} keys))\n"]
 
 fun computeArm key value d =
   match d with
-  | Decl True n _ p _ _ _ -> [Code "\n  | ${key}.${upperFirst n} ${p} -> LinguaQ.notComputed ()"]
-  | Decl False n _ p _ _ body -> [Code "\n  | ${key}.${upperFirst n} ${p} -> LinguaQ.computedAs ${value}.${upperFirst n}Value", Group Paren body Nowhere]
+  | Decl True _ n _ p _ _ _ -> [Code "\n  | ${key}.${upperFirst n} ${p} -> LinguaQ.notComputed ()"]
+  | Decl False _ n _ p _ _ body -> [Code "\n  | ${key}.${upperFirst n} ${p} -> LinguaQ.computedAs ${value}.${upperFirst n}Value", Group Paren body Nowhere]
 
 -- Setting an input and asking a query, from outside.
 fun outside pub db key value several d =
   match d with
-  | Decl input n _ _ _ _ _ ->
+  | Decl input _ n _ _ _ _ _ ->
       let q = upperFirst n in
-      let ask = "\n-- `${n}`, asked of a `${db}` database.\n${pub}fun ${lowerFirst db}${q} db key = match LinguaQ.get db (${key}.${q} key)${unwrap value several n}\n" in
+      let asker = "${lowerFirst db}${q}" in
+      let ask = "\n-- `${n}`, asked of a `${db}` database.\n${pub}fun ${asker} db key = match LinguaQ.get db (${key}.${q} key)${unwrap value several n}\n\n-- `${n}` of each of `keys`, each on a thread of its own.\n${pub}fun ${asker}Each db keys = LinguaV.map ${unwrapping value several n} (LinguaQ.getAll db (LinguaV.map ${key}.${q} keys))\n" in
       if input then [Code "\n-- Set input `${n}` for `key`.\n${pub}fun set${db}${q} db key x = LinguaQ.set db (${key}.${q} key) (${value}.${q}Value x)\n${ask}"]
       else [Code ask]
+
+-- How the `persisted` queries' keys and answers, and the inputs' keys, are
+-- written down and read back; and saving and loading with it.
+fun codec pub db key value decls =
+  let lower = lowerFirst db in
+  let written = V.filter (\d -> isInput d or isKept d) decls in
+  let kept = V.filter isKept decls in
+  let encodeKey = S.join "" (V.map (\d -> "\n    | ${key}.${upperFirst (declName d)} x -> LinguaQ.tagged \"${declName d}\" x") written) in
+  let encodeValue = S.join "" (V.map (\d -> "\n    | ${value}.${upperFirst (declName d)}Value x -> LinguaQ.tagged \"${declName d}\" x") kept) in
+  let decodeKey = S.join "" (V.map (\d -> "if q == \"${declName d}\" then LinguaQ.readAs ${key}.${upperFirst (declName d)} x else ") written) in
+  let decodeValue = S.join "" (V.map (\d -> "\n    | ${key}.${upperFirst (declName d)} _ -> (if q == \"${declName d}\" then LinguaQ.readAs ${value}.${upperFirst (declName d)}Value x else LinguaQ.notComputed ())") kept) in
+  let every = V.len written == V.len decls in
+  let everyValue = V.len kept == V.len decls in
+  "
+-- How a `${db}` database is written down: its `persisted` queries, and the
+-- keys of the inputs they read.
+${pub}def ${lower}Codec =
+  LinguaQ.Codec
+    (\\k -> match k with${encodeKey}${if every then "" else "\n    | _ -> LinguaQ.untagged ()"})
+    (\\v -> match v with${encodeValue}${if everyValue then "" else "\n    | _ -> LinguaQ.untagged ()"})
+    (\\d -> match LinguaQ.untag d with
+      | Untag.Tagged q x -> ${decodeKey}LinguaQ.notComputed ()
+      | Untag.Untagged -> LinguaQ.notComputed ())
+    (\\k d -> match LinguaQ.untag d with
+      | Untag.Untagged -> LinguaQ.notComputed ()
+      | Untag.Tagged q x ->
+          (match k with${decodeValue}${if everyValue then "" else "\n    | _ -> LinguaQ.notComputed ()"}))
+
+-- Write what `db` has worked out of its `persisted` queries to `path`.
+${pub}fun save${db} db path = LinguaQ.saveTo ${lower}Codec db path
+
+-- Read what `save${db}` wrote to `path` back into `db`: how many answers it
+-- kept, and none when there is no file yet. Set the inputs first.
+${pub}fun load${db} db path = LinguaQ.loadFrom ${lower}Codec db path
+"
 
 fun upperFirst (s : String) : String = caseFirst "ABCDEFGHIJKLMNOPQRSTUVWXYZ" 97 122 s
 

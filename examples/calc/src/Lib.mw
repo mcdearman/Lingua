@@ -271,7 +271,7 @@ database! {
     | query tree (file : Int) : Green CalcKind = fst (parseCalc (querySource file))
     | query program (file : Int) : Maybe CoreFile = M.map lower (surfaceFromCalc (queryTree file))
     | query bindings (file : Int) : [(String, Int)] = (match queryProgram file with | Just (CoreFile.File r) -> V.foldl stepCore [] r.stmts | None -> [])
-    | query sum (files : [Int]) : Int = V.foldl (\acc f -> acc + V.foldl (\a b -> a + snd b) 0 (queryBindings f)) 0 files
+    | persisted query sum (files : [Int]) : Int = V.foldl (\acc bs -> acc + V.foldl (\a b -> a + snd b) 0 bs) 0 (queryBindingsEach files)
 }
 
 fun twoFiles () =
@@ -304,6 +304,26 @@ fun twoFiles () =
   let a = setSessionSource db 1 "let x = 2 * 3; // six" in
   let b = assertEq (toResult (\() -> sessionSum db [1, 2])) (Ok 15) "still 15" in
   assertEq (Q.takeLog db) [SessionKey.Tree 1, SessionKey.Program 1, SessionKey.Bindings 1] "cut off at the bindings"
+
+@test fun aSessionIsKeptBetweenRuns () =
+  -- The sum is `persisted`: written with the files it read and a fingerprint
+  -- of each, and read back into a new session -- where, the files being the
+  -- same, nothing runs to answer it.
+  let db = twoFiles () in
+  let path = "target/calc-session.json" in
+  let a = assertEq (saveSession db path) (Ok ()) "written" in
+  let db2 = newSession () in
+  let b = setSessionSource db2 1 "let x = 2 * 3;" in
+  let c = setSessionSource db2 2 "let y = 10 - 1;" in
+  let d = assertEq (loadSession db2 path) (Ok 1) "the sum, read back" in
+  let e = assertEq (toResult (\() -> sessionSum db2 [1, 2])) (Ok 15) "the same answer" in
+  let f = assertEq (Q.takeLog db2) [] "and nothing run for it" in
+  -- A file that changed since is worked out again, as far as it has to be.
+  let db3 = newSession () in
+  let g = setSessionSource db3 1 "let x = 2 * 4;" in
+  let h = setSessionSource db3 2 "let y = 10 - 1;" in
+  let i = loadSession db3 path in
+  assertEq (toResult (\() -> sessionSum db3 [1, 2])) (Ok 17) "8 + 9, from the new file"
 
 @test fun aFileNobodySetIsSaidToBe () =
   let db = twoFiles () in

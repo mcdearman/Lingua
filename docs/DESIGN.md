@@ -342,14 +342,30 @@ body is a call to what `syntax!` and `pass!` already wrote -- `parseCalc`,
 `lower` -- one line each. A pass over a whole program is a query per file;
 a pass per item waits on the open question below.
 
-**Parallel** (milestone 5): keys that do not depend on each other run on
-separate threads (`Std.Thread`), the memo table shared through `Std.Stm`, so
-two threads asking for the same key compute it once.
+**Parallel** (milestone 5). `queryTreeEach files` -- the `fetchAll`
+operation -- asks for several keys at once, each on a thread of its own
+(`Std.Thread`), and `sessionTreeEach db files` does the same from outside.
+Threads share nothing mutable, so the database is `TVar`s (`Std.Stm`): its
+revision, its inputs, a slot per derived key, and a log. A slot is worked
+out, _running_ -- claimed by one piece of work, a _chain_, so that a second
+thread asking for the key waits for the first rather than computing it again
+-- or read back from a snapshot and not yet checked. A cycle within a chain is
+the key it is already computing; a cycle across threads is a wait that would
+close a loop in the graph of which chains wait for which, and each is a
+`Cycle` rather than a deadlock. A chain that fails gives back the keys it
+claimed, so whoever waited sees why for themselves. The engine's own steps
+answer a `Result` rather than raising, and `get` raises at the edge.
 
-**Persistent** (milestone 5): the memo table written between runs -- an
-incremental build rather than an incremental session. Results that are
-`Reflect` can be written as `Datum`s and read back, keyed by the fingerprints
-of what they read.
+**Persistent** (milestone 5). A query marked `persisted` is kept between runs:
+`saveSession db path` writes each of its answers checked this revision, with
+every input it read -- through every query in between -- and a fingerprint of
+each, the structural `hash` of its value, which is the same in every run and
+on every machine. `loadSession db path`, after the inputs are set, reads them
+back as unchecked slots: one stands, without running anything, if every
+input it read has the fingerprint it had; one that does not is run again,
+and what it answered before still cuts off what reads it. Keys and answers
+cross as `Datum`s in JSON, so a persisted query's key and value, and the
+inputs' keys, are `Reflect`.
 
 ## 7. Diagnostics
 
@@ -385,7 +401,8 @@ someone asks: `renderAll path text diagnostics`.
    cutoff, cycles; `database!` declaring them. Done: `Lingua.Query`,
    `Lingua.Database`, and the calculator as a database of files.
 5. **Parallel and persistent**: threads over independent keys, and the memo
-   table written between runs.
+   table written between runs. Done: `fetchAll`, `persisted`,
+   `saveSession`/`loadSession`, both examples using them.
 
 ## Open questions
 

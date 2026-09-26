@@ -424,6 +424,64 @@ someone asks: `renderAll path text diagnostics`.
 - **Anything else** -- a checker, an evaluator -- makes diagnostics the same
   way, from the `meta` of the node it is looking at.
 
+## 8. Tooling: the command line, the editor, the build
+
+A compiler is also the program that runs it, the server an editor talks to,
+and the build that decides what to compile. Each is written from the same
+queries the compiler already is, by a macro of its own.
+
+**`cli!`** declares the command line: each command, with the fields it takes
+-- positional, `Maybe` for one that may be left out, `[T]` for the rest,
+`Flag` and `Option T` for flags -- and what help says of each. It writes a
+constructor per command, holding what it was given, and `argsX ()`: the
+command the process was started with. `--help`, `help` and `help <command>`
+print help, `completions bash` a completion script, and a mistake is a
+diagnostic like any other -- drawn by Nettle against the command line itself,
+under the argument that is wrong.
+
+**`lsp!`** declares a language server over the compiler's database: `text` is
+how the editor's text becomes an input, and each other feature a function of
+the database, a file and the byte the editor points at -- `diagnostics`,
+`hover`, `definition`, `references` (which gives highlights and rename too),
+`completion`, `symbols`, and `tree`, the lossless tree, from which semantic
+tokens, folds and selection ranges are read here, the same for every
+language. An edit sets an input and nothing more: what it changed is all
+that is worked out again, so hovering after an edit reads an elaboration that
+was only redone for the file that changed. The protocol is Lingua's -- its
+framing, which needs Meadow's `Console.readExact`, its UTF-16 positions, the
+documents open -- and the server says it can do exactly what it was given.
+
+**Names** are resolved as a pass, for the same reason inference is: which `x`
+a use means depends on what is around it. A pass may carry a **context**
+(§5) -- an environment -- and `Resolved extends Surface` gives each name that
+is used the place its binder was written. What a file binds, where each can
+be seen, and every use are a query of their own, which going to a
+definition, finding references, renaming and completion all read.
+
+**`make!`** declares a build over **compilation units**: directories with a
+manifest naming the units they depend on. Two kinds of incrementality meet
+at a unit, and they belong to different owners:
+
+- **Between units**, the build system's. A unit is compiled again only if
+  its sources, or an interface it was compiled against, are not what they
+  were; a change that leaves a unit's interface as it was compiles that unit
+  and nothing that depends on it. Units that do not depend on each other are
+  compiled at once, on threads of their own. What was built is kept in
+  `target/lingua-build.json`, interfaces and all, which are `Reflect` so that
+  they can be.
+- **Inside a unit**, the compiler's. `compile` is given the unit's sources,
+  the interfaces it depends on, and a directory of its own; how it does the
+  work -- its own queries, its own threads, its own cache in that directory --
+  is its business. MiniML's keeps a persisted session there, so a unit built
+  before is read back and its files not typed again.
+
+The compiler is held to that boundary by an effect handler: it runs under a
+handler for `Fs` through which it can read its unit's sources and its own
+directory and write only in the latter, so a read the build system did not
+know about is an error, not a stale answer. The build's own graph is not
+`Lingua.Query`'s: a query may perform only `Fetch`, and a compiler inside a
+unit may want threads and a cache of its own.
+
 ## Milestones
 
 1. **Trees and parsing.** The green tree and the red view; the event runtime
@@ -440,10 +498,21 @@ someone asks: `renderAll path text diagnostics`.
 5. **Parallel and persistent**: threads over independent keys, and the memo
    table written between runs. Done: `fetchAll`, `persisted`,
    `saveSession`/`loadSession`, both examples using them.
+6. **Tooling** (§8), on MiniML: `cli!`, `lsp!`, name resolution as a pass
+   with a context, and `make!` over compilation units. Done, on every Meadow
+   runtime; the next language to get them is Meadow itself.
 
 ## Open questions
 
 - **Where a `pass` may run.** Per item needs the language to say what an item
   is; the first cut runs a pass per file.
-- **Name resolution** between passes is not a pass's shape and wants a query of
-  its own; the calculator will not exercise it, and the bootstrap will.
+- **Names across units.** MiniML resolves within a file and imports a unit's
+  interface whole; Meadow's modules, `use` and visibility will need the
+  interface to say what it exports and the resolution to read it.
+- **Operators whose precedence a program declares**, as Meadow's `infixl`
+  does: parsed flat, and put in order by a pass once the declarations are
+  known.
+- **A build's units run by another compiler.** `compile` is a Meadow
+  function; for the bootstrap it should also be able to be a process -- the
+  compiler it replaces -- so that units compiled by each can meet in one
+  graph.

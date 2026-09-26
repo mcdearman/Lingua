@@ -216,21 +216,34 @@ fun unchangedSince (db : Db k v) (ch : Chain k) (since : Int) (deps : [k]) : Res
       | Err e -> Err e
       | Ok got -> if snd got > since then Ok False else unchangedSince db ch since (V.drop deps 1)
 
+-- What a chain found when it went to take a key: that it has it, that
+-- another chain is working it out, or that another has worked it out since
+-- this one looked.
+data Claim = Took | Waits Int | Settled
+
+use Claim.*
+
 -- Take `key` to work out, unless another chain has meanwhile; `old` is what it
--- answered before, for early cutoff.
+-- answered before, for early cutoff. Between looking at the key and taking
+-- it another chain may have taken it and finished: a slot brought up to date
+-- this revision is looked at again rather than worked out twice.
 fun claim (db : Db k v) (ch : Chain k) (key : k) (old : Maybe (v, Int)) : Result (QueryError k) (v, Int) ! { Thread, Mut | e } =
   if V.any (\a -> same a key) (chainStack ch) then Err (Cycle (V.pushBack (chainStack ch) key))
   else
     let taken =
       T.atomically (\() ->
         match HashMap.lookup key (T.readTVar (slotsVar db)) with
-        | Just (Running owner _) -> Just owner
+        | Just (Running owner _) -> Waits owner
+        | Just (Computed (Memo _ _ checked _)) ->
+            if checked == T.readTVar (revisionVar db) then Settled
+            else (let u = T.modifyTVar (slotsVar db) (\m -> HashMap.insert key (Running (chainId ch) old) m) in Took)
         | _ ->
             let u = T.modifyTVar (slotsVar db) (\m -> HashMap.insert key (Running (chainId ch) old) m) in
-            None) in
+            Took) in
       match taken with
-      | Just owner -> waitFor db ch key owner
-      | None -> run db ch key old
+      | Waits owner -> waitFor db ch key owner
+      | Settled -> refresh db ch key
+      | Took -> run db ch key old
 
 -- Wait for another chain to finish `key` -- unless the wait would close a
 -- loop of chains waiting for one another, which no amount of waiting ends.
@@ -435,7 +448,7 @@ fun allOf (xs : [Maybe a]) : Maybe [a] =
 
 -- A `Datum` as JSON, and back: a string, number or boolean as itself, a list
 -- as an array, and the rest as an object saying which it is.
-fun datumJson (d : Datum) : Json =
+@pub fun datumJson (d : Datum) : Json =
   match d with
   | Datum.Str s -> Json.jString s
   | Datum.Int n -> Json.jInt n
@@ -447,7 +460,7 @@ fun datumJson (d : Datum) : Json =
   | Datum.Tag t xs -> Json.jObject [("tag", Json.jString t), ("args", Json.jArray (V.map datumJson xs))]
   | Datum.Code _ -> Json.jNull ()
 
-fun jsonDatum (j : Json) : Maybe Datum =
+@pub fun jsonDatum (j : Json) : Maybe Datum =
   match j with
   | Json.String s -> Just (Datum.Str s)
   | Json.Int n -> Just (Datum.Int n)

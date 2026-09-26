@@ -268,8 +268,9 @@ fun build l lower t p =
     made
     (V.range 0 (V.len fs))
 
-fun metaFrom p =
-  if V.any (\f -> fieldAccessor f == "") (prodFields p) then "meta = LinguaL.noMeta" else "meta = LinguaL.metaOf (syntax${prodName p} y)"
+-- Where a production's node is: its syntax's range -- for one that only wraps
+-- another rule, `Atom` in `Expr`, the wrapped node's, which is the same bytes.
+fun metaFrom p = "meta = LinguaL.metaOf (syntax${prodName p} y)"
 
 -- One field of typed node `y`, converted: `Maybe` the value.
 fun convert lower f =

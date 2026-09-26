@@ -85,6 +85,17 @@ syntax! {
   at; a pass reports with the `Report` effect -- in a `pass!` case, `here` is
   the node being rewritten -- and `collect` gathers what it said, so a query
   can run a pass that reports and stay pure.
+- **`cli!`** declares a command line -- commands, arguments, flags, help --
+  and writes the parser, the help, a bash completion script, and its
+  mistakes drawn as diagnostics against the command line.
+- **`lsp!`** declares a language server over the compiler's database:
+  diagnostics, hover, definition, references, rename, completion and
+  symbols from the language's own queries, and semantic tokens, folds and
+  selection ranges from the lossless tree.
+- **`make!`** declares a build over compilation units: each compiled in
+  dependency order, those that can be at once, and again only when its files
+  or an interface it read changed -- what happens inside a unit being the
+  compiler's own business, held to the unit by an `Fs` handler.
 
 Two examples, in [`examples/`](examples):
 
@@ -97,7 +108,8 @@ Two examples, in [`examples/`](examples):
   `let`-polymorphism -- written as its specification: the grammar, a
   desugaring pass from `Surface` to `Core`, Hindley-Milner inference and an
   evaluator as queries, and every error, from the parser to the run, drawn
-  where it is:
+  where it is. It is also a command line (`check`, `run`, `repl`, `build`,
+  `lsp`), a language server, and a build of units that import each other:
 
   ```text
   > 1 + true
@@ -112,6 +124,7 @@ Two examples, in [`examples/`](examples):
 
 ## Next
 
-All five milestones of the design are in, and pass on every Meadow runtime.
-Next is what the design leaves open: a pass per item rather than per file, and
-name resolution as a query of its own.
+All six milestones of the design are in, and pass on every Meadow runtime.
+Next is bootstrapping: Meadow's own grammar in Lingua, its operators put in
+order by a pass, and its front end emitting core for the compiler it
+replaces.

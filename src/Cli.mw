@@ -1,0 +1,447 @@
+-- `cli!`: a program's command line, declared.
+--
+--   cli! {
+--     pub Cli "miniml" "MiniML, typed and run by a compiler written with Lingua"
+--     | check "Type-check each file and print its type" { files : [String] "the files" }
+--     | run "Run a program" { file : String "the program", trace : Flag "print each step" }
+--     | lsp "Speak the Language Server Protocol on standard input and output" {}
+--   }
+--
+-- Each command is a constructor of the type declared -- `Cli.Run { file,
+-- trace }` -- holding what its fields say. A field is a positional argument
+-- -- `String`, `Int`, `Maybe T` for one that may be left out, `[T]` for the
+-- rest of them -- or a flag: `Flag`, `--trace`, a `Bool`; `Option T`,
+-- `--steps 10` or `--steps=10`, a `Maybe`. The string after a field is what
+-- help says of it.
+--
+-- What is written for it:
+--
+--   argsCli ()     the command this process was started with. `--help`,
+--                  `help` and `help <command>` print help and end the
+--                  process; `completions bash` prints a completion script;
+--                  a mistake is drawn against the command line, as any
+--                  other diagnostic is (`Lingua.Diagnostic`), and ends it
+--                  with status 2
+--   askCli args    the same, for any arguments, without ending anything
+--   cliSpecCli     the commands, as `Lingua.Cli` reads a command line with
+--
+-- The reading itself is below, and is ordinary Meadow over a `Spec`.
+
+use Std.Collections.Vector as V
+use Std.String as S
+use Std.Maybe as M
+use Std.Process (Process, argv, exit)
+use Std.Console (Console, writeOutput)
+use Lingua.Lang (Meta)
+use Lingua.Lang.Meta.*
+use Lingua.Diagnostic (Diagnostic, errorAt, withNote, renderAll)
+
+-- --- what a command line is made of ------------------------------------------------
+
+-- What a field holds: text, a number, one that may be left out, the rest of
+-- the arguments, a flag that is there or not, or a flag with a value.
+@pub data Kind = KText | KNum | KMaybe Kind | KMany Kind | KFlag | KOption Kind
+
+use Kind.*
+
+-- A field: its name, what it holds, and what help says of it.
+@pub data Arg = Arg String Kind String
+
+-- A command: its name, what help says of it, and its fields.
+@pub data Command = Command String String [Arg]
+
+-- A program's command line: the program, what it is, and its commands.
+@pub data Spec = Spec String String [Command]
+
+-- What a field was given.
+@pub data Value = VText String | VNum Int | VNone | VSome Value | VList [Value] | VBool Bool
+
+use Value.*
+
+-- What a command line asked for: a command and its fields; help; a
+-- completion script; or nothing it could -- the mistake, and the command line
+-- it is drawn against.
+@pub data Asked = Ran String [(String, Value)] | Help String | Complete String | Wrong Diagnostic String
+
+use Asked.*
+
+-- What `cli!` writes a command line out with: the constructors above, as
+-- functions, since a constructor cannot be reached through a module's alias.
+@pub fun kText () : Kind = KText
+@pub fun kNum () : Kind = KNum
+@pub fun kFlag () : Kind = KFlag
+@pub fun kMaybe (k : Kind) : Kind = KMaybe k
+@pub fun kMany (k : Kind) : Kind = KMany k
+@pub fun kOption (k : Kind) : Kind = KOption k
+@pub fun arg (n : String) (k : Kind) (h : String) : Arg = Arg n k h
+@pub fun command (n : String) (about : String) (fs : [Arg]) : Command = Command n about fs
+@pub fun spec (p : String) (about : String) (cs : [Command]) : Spec = Spec p about cs
+
+fun argName a = match a with | Arg n _ _ -> n
+
+fun argKind a = match a with | Arg _ k _ -> k
+
+fun argHelp a = match a with | Arg _ _ h -> h
+
+fun commandName c = match c with | Command n _ _ -> n
+
+fun commandArgs c = match c with | Command _ _ fs -> fs
+
+fun isFlag k = match k with | KFlag -> True | KOption _ -> True | _ -> False
+
+fun flagsOf c = V.filter (\a -> isFlag (argKind a)) (commandArgs c)
+
+fun positionalsOf c = V.filter (\a -> not (isFlag (argKind a))) (commandArgs c)
+
+fun program s = match s with | Spec p _ _ -> p
+
+fun commandsOf s = match s with | Spec _ _ cs -> cs
+
+@pub fun findCommand (s : Spec) (name : String) : Maybe Command = V.find (\c -> commandName c == name) (commandsOf s)
+
+-- --- reading one --------------------------------------------------------------------
+
+-- The command line as a line of text: the program, then its arguments.
+@pub fun commandLine (s : Spec) (args : [String]) : String = S.join " " (V.pushFront args (program s))
+
+-- Where argument `i` is in `commandLine`.
+fun argAt (s : Spec) (args : [String]) (i : Int) : Meta =
+  let start = V.foldl (\acc a -> acc + stringByteLength a + 1) (stringByteLength (program s) + 1) (V.take args i) in
+  Meta start (start + stringByteLength (M.unwrapOr "" (V.get args i)))
+
+-- What `args` ask of a program whose command line is `s`.
+@pub fun ask (s : Spec) (args : [String]) : Asked =
+  let line = commandLine s args in
+  let at = \i -> argAt s args i in
+  match V.get args 0 with
+  | None -> Help (usage s)
+  | Just first ->
+      if V.elem first ["help", "--help", "-h"] then
+        (match M.andThen (findCommand s) (V.get args 1) with
+         | Just c -> Help (commandUsage s c)
+         | None -> Help (usage s))
+      else if first == "completions" then
+        (match V.get args 1 with
+         | Just "bash" -> Complete (bashCompletion s)
+         | Just other -> Wrong (errorAt (at 1) "there are no completions for `${other}`" |> withNote "`bash` is the shell there are completions for") line
+         | None -> Wrong (errorAt (at 0) "`completions` needs a shell" |> withNote "`${program s} completions bash`") line)
+      else
+        match findCommand s first with
+        | None -> Wrong (errorAt (at 0) "there is no command `${first}`" |> withNote "the commands are ${S.join ", " (V.map (\c -> "`${commandName c}`") (commandsOf s))}") line
+        | Just c ->
+            if V.any (\a -> a == "--help" or a == "-h") (V.drop args 1) then Help (commandUsage s c)
+            else fill s args c line 1 0 False (defaults c)
+
+-- What each field holds when nothing is said of it.
+fun defaults c =
+  V.map
+    (\a -> (argName a, match argKind a with | KFlag -> VBool False | KMany _ -> VList [] | _ -> VNone))
+    (commandArgs c)
+
+fun set n v vals = V.map (\p -> if fst p == n then (n, v) else p) vals
+
+fun valueOf n vals = M.unwrapOr VNone (M.map snd (V.find (\p -> fst p == n) vals))
+
+-- Read argument `i` on, the `p`th positional field the next one; after a
+-- `--`, everything is positional.
+fun fill s args c line i p rest vals =
+  let at = \j -> argAt s args j in
+  match V.get args i with
+  | None -> finish s args c line p vals
+  | Just a ->
+      if not rest and a == "--" then fill s args c line (i + 1) p True vals
+      else if not rest and S.startsWith "--" a then
+        (let body = S.drop a 2 in
+          let split = S.indexOf "=" body in
+          let name = (match split with | Just k -> S.take body k | None -> body) in
+          let inline = M.map (\k -> S.drop body (k + 1)) split in
+          match V.find (\f -> argName f == name) (flagsOf c) with
+          | None -> Wrong (errorAt (at i) "`${commandName c}` has no flag `--${name}`" |> withNote (flagsNote c)) line
+          | Just f ->
+              (match argKind f with
+               | KOption k ->
+                   (match (inline, V.get args (i + 1)) with
+                    | (Just v, _) -> (match convert k v with | Ok x -> fill s args c line (i + 1) p rest (set name (VSome x) vals) | Err why -> Wrong (errorAt (at i) why) line)
+                    | (None, Just v) -> (match convert k v with | Ok x -> fill s args c line (i + 2) p rest (set name (VSome x) vals) | Err why -> Wrong (errorAt (at (i + 1)) why) line)
+                    | (None, None) -> Wrong (errorAt (at i) "`--${name}` needs a value" |> withNote "`--${name} <${name}>`") line)
+               | _ ->
+                   (match inline with
+                    | Just _ -> Wrong (errorAt (at i) "`--${name}` takes no value" |> withNote "it is there or it is not") line
+                    | None -> fill s args c line (i + 1) p rest (set name (VBool True) vals))))
+      else
+        match V.get (positionalsOf c) p with
+        | None -> Wrong (errorAt (at i) "`${commandName c}` takes nothing more" |> withNote (usageLine s c)) line
+        | Just f ->
+            (match argKind f with
+             | KMany k ->
+                 (match convert k a with
+                  | Ok x -> fill s args c line (i + 1) p rest (set (argName f) (VList (V.pushBack (listOf (valueOf (argName f) vals)) x)) vals)
+                  | Err why -> Wrong (errorAt (at i) why) line)
+             | KMaybe k ->
+                 (match convert k a with
+                  | Ok x -> fill s args c line (i + 1) (p + 1) rest (set (argName f) (VSome x) vals)
+                  | Err why -> Wrong (errorAt (at i) why) line)
+             | k ->
+                 (match convert k a with
+                  | Ok x -> fill s args c line (i + 1) (p + 1) rest (set (argName f) x vals)
+                  | Err why -> Wrong (errorAt (at i) why) line))
+
+fun listOf v = match v with | VList xs -> xs | _ -> []
+
+-- Every argument read: a positional field it needs and was not given is the
+-- one mistake left.
+fun finish s args c line p vals =
+  match V.find (\f -> match argKind f with | KText -> True | KNum -> True | _ -> False) (V.drop (positionalsOf c) p) with
+                      | Just f -> Wrong (errorAt (argAt s args (V.len args - 1)) "`${commandName c}` needs <${argName f}>" |> withNote (usageLine s c)) line
+                      | None -> Ran (commandName c) vals
+
+fun convert k text =
+  match k with
+  | KNum -> (match S.toInt text with | Just n -> Ok (VNum n) | None -> Err "`${text}` is not a number")
+  | KMaybe x -> convert x text
+  | KMany x -> convert x text
+  | KOption x -> convert x text
+  | _ -> Ok (VText text)
+
+-- --- what the program reads back ---------------------------------------------------
+
+@pub fun field (n : String) (vals : [(String, Value)]) : Value = valueOf n vals
+
+@pub fun text (v : Value) : String = match v with | VText s -> s | VSome x -> text x | VNum n -> show n | _ -> ""
+
+@pub fun num (v : Value) : Int = match v with | VNum n -> n | VSome x -> num x | _ -> 0
+
+@pub fun flag (v : Value) : Bool = match v with | VBool b -> b | _ -> False
+
+@pub fun maybe (f : Value -> a) (v : Value) : Maybe a = match v with | VNone -> None | VSome x -> Just (f x) | x -> Just (f x)
+
+@pub fun many (f : Value -> a) (v : Value) : [a] = V.map f (listOf v)
+
+-- The command `asked`, or -- for help or completions, printed, and for a
+-- mistake, drawn -- the end of the process.
+@pub fun orExit (asked : Result Asked a) : a ! { Process, Console | e } =
+  match asked with
+  | Ok x -> x
+  | Err (Help h) -> (let u = writeOutput h in let w = exit 0 in never ())
+  | Err (Complete c) -> (let u = writeOutput c in let w = exit 0 in never ())
+  | Err (Wrong d line) -> (let u = writeOutput (renderAll "command line" line [d]) in let w = exit 2 in never ())
+  | Err (Ran _ _) -> never ()
+
+-- A command and its fields, if that is what was asked for.
+@pub fun ranOf (a : Asked) : Result Asked (String, [(String, Value)]) =
+  match a with
+  | Ran name vals -> Ok (name, vals)
+  | other -> Err other
+
+-- The program's help, as what was asked for.
+@pub fun helpOf (s : Spec) : Asked = Help (usage s)
+
+-- What a process that has ended answers: nothing, since it never does.
+fun never () = arrayGet #[] 0
+
+@pub fun arguments () : [String] ! { Process | e } = argv ()
+
+-- --- help --------------------------------------------------------------------------
+
+fun signature a =
+  let n = argName a in
+  match argKind a with
+  | KText -> "<${n}>"
+  | KNum -> "<${n}>"
+  | KMaybe _ -> "[<${n}>]"
+  | KMany _ -> "[<${n}>...]"
+  | KFlag -> "[--${n}]"
+  | KOption _ -> "[--${n} <${n}>]"
+
+fun usageLine s c = "${program s} ${S.join " " (V.pushFront (V.map signature (commandArgs c)) (commandName c))}"
+
+-- Rows of two columns, the first padded to the widest.
+fun table (rows : [(String, String)]) : String =
+  let width = V.foldl (\w r -> max w (stringByteLength (fst r))) 0 rows in
+  S.join "" (V.map (\r -> "  ${fst r}${S.repeat " " (width - stringByteLength (fst r) + 3)}${snd r}\n") rows)
+
+-- What the program takes.
+@pub fun usage (s : Spec) : String =
+  match s with
+  | Spec p about cs ->
+      let rows = V.append (V.map (\c -> (S.join " " (V.pushFront (V.map signature (positionalsOf c)) (commandName c)), commandAbout c)) cs) [("help [<command>]", "Say what the program or a command takes"), ("completions bash", "Print a completion script for bash")] in
+      "${p} -- ${about}\n\nUsage: ${p} <command> [arguments]\n\nCommands:\n${table rows}\n`${p} help <command>` says what a command takes.\n"
+
+fun commandAbout c = match c with | Command _ a _ -> a
+
+-- What a command takes.
+@pub fun commandUsage (s : Spec) (c : Command) : String =
+  let pos = positionalsOf c in
+  let flags = flagsOf c in
+  let section = \title rows -> if V.isEmpty rows then "" else "\n${title}:\n${table rows}" in
+  "${program s} ${commandName c} -- ${commandAbout c}\n\nUsage: ${usageLine s c}\n${section "Arguments" (V.map (\a -> (signature a, argHelp a)) pos)}${section "Flags" (V.map (\a -> (flagSignature a, argHelp a)) flags)}"
+
+fun flagSignature a = match argKind a with | KOption _ -> "--${argName a} <${argName a}>" | _ -> "--${argName a}"
+
+fun flagsNote c =
+  let fs = flagsOf c in
+  if V.isEmpty fs then "`${commandName c}` takes no flags"
+  else "`${commandName c}` takes ${S.join ", " (V.map (\f -> "`--${argName f}`") fs)}"
+
+-- --- completion ---------------------------------------------------------------------
+
+-- A bash completion script: the commands after the program, and after a
+-- command its flags -- and files, for its arguments.
+@pub fun bashCompletion (s : Spec) : String =
+  let p = program s in
+  let fn = "_${S.join "_" (S.split "-" p)}" in
+  let words = S.join " " (V.append (V.map commandName (commandsOf s)) ["help", "completions"]) in
+  let arms = S.join "" (V.map (\c -> "    ${commandName c}) COMPREPLY=($(compgen -f -W \"${S.join " " (V.pushBack (V.map (\f -> "--${argName f}") (flagsOf c)) "--help")}\" -- \"$cur\")) ;;\n") (commandsOf s)) in
+  "${fn}() {\n  local cur=\"\${COMP_WORDS[COMP_CWORD]}\"\n  if [ \"$COMP_CWORD\" -eq 1 ]; then\n    COMPREPLY=($(compgen -W \"${words}\" -- \"$cur\"))\n    return\n  fi\n  case \"\${COMP_WORDS[1]}\" in\n${arms}  esac\n}\ncomplete -o default -F ${fn} ${p}\n"
+
+-- --- cli! ---------------------------------------------------------------------------
+
+use Std.Macro (TokenTree, Delim, Loc, isPunct)
+use Std.Macro.TokenTree.*
+use Std.Macro.Loc.*
+use Std.Macro.Delim.*
+use Std.Macro.Parse (Tokens, parseTokens, ident, keyword, punct, group, stringLit)
+use Std.String.Parse as P
+use Std.String.Parse (Parser)
+
+-- A command as written: its name and where, what help says, its fields.
+data Declared = Declared String Loc String [(String, Loc, Kind, String)]
+
+use Declared.*
+
+def named : Parser Tokens (String, Loc) = P.label "a name" (P.token (\t -> match t with | Word w at -> Just (w, at) | _ -> None) [])
+
+def kindP : Parser Tokens Kind =
+  P.choice
+    [ P.map KMany (group Bracket (P.defer (\u -> kindP))),
+      P.skipThen (keyword "Maybe") (P.map KMaybe (P.defer (\u -> kindP))),
+      P.skipThen (keyword "Option") (P.map KOption (P.defer (\u -> kindP))),
+      P.map (\u -> KFlag) (keyword "Flag"),
+      P.map (\u -> KText) (keyword "String"),
+      P.map (\u -> KNum) (keyword "Int") ]
+
+def fieldP : Parser Tokens (String, Loc, Kind, String) =
+  P.thenSkip
+    (P.bind named (\n ->
+      P.skipThen (punct ":") (P.bind kindP (\k ->
+        P.map (\h -> (fst n, snd n, k, M.unwrapOr "" h)) (P.optional stringLit)))))
+    (P.optional (punct ","))
+
+def commandP : Parser Tokens Declared =
+  P.skipThen (punct "|") (
+    P.bind named (\n ->
+      P.bind stringLit (\about ->
+        P.map (\fs -> Declared (fst n) (snd n) about fs) (group Brace (P.many fieldP)))))
+
+def cliCall : Parser Tokens (Bool, String, String, String, [Declared]) =
+  P.bind (P.optional (keyword "pub")) (\pub ->
+    P.bind ident (\name ->
+      P.bind stringLit (\prog ->
+        P.bind stringLit (\about ->
+          P.map (\cs -> (M.isSome pub, name, prog, about, cs)) (P.some commandP)))))
+
+@macro
+@pub fun cli (ts : [TokenTree]) : [TokenTree] ! { Expand | e } =
+  match parseTokens cliCall ts with
+  | Err failed -> failed
+  | Ok (pub, name, prog, about, cs) ->
+      match cliProblems cs with
+      | Just failed -> [failed]
+      | None -> [Code (cliCode (if pub then "@pub " else "") name prog about cs)]
+
+-- A command declared twice, or called what the program answers itself; a
+-- positional field that can never be reached, after the rest or after one
+-- that may be left out.
+fun cliProblems (cs : [Declared]) : Maybe TokenTree =
+  let names = V.map (\c -> match c with | Declared n _ _ _ -> n) cs in
+  let wrong =
+    V.concatMap
+      (\i -> match V.get cs i with
+             | Just (Declared n at _ fs) ->
+                 if V.elem n (V.take names i) then [Fail "`${n}` is declared twice" at]
+                 else if n == "help" or n == "completions" then [Fail "`${n}` is a command every program has already" at]
+                 else V.take (unreachable fs) 1
+             | None -> [])
+      (V.range 0 (V.len cs)) in
+    V.get wrong 0
+
+fun unreachable fs =
+  let pos = V.filter (\f -> match f with | (_, _, k, _) -> not (isFlag k)) fs in
+  V.concatMap
+    (\i -> match (V.get pos i, V.get pos (i + 1)) with
+           | (Just (_, _, KMany _, _), Just (m, at, _, _)) -> [Fail "`${m}` comes after the rest of the arguments, so nothing is left for it" at]
+           | (Just (_, _, KMaybe _, _), Just (m, at, KText, _)) -> [Fail "`${m}` is needed, but comes after one that may be left out" at]
+           | (Just (_, _, KMaybe _, _), Just (m, at, KNum, _)) -> [Fail "`${m}` is needed, but comes after one that may be left out" at]
+           | _ -> [])
+    (V.range 0 (V.len pos))
+
+fun upperFirst (s : String) : String =
+  if stringByteLength s == 0 then s
+  else
+    let b = toInt (stringByteAt s 0) in
+    (if b >= 97 and b <= 122 then stringSlice "ABCDEFGHIJKLMNOPQRSTUVWXYZ" (b - 97) (b - 96) else stringSlice s 0 1) ++ stringSlice s 1 (stringByteLength s)
+
+fun quoted (s : String) : String = "\"${S.join "\\\"" (S.split "\"" s)}\""
+
+fun kindCode k =
+  match k with
+  | KText -> "(LinguaCli.kText ())"
+  | KNum -> "(LinguaCli.kNum ())"
+  | KFlag -> "(LinguaCli.kFlag ())"
+  | KMaybe x -> "(LinguaCli.kMaybe ${kindCode x})"
+  | KMany x -> "(LinguaCli.kMany ${kindCode x})"
+  | KOption x -> "(LinguaCli.kOption ${kindCode x})"
+
+fun kindType k =
+  match k with
+  | KText -> "String"
+  | KNum -> "Int"
+  | KFlag -> "Bool"
+  | KMaybe x -> "(Maybe ${kindType x})"
+  | KOption x -> "(Maybe ${kindType x})"
+  | KMany x -> "[${kindType x}]"
+
+-- `v`, a `Value`, as what a field of kind `k` holds.
+fun readBack k v =
+  match k with
+  | KText -> "LinguaCli.text (${v})"
+  | KNum -> "LinguaCli.num (${v})"
+  | KFlag -> "LinguaCli.flag (${v})"
+  | KMaybe x -> "LinguaCli.maybe (\\y -> ${readBack x "y"}) (${v})"
+  | KOption x -> "LinguaCli.maybe (\\y -> ${readBack x "y"}) (${v})"
+  | KMany x -> "LinguaCli.many (\\y -> ${readBack x "y"}) (${v})"
+
+fun cliCode pub t prog about cs =
+  let spec = "cliSpec${t}" in
+  let commandSpec = \c -> match c with
+                          | Declared n _ a fs -> "LinguaCli.command ${quoted n} ${quoted a} [${S.join ", " (V.map (\f -> match f with | (m, _, k, h) -> "LinguaCli.arg ${quoted m} ${kindCode k} ${quoted h}") fs)}]" in
+                          let ctor = \c -> match c with
+                                           | Declared n _ _ [] -> upperFirst n
+                                           | Declared n _ _ fs -> "${upperFirst n} ({ ${S.join ", " (V.map (\f -> match f with | (m, _, k, _) -> "${m} : ${kindType k}") fs)} })" in
+                                           let make = \c -> match c with
+                                                            | Declared n _ _ [] -> "${t}.${upperFirst n}"
+                                                            | Declared n _ _ fs -> "${t}.${upperFirst n} { ${S.join ", " (V.map (\f -> match f with | (m, _, k, _) -> "${m} = ${readBack k "LinguaCli.field ${quoted m} vals"}") fs)} }" in
+                                                            let arms = S.join "" (V.map (\c -> match c with | Declared n _ _ _ -> "  | ${quoted n} -> Just (${make c})\n") cs) in
+                                                            "use Lingua.Cli as LinguaCli
+
+-- `${t}`'s command line, as `Lingua.Cli` reads it.
+${pub}def ${spec} = LinguaCli.spec ${quoted prog} ${quoted about} [${S.join ", " (V.map commandSpec cs)}]
+
+-- A command `${prog}` can be given, and what it was given with it.
+${pub}data ${t} = ${S.join " | " (V.map ctor cs)}
+
+fun cliMake${t} (name : String) vals : Maybe ${t} =
+  match name with
+${arms}  | _ -> None
+
+-- The command `args` ask for -- or the help, the completion script or the
+-- mistake they ask for instead.
+${pub}fun ask${t} (args : [String]) =
+  match LinguaCli.ranOf (LinguaCli.ask ${spec} args) with
+  | Ok (name, vals) -> (match cliMake${t} name vals with | Just c -> Ok c | None -> Err (LinguaCli.helpOf ${spec}))
+  | Err other -> Err other
+
+-- The command this process was started with. Help or a completion script is
+-- printed, and a mistake drawn against the command line, and either ends it.
+${pub}fun args${t} () = LinguaCli.orExit (ask${t} (LinguaCli.arguments ()))
+"

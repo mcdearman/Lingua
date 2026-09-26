@@ -16,7 +16,13 @@
 @pub mod Query
 @pub mod Database
 @pub mod Diagnostic
+@pub mod Cli
+@pub mod Lsp
+@pub mod Make
 
 @pub use Lingua.Gen (syntax)
 @pub use Lingua.Pass (lang, pass)
 @pub use Lingua.Database (database)
+@pub use Lingua.Cli (cli)
+@pub use Lingua.Lsp (lsp)
+@pub use Lingua.Make (make)

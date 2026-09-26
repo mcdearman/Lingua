@@ -2,7 +2,9 @@
 -- booleans, `fun`, application, `let`, `let rec`, `if` and arithmetic --
 -- written as its specification.
 --
---   meadow run examples/miniml     -- a few programs, typed and run
+--   meadow run examples/miniml -- check a.ml b.ml
+--   meadow run examples/miniml -- run a.ml
+--   meadow run examples/miniml -- demo     -- a few programs, typed and run
 --   meadow test examples/miniml    -- MiniML's tests, and the queries'
 --
 -- What Meadow's MiniML writes by hand, Lingua writes from declarations:
@@ -21,13 +23,27 @@
 --   diagnostics     every error, from the parser, the pass, the checker or
 --                   the run, at the bytes it is about, drawn by Nettle
 --                   (`Lingua.Diagnostic`)
+--   names           resolution, as another pass with a context: each use of a
+--                   name to where it was bound, for the editor to go to
+--   the build       units -- directories of files, each depending on others
+--                   -- compiled in order, those that can be at once, and each
+--                   again only when its files or an interface it read changed
+--                   (`make!`); inside a unit, the compiler's own queries
+--   the command     `check`, `run`, `repl`, `build`, `lsp`: its commands,
+--   line            flags and help, a completion script, its mistakes drawn
+--                   (`cli!`)
+--   the editor      a language server over the same queries: diagnostics,
+--                   types on hover, going to a definition, references,
+--                   renaming, completion, symbols, and colours, folds and
+--                   selections read off the tree (`lsp!`)
 --
 -- Inference and evaluation run inside queries, so both are pure: inference
 -- mutates only cells of its own `runSt`, and `let rec` is a closure that
 -- knows its own name rather than a cell tied into a knot.
 
 use Scythe (lexer!)
-use Lingua (syntax!, lang!, pass!, database!)
+use Lingua (syntax!, lang!, pass!, database!, cli!, lsp!, make!)
+use Std.Macro (Reflect, Datum, toDatum, fromDatum)
 use Lingua.Green (Green, dump, text)
 use Lingua.Lang (Meta)
 use Lingua.Diagnostic (Diagnostic, errorAt, withLabel, withNote, message, parseErrors, say, collect, renderAll)
@@ -197,6 +213,28 @@ fun programExpr (f : CoreFile) : CoreExpr = match f with | CoreFile.File r -> r.
 data Type = TInt | TBool | TFun Type Type | TVar Int
 
 use Type.*
+
+-- A type as a `Datum`, which is how an interface is kept between builds.
+impl Reflect Type {
+  fun toDatum t =
+    match t with
+    | TInt -> Datum.Tag "TInt" []
+    | TBool -> Datum.Tag "TBool" []
+    | TFun a b -> Datum.Tag "TFun" [toDatum a, toDatum b]
+    | TVar n -> Datum.Tag "TVar" [Datum.Int n]
+  fun fromDatum d =
+    match d with
+    | Datum.Tag t xs ->
+        if t == "TInt" then Ok TInt
+        else if t == "TBool" then Ok TBool
+        else if t == "TVar" then (match V.get xs 0 with | Just (Datum.Int n) -> Ok (TVar n) | _ -> Err "a variable's number")
+        else if t == "TFun" then
+          (match (V.get xs 0, V.get xs 1) with
+           | (Just a, Just b) -> (match (fromDatum a, fromDatum b) with | (Ok x, Ok y) -> Ok (TFun x y) | (Err e, _) -> Err e | (_, Err e) -> Err e)
+           | _ -> Err "a function's two sides")
+        else Err "`${t}` is not a type"
+    | _ -> Err "not a type"
+}
 
 -- A type while it is inferred: a variable is a cell of the `runSt`'s.
 data MType s = MInt | MBool | MFun (MType s) (MType s) | MVar (StRef s (TyVar s))
@@ -439,8 +477,34 @@ fun shown vars t =
 -- A program elaborated -- every expression in it with its type -- or why it
 -- has none, where. Every cell is made and written inside the `runSt`, and
 -- only `Typed`, which has none, comes out of it.
-@pub fun typed (e : CoreExpr) : Result Diagnostic TypedExpr =
-  toResult (\() -> runSt (\() -> settleExpr (inferExpr (Ctx [;] 0 (St.newRef 0)) e)))
+@pub fun typed (e : CoreExpr) : Result Diagnostic TypedExpr = typedIn [] e
+
+-- The same, with names another unit exports in scope, each at its type.
+@pub fun typedIn (imports : [(String, Type)]) (e : CoreExpr) : Result Diagnostic TypedExpr =
+  toResult (\() ->
+    runSt (\() ->
+      let start = Ctx [;] 0 (St.newRef 0) in
+      let ctx = V.foldl (\c i -> bind c (fst i) (thaw c (snd i))) start imports in
+      settleExpr (inferExpr ctx e)))
+
+-- An imported type as inference holds one: each of its variables a new one,
+-- and generalized -- it was a `let`'s, in the unit it came from.
+fun thaw (c : Ctx s) (t : Type) = fst (thawing c t [])
+
+fun thawing c t seen =
+  match t with
+  | TInt -> (MInt, seen)
+  | TBool -> (MBool, seen)
+  | TFun a b -> (match thawing c a seen with | (a2, s1) -> (match thawing c b s1 with | (b2, s2) -> (MFun a2 b2, s2)))
+  | TVar n ->
+      (match V.find (\p -> fst p == n) seen with
+       | Just p -> (snd p, seen)
+       | None -> (let v = genericVar c in (v, V.pushBack seen (n, v))))
+
+fun genericVar c =
+  match fresh c with
+  | MVar r -> (match St.getRef r with | Unbound j _ -> (let u = St.setRef r (Unbound j generic) in MVar r) | Bound _ -> MVar r)
+  | t -> t
 
 -- The type of a program, or why it has none.
 @pub fun typeOf (e : CoreExpr) : Result Diagnostic String =
@@ -522,6 +586,10 @@ database! {
     | query result (file : Int) : Result [Diagnostic] String = resultOf (queryTyped file) (queryProgram file)
     | query shown (file : Int) : String = shownOf (querySource file) (queryResult file)
     | persisted query signatures (files : [Int]) : [String] = V.map signature (queryTypedEach files)
+    | query names (file : Int) : Names = namesOf (queryParsed file)
+    | input imports (unit : Int) : [(String, Type)]
+    | query linked (file : Int) : Result [Diagnostic] Type = linkedOf (queryImports 0) (queryProgram file)
+    | persisted query exported (files : [Int]) : [Maybe Type] = V.map (\r -> match r with | Ok t -> Just t | Err _ -> None) (queryLinkedEach files)
 }
 
 -- The `Core` program a parse makes, and what was said making it: the parse's
@@ -534,6 +602,12 @@ fun compile (parsed : (Green MiniKind, [(Int, String)])) : (Maybe CoreFile, [Dia
        | Just s -> (match collect (\() -> desugar s) with | (p, ds) -> (if V.isEmpty ds then Just p else None, ds))
        | None -> (None, []))
   | (g, errs) -> (None, parseErrors g errs)
+
+-- A file's type, with what the units it depends on export in scope.
+fun linkedOf (imports : [(String, Type)]) (p : (Maybe CoreFile, [Diagnostic])) : Result [Diagnostic] Type =
+  match p with
+  | (Just f, _) -> (match typedIn imports (programExpr f) with | Ok t -> Ok (tyTypedExpr t) | Err d -> Err [d])
+  | (None, ds) -> Err ds
 
 fun elaboratedOf (p : (Maybe CoreFile, [Diagnostic])) : Result [Diagnostic] TypedExpr =
   match p with
@@ -571,7 +645,302 @@ fun signature (t : Result [Diagnostic] String) : String = match t with | Ok ty -
   | Ok out -> out
   | Err e -> show e
 
+-- --- names -------------------------------------------------------------------------------
+--
+-- Resolution is a pass as inference is, and for the same reason: which `x`
+-- a use means depends on what is around it, which a context carries down.
+-- `Resolved` is `Surface` with each name that is used holding where the
+-- binder it means was written -- or nothing, for one bound nowhere.
+
+lang! {
+  pub Resolved extends Surface
+  Atom - NameRef
+  Atom + NameRef { ident : String, binder : Maybe Meta }
+}
+
+pass! {
+  pub resolve : Surface -> Resolved with env
+    | NameRef { ident } -> NameRef { ident = ident, binder = L.lookupAssoc ident env }
+    | LamExpr { params, later body } -> LamExpr { params = params, body = body (bindParams params env) }
+    | LetExpr { recursive, name, params, later value, later body } ->
+        (let self = (nameIdent name, metaResolvedName name) :: env in
+          let inner = bindParams params (if M.isSome recursive then self else env) in
+          LetExpr { recursive = recursive, name = name, params = params, value = value inner, body = body self })
+}
+
+fun nameIdent (n : ResolvedName) : String = match n with | ResolvedName.Name r -> r.ident
+
+fun paramIdent (p : ResolvedParam) : String = match p with | ResolvedParam.Param r -> r.ident
+
+fun bindParams (ps : [ResolvedParam]) env = V.foldl (\acc p -> (paramIdent p, metaResolvedParam p) :: acc) env ps
+
+-- A file's names: each binder -- what it is called, where, what it binds,
+-- and the stretches of the file it can be seen in -- and each use, with
+-- where its binder is.
+@derive(Debug, PartialEq)
+data Names = Names [(String, Meta, String, [Meta])] [(Meta, Meta)]
+
+use Names.*
+
+fun namesOf (parsed : (Green MiniKind, [(Int, String)])) : Names =
+  match M.map (resolve [;]) (surfaceFromMini (fst parsed)) with
+  | Just (ResolvedFile.File r) -> (match namesIn r.expr with | (bs, us) -> Names bs us)
+  | None -> Names [] []
+
+fun both a b = (V.append (fst a) (fst b), V.append (snd a) (snd b))
+
+fun namesIn (e : ResolvedExpr) =
+  match e with
+  | ResolvedExpr.Atom r -> namesInAtom r.atom
+  | ResolvedExpr.AppExpr r -> both (namesIn r.func) (namesInAtom r.arg)
+  | ResolvedExpr.BinExpr r -> both (namesIn r.lhs) (namesIn r.rhs)
+  | ResolvedExpr.IfExpr r -> both (namesIn r.cond) (both (namesIn r.yes) (namesIn r.no))
+  | ResolvedExpr.LamExpr r -> both (paramsSeenIn r.params [metaResolvedExpr r.body], []) (namesIn r.body)
+  | ResolvedExpr.LetExpr r ->
+      let value = metaResolvedExpr r.value in
+      let body = metaResolvedExpr r.body in
+      let kind = if not (V.isEmpty r.params) or isLam r.value then "function" else "variable" in
+      let self = (nameIdent r.name, metaResolvedName r.name, kind, if M.isSome r.recursive then [value, body] else [body]) in
+      both ([self], []) (both (paramsSeenIn r.params [value], []) (both (namesIn r.value) (namesIn r.body)))
+
+fun paramsSeenIn ps scope = V.map (\p -> (paramIdent p, metaResolvedParam p, "parameter", scope)) ps
+
+fun isLam (e : ResolvedExpr) = match e with | ResolvedExpr.LamExpr _ -> True | _ -> False
+
+fun namesInAtom (a : ResolvedAtom) =
+  match a with
+  | ResolvedAtom.NameRef r -> ([], match r.binder with | Just b -> [(r.meta, b)] | None -> [])
+  | ResolvedAtom.ParenExpr r -> namesIn r.expr
+  | _ -> ([], [])
+
+-- --- the editor ------------------------------------------------------------------------------
+--
+-- A language server over the compiler's own queries. Each feature asks the
+-- session, which works out only what the last edit changed: hovering reads
+-- the elaboration, going to a definition the names, and neither runs again
+-- until the file does.
+
+lsp! {
+  pub Server "miniml" for Session
+    | text = setSessionSource
+    | diagnostics = diagnosticsOf
+    | tree = treeOf
+    | hover = hoverAt
+    | definition = definitionAt
+    | references = referencesAt
+    | completion = completionAt
+    | symbols = symbolsOf
+}
+
+-- A query's answer, or `fallback` if it has none -- an input never set.
+fun answered fallback act = match toResult act with | Ok x -> x | Err _ -> fallback
+
+fun diagnosticsOf db file = answered [] (\() -> match sessionTyped db file with | Ok _ -> [] | Err ds -> ds)
+
+fun treeOf db file = answered (fst (parseMini "")) (\() -> fst (sessionParsed db file))
+
+fun contains (m : Meta) (at : Int) = match m with | Meta a b -> a <= at and at <= b
+
+fun size (m : Meta) = match m with | Meta a b -> b - a
+
+-- The type of the innermost expression the editor is on.
+fun hoverAt db file at =
+  answered None (\() ->
+    match sessionElaborated db file with
+    | Err _ -> None
+    | Ok t ->
+        let around = V.filter (\x -> contains (metaTypedExpr x) at) (subexpressions t) in
+        match V.get around (V.len around - 1) with
+        | Just x -> Just (metaTypedExpr x, "```\n${typeName (tyTypedExpr x)}\n```")
+        | None -> None)
+
+fun namesAt db file = answered (Names [] []) (\() -> sessionNames db file)
+
+-- The binder the editor is on, or the one the name it is on means.
+fun binderAt (n : Names) (at : Int) : Maybe Meta =
+  match n with
+  | Names bs us ->
+      (match V.find (\u -> contains (fst u) at) us with
+       | Just u -> Just (snd u)
+       | None -> M.map (\b -> match b with | (_, m, _, _) -> m) (V.find (\b -> match b with | (_, m, _, _) -> contains m at) bs))
+
+fun definitionAt db file at = match binderAt (namesAt db file) at with | Just b -> [(file, b)] | None -> []
+
+-- The binder and every use of it.
+fun referencesAt db file at =
+  let n = namesAt db file in
+  match (n, binderAt n at) with
+  | (Names _ us, Just b) -> V.pushFront (V.map (\u -> (file, fst u)) (V.filter (\u -> snd u == b) us)) (file, b)
+  | _ -> []
+
+-- The names that can be seen where the editor is, innermost first, and the
+-- keywords.
+fun completionAt db file at =
+  match namesAt db file with
+  | Names bs _ ->
+      let seen = V.filter (\b -> match b with | (_, _, _, scopes) -> V.any (\s -> contains s at) scopes) bs in
+      let named = V.foldr (\b acc -> match b with | (n, _, k, _) -> if V.any (\x -> fst x == n) acc then acc else V.pushBack acc (n, k)) [] seen in
+      V.append named (V.map (\k -> (k, "keyword")) ["let", "rec", "in", "fun", "if", "then", "else", "true", "false"])
+
+-- Everything a `let` binds.
+fun symbolsOf db file =
+  match namesAt db file with
+  | Names bs _ -> V.concatMap (\b -> match b with | (n, m, k, _) -> if k == "parameter" then [] else [(n, k, m)]) bs
+
+-- --- units ---------------------------------------------------------------------------------
+--
+-- A unit is a directory of `.ml` files with a `Unit` file naming the units
+-- it depends on, a line each. Each file exports its program under the file's
+-- name -- `lib/double.ml` is `double` -- and a unit's interface is what its
+-- files export, at their types.
+
+make! {
+  pub Build "miniml"
+    | sources = ".ml"
+    | manifest = "Unit"
+    | compile = compileUnit
+}
+
+use Lingua.Make (Given, unitSources, unitImports, unitOut)
+use Std.Path as Path
+use Std.Fs (writeString)
+
+-- What a unit exports: each file's name, and the type of its program.
+@derive(Debug, PartialEq)
+data Interface = Interface [(String, Type)]
+
+impl Reflect Interface {
+  fun toDatum i = match i with | Interface xs -> Datum.List (V.map (\x -> Datum.Tag (fst x) [toDatum (snd x)]) xs)
+  fun fromDatum d =
+    match d with
+    | Datum.List ds ->
+        V.foldl
+          (\acc x -> match (acc, x) with
+                     | (Ok (Interface xs), Datum.Tag n ts) ->
+                         (match M.map fromDatum (V.get ts 0) with
+                          | Just (Ok t) -> Ok (Interface (V.pushBack xs (n, t)))
+                          | _ -> Err "an export's type")
+                     | (Err e, _) -> Err e
+                     | _ -> Err "an export")
+          (Ok (Interface []))
+          ds
+    | _ -> Err "not an interface"
+}
+
+fun exports (i : Interface) : [(String, Type)] = match i with | Interface xs -> xs
+
+-- The compiler, given a unit. Inside it, it is the compiler's business how
+-- the work is done: here, with a session of its own, whose `exported` query
+-- is kept in the unit's directory between builds -- a unit built before is
+-- read back and its files not typed again -- and whose files are typed on
+-- threads of their own when they are.
+fun compileUnit (u : Given Interface) : Result String Interface ! { Thread, Mut, Fs | e } =
+  match toResult (\() -> compiling u) with
+  | Ok r -> r
+  | Err why -> Err "${show why}\n"
+
+fun compiling (u : Given Interface) =
+  let sources = unitSources u in
+  let files = V.range 1 (V.len sources + 1) in
+  let db = newSession () in
+  let a = setSessionImports db 0 (V.concatMap (\i -> exports (snd i)) (unitImports u)) in
+  let b = V.foldl (\acc i -> setSessionSource db i (snd (V.getOr ("", "") sources (i - 1)))) () files in
+  let cache = Path.join (unitOut u) "session.json" in
+  let c = loadSession db cache in
+  let exported = sessionExported db files in
+  let named = V.map (\i -> Path.fileStem (fst (V.getOr ("", "") sources i))) (V.range 0 (V.len sources)) in
+  if V.all M.isSome exported then
+    (let interface = V.map (\i -> (V.getOr "" named i, M.unwrapOr TInt (V.getOr None exported i))) (V.range 0 (V.len named)) in
+      let d = saveSession db cache in
+      let e = writeString (Path.join (unitOut u) "types", S.join "" (V.map (\x -> "${fst x} : ${typeName (snd x)}\n") interface)) in
+      Ok (Interface interface))
+  else
+    let linked = sessionLinkedEach db files in
+    Err
+      (S.join ""
+        (V.map
+          (\i -> match (V.get sources i, V.get linked i) with
+                 | (Just (path, text), Just (Err ds)) -> renderAll path text ds
+                 | _ -> "")
+          (V.range 0 (V.len sources))))
+
+-- --- the command line ----------------------------------------------------------------------
+
+cli! {
+  pub Cli "miniml" "MiniML, typed and run by a compiler written with Lingua"
+    | check "Type-check each file and say its type" { files : [String] "the files to check" }
+    | run "Run a program and say its value and type" { file : String "the program" }
+    | repl "Type and run each line of standard input" {}
+    | demo "Type and run a few programs" {}
+    | build "Build a unit and every unit it depends on" { root : Maybe String "the unit's directory; this one if none is given" }
+    | lsp "Be a language server, on standard input and output" {}
+}
+
+use Std.Fs (Fs, readToString)
+use Std.Process (Process, exit)
+use Std.Console (Console, readLine)
+
 def main =
+  match argsCli () with
+  | Cli.Check r -> finish (checkFiles r.files)
+  | Cli.Run r -> finish (runFile r.file)
+  | Cli.Repl -> repl ()
+  | Cli.Demo -> demo ()
+  | Cli.Build r -> finish (buildBuild (M.unwrapOr "." r.root))
+  | Cli.Lsp -> serveServer ()
+
+-- End with status 1 when something went wrong.
+fun finish (ok : Bool) = if ok then () else exit 1
+
+-- Each of `paths` read into `db` -- as file 1, 2, … -- or why one could not be.
+fun load db (paths : [String]) : Result String [(Int, String, String)] ! { Fs, Thread, Mut | e } =
+  V.foldl
+    (\acc p -> match acc with
+               | Err why -> Err why
+               | Ok done ->
+                   (match readToString p with
+                    | Err why -> Err "cannot read ${p}: ${why}"
+                    | Ok text ->
+                        (let i = V.len done + 1 in
+                          let u = setSessionSource db i text in
+                          Ok (V.pushBack done (i, p, text)))))
+    (Ok [])
+    paths
+
+-- Each file's type, or its diagnostics drawn against it -- the files typed
+-- on threads of their own.
+fun checkFiles (paths : [String]) =
+  let db = newSession () in
+  match load db paths with
+  | Err why -> (let u = println why in False)
+  | Ok files ->
+      let typed = sessionTypedEach db (V.map (\f -> match f with | (i, _, _) -> i) files) in
+      V.foldl
+        (\ok i -> match (V.get files i, V.get typed i) with
+                  | (Just (_, p, _), Just (Ok ty)) -> (let u = println "${p}: ${ty}" in ok)
+                  | (Just (_, p, text), Just (Err ds)) -> (let u = writeOutput (renderAll p text ds) in False)
+                  | _ -> ok)
+        True
+        (V.range 0 (V.len files))
+
+-- A program's value and type, or its diagnostics.
+fun runFile (path : String) =
+  let db = newSession () in
+  match load db [path] with
+  | Err why -> (let u = println why in False)
+  | Ok files ->
+      match sessionResult db 1 with
+      | Ok out -> (let u = println out in True)
+      | Err ds -> (let u = writeOutput (renderAll path (querySourceOf db 1) ds) in False)
+
+fun querySourceOf db i = sessionSource db i
+
+fun repl () =
+  match readLine () with
+  | None -> ()
+  | Just line -> (let u = println (replLine line) in repl ())
+
+fun demo () =
   V.foldl
     (\u src -> println "> ${src}\n${replLine src}\n")
     ()
@@ -760,3 +1129,147 @@ fun twoFiles () =
   let a = setSessionSource db 1 "let id = fun x -> x in id -- the identity" in
   let b = assertEq (toResult (\() -> sessionSignatures db [1, 2])) (Ok ["(t0 -> t0)", "Int"]) "the same types" in
   assertEq (Q.takeLog db) [SessionKey.Parsed 1, SessionKey.Program 1, SessionKey.Elaborated 1] "cut off at the elaboration"
+
+-- The command line.
+
+use Lingua.Cli.Asked.*
+
+fun asked args =
+  match askCli args with
+  | Ok (Cli.Check r) -> "check ${S.join " " r.files}"
+  | Ok (Cli.Run r) -> "run ${r.file}"
+  | Ok Cli.Repl -> "repl"
+  | Ok Cli.Demo -> "demo"
+  | Ok (Cli.Build r) -> "build ${M.unwrapOr "." r.root}"
+  | Ok Cli.Lsp -> "lsp"
+  | Err (Help h) -> V.getOr "" (S.split "\n" h) 0
+  | Err (Complete c) -> "completions"
+  | Err (Wrong d line) -> message d
+  | Err (Ran _ _) -> "?"
+
+@test fun aCommandIsReadIntoItsConstructor () =
+  assertEq
+    (V.map asked [["check", "a.ml", "b.ml"], ["run", "a.ml"], ["repl"], ["check"]])
+    ["check a.ml b.ml", "run a.ml", "repl", "check "]
+    "each command, its fields filled"
+
+@test fun helpIsAskedForAndGiven () =
+  assertEq
+    (V.map asked [[], ["help"], ["--help"], ["help", "run"], ["run", "--help"]])
+    [ "miniml -- MiniML, typed and run by a compiler written with Lingua",
+      "miniml -- MiniML, typed and run by a compiler written with Lingua",
+      "miniml -- MiniML, typed and run by a compiler written with Lingua",
+      "miniml run -- Run a program and say its value and type",
+      "miniml run -- Run a program and say its value and type" ]
+    "the program's help, or the command's"
+
+@test fun aMistakeIsSaidWhereItIs () =
+  let a = assertEq
+  (V.map asked [["chek", "a.ml"], ["run"], ["run", "a.ml", "b.ml"], ["run", "--fast", "a.ml"], ["completions", "fish"]])
+    [ "there is no command `chek`",
+      "`run` needs <file>",
+      "`run` takes nothing more",
+      "`run` has no flag `--fast`",
+      "there are no completions for `fish`" ]
+    "each mistake" in
+  match askCli ["run", "--fast", "a.ml"] with
+  | Err (Wrong d line) ->
+      assertEq
+        (renderAll "command line" line [d])
+        "Error: `run` has no flag `--fast`\n   ╭─[ command line:1:12 ]\n   │\n 1 │ miniml run --fast a.ml\n   │            ───┬──  \n   │               ╰──── `run` has no flag `--fast`\n   │ \n   │ Note: `run` takes no flags\n───╯\n"
+        "drawn under the flag"
+  | _ -> assertEq True False "a mistake"
+
+@test fun aCompletionScriptNamesTheCommands () =
+  match askCli ["completions", "bash"] with
+  | Err (Complete script) ->
+      assertEq (S.contains "compgen -W \"check run repl demo build lsp help completions\"" script) True script
+  | _ -> assertEq True False "a script"
+
+-- The editor: what the server answers, asked of a session directly.
+
+fun editing src =
+  let db = newSession () in
+  let u = setSessionSource db 1 src in
+  db
+
+fun spelled src (ps : [(Int, Meta)]) = V.map (\p -> match snd p with | Meta a b -> "${stringSlice src a b}@${show a}") ps
+
+@test fun aNameGoesToItsBinder () =
+  let src = "let x = 1 in let x = x + 1 in x" in
+  let db = editing src in
+  -- The `x` in `x + 1` is the outer one: a `let` is not recursive.
+  let a = assertEq (spelled src (definitionAt db 1 21)) ["x@4"] "the value's `x`" in
+  assertEq (spelled src (definitionAt db 1 30)) ["x@17"] "the body's `x`"
+
+@test fun aBinderIsFoundWithEveryUse () =
+  let src = "let rec f n = if n < 2 then 1 else f (n - 1) in f 3" in
+  let db = editing src in
+  let a = assertEq (spelled src (referencesAt db 1 17)) ["n@10", "n@17", "n@38"] "a parameter" in
+  assertEq (spelled src (referencesAt db 1 49)) ["f@8", "f@35", "f@48"] "a recursive function, from a use"
+
+@test fun completionOffersWhatCanBeSeen () =
+  let src = "let id = fun x -> x in id 1" in
+  let db = editing src in
+  let names = \at -> V.filter (\n -> V.elem n ["id", "x"]) (V.map fst (completionAt db 1 at)) in
+  -- Inside the function its parameter can be seen, and `id` cannot yet.
+  let a = assertEq (names 18) ["x"] "in the lambda" in
+  assertEq (names 23) ["id"] "in the body"
+
+@test fun hoverSaysTheTypeWhereItIs () =
+  let db = editing "let id = fun x -> x in id 1" in
+  assertEq (hoverAt db 1 23) (Just (Meta 23 25, "```\n(Int -> Int)\n```")) "`id` at its use"
+
+@test fun theSymbolsAreWhatLetsBind () =
+  let db = editing "let id = fun x -> x in let one = id 1 in one" in
+  assertEq (symbolsOf db 1) [("id", "function", Meta 4 6), ("one", "variable", Meta 27 30)] "not the parameter"
+
+-- The build.
+
+use Std.Console (withOutput)
+use Std.Fs (createDirAll)
+
+-- Build `root` and say, for each unit, how it went.
+fun built root = match withOutput (\() -> buildBuild root) with | (ok, said) -> (ok, V.filter (\l -> S.startsWith "   " l) (S.lines said))
+
+fun write dir file text =
+  let u = createDirAll dir in
+  writeString (Path.join dir file, text)
+
+@test fun aUnitIsBuiltAgainOnlyWhenWhatItReadChanged () =
+  let root = "target/build-test" in
+  let lib = Path.join root "lib" in
+  let app = Path.join root "app" in
+  let a = write lib "Unit" "" in
+  let b = write lib "double.ml" "fun x -> x + x" in
+  let c = write lib "id.ml" "fun x -> x" in
+  let d = write app "Unit" "../lib\n" in
+  let e = write app "main.ml" "double (id 21)" in
+  let first = built app in
+  let second = built app in
+  -- The body changes, the type does not: `lib` is compiled, `app` is not.
+  let f = write lib "double.ml" "fun x -> x * 2" in
+  let third = built app in
+  -- The type changes: both are.
+  let g = write lib "double.ml" "fun x -> x > 1" in
+  let fourth = built app in
+  let h = write lib "double.ml" "fun x -> x + x" in
+  assertEq
+    [first, second, third, fourth]
+    [ (True, ["   Compiled lib", "   Compiled app"]),
+      (True, ["   Fresh lib", "   Fresh app"]),
+      (True, ["   Compiled lib", "   Fresh app"]),
+      (True, ["   Compiled lib", "   Compiled app"]) ]
+    "each build"
+
+@test fun aUnitThatFailsBlocksWhatDependsOnIt () =
+  let root = "target/build-fail" in
+  let lib = Path.join root "lib" in
+  let app = Path.join root "app" in
+  let a = write lib "Unit" "" in
+  let b = write lib "bad.ml" "1 + true" in
+  let d = write app "Unit" "../lib\n" in
+  let e = write app "main.ml" "bad" in
+  match built app with
+  | (ok, lines) ->
+      assertEq (ok, V.getOr "" lines 0, V.getOr "" lines (V.len lines - 1)) (False, "   Failed lib", "   Blocked app: lib did not build") "the failure, and what it stopped"

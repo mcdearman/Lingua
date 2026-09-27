@@ -24,7 +24,11 @@ use Std.Result.Result.*
 -- A program of `n` `let`s, each defining a function from the one before it:
 -- arithmetic, a conditional, a closure used at two types -- which inference
 -- generalizes -- and a recursive function, in turn. Each is used, so running
--- it goes through all of them.
+-- it goes through all of them -- and each hands the next the argument it was
+-- given, so that the recursive ones count down from the same small number and
+-- running is as much work as the program is long. (Handing on `x + k` made
+-- every `let rec` count down from a number as big as the program, and the run
+-- quadratic in it: the program's doing, not the evaluator's.)
 @pub fun program (n : Int) : String =
   S.join "" (V.pushBack (V.map line (V.range 0 n)) "f${show (n - 1)} 10\n")
 
@@ -32,7 +36,7 @@ fun line (i : Int) : String =
   let k = show i in
   let prev = if i == 0 then "(fun x -> x)" else "f${show (i - 1)}" in
   let kind = i - (i / 4) * 4 in
-  if kind == 0 then "let f${k} = fun x -> ${prev} (x + ${k}) - ${k} in\n"
+  if kind == 0 then "let f${k} = fun x -> ${prev} x + ${k} in\n"
   else if kind == 1 then "let f${k} = fun x -> if x < ${k} then ${prev} x else ${prev} (x - 1) in\n"
   else if kind == 2 then "let f${k} = let id = fun y -> y in fun x -> if id true then ${prev} (id x) else 0 in\n"
   else "let rec f${k} n = if n < 2 then ${prev} n else f${k} (n - 1) in\n"

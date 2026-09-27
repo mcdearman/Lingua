@@ -10,6 +10,12 @@
 -- wrap a node already closed in a new one: how `a + b` takes the `a` it has
 -- already read as its left side.
 --
+-- Wrapping moves nothing. The new node's `Open` goes at the end, and the one
+-- it wraps is told where it is -- its *forward parent*, as rust-analyzer's
+-- parser has it -- so that `openBefore` is a write, not a copy of every
+-- event before it; `events` lays each chain of them out in order when the
+-- parse is done.
+--
 -- `nth` burns fuel and progress refills it: a loop that stops moving is
 -- stopped, reported as an error in the tree, and ends at the end of the input
 -- rather than never. Progress is taking a token, or closing a node out to a
@@ -24,6 +30,7 @@
 use Std.Collections.Vector as V
 
 use Event.*
+use Raw.*
 use Parser.*
 
 @pub data Event k
@@ -32,11 +39,19 @@ use Parser.*
   | Advance
   | Error String
 
+-- An event as the parser writes it: an `Open` with how far on its forward
+-- parent is -- the `Open` of the node that wraps it -- or 0 for none.
+data Raw k
+  = ROpen k Int
+  | RClose
+  | RAdvance
+  | RError String
+
 -- The kinds of the tokens to read, where it is, its fuel, what it has said,
 -- the kinds that stand for the end of the input and for a node of errors, how
 -- a kind is named in a message, and how many nodes are open with the fewest
 -- there have been since the last token was taken.
-@pub data Parser s k = Parser #[k] (StRef s Int) (StRef s Int) (StRef s [Event k]) k k (k -> String) (StRef s (Int, Int))
+@pub data Parser s k = Parser #[k] (StRef s Int) (StRef s Int) (StRef s [Raw k]) k k (k -> String) (StRef s (Int, Int))
 
 def fuelMax : Int = 256
 
@@ -52,7 +67,7 @@ def fuelMax : Int = 256
       if f <= 0 then
         -- Stuck: said once, and from then on the input has ended, so every
         -- loop waiting for something else stops.
-        let said = if f == 0 then (let u = stSetRef fuel (0 - 1) in push p (Error "the parser is stuck here")) else () in
+        let said = if f == 0 then (let u = stSetRef fuel (0 - 1) in push p (RError "the parser is stuck here")) else () in
         eofK
       else
         let u = stSetRef fuel (f - 1) in
@@ -73,7 +88,7 @@ def fuelMax : Int = 256
   match p with
   | Parser _ _ _ evs _ errK _ _ ->
       let at = V.len (stGetRef evs) in
-      let u = push p (Open errK) in
+      let u = push p (ROpen errK 0) in
       let v = deeper p 1 in
       at
 
@@ -81,25 +96,30 @@ def fuelMax : Int = 256
 @pub fun close (p : Parser s k) (m : Int) (k : k) : Int ! { St s | e } =
   match p with
   | Parser _ _ _ evs _ _ _ _ ->
-      let u = stSetRef evs (V.set (stGetRef evs) m (Open k)) in
-      let v = push p Close in
+      let all = stGetRef evs in
+      let parent = match V.get all m with | Just (ROpen _ fp) -> fp | _ -> 0 in
+      let u = stSetRef evs (V.set all m (ROpen k parent)) in
+      let v = push p RClose in
       let w = deeper p (0 - 1) in
       m
 
--- Open a node before the one closed at `m`, so that it holds it.
+-- Open a node before the one closed at `m`, so that it holds it; the new
+-- node's mark. Its `Open` goes at the end, and `m`'s is pointed at it.
 @pub fun openBefore (p : Parser s k) (m : Int) : Int ! { St s | e } =
   match p with
   | Parser _ _ _ evs _ errK _ _ ->
-      let halves = V.splitAt (stGetRef evs) m in
-      let u = stSetRef evs (V.append (V.pushBack (fst halves) (Open errK)) (snd halves)) in
+      let all = stGetRef evs in
+      let at = V.len all in
+      let wrapped = match V.get all m with | Just (ROpen k _) -> V.set all m (ROpen k (at - m)) | _ -> all in
+      let u = stSetRef evs (V.pushBack wrapped (ROpen errK 0)) in
       let v = deeper p 1 in
-      m
+      at
 
 -- Take the next token.
 @pub fun advance (p : Parser s k) : () ! { St s | e } =
   match p with
   | Parser _ pos _ _ _ _ _ nesting ->
-      let u = push p Advance in
+      let u = push p RAdvance in
       let v = stSetRef pos (stGetRef pos + 1) in
       let w = stSetRef nesting (fst (stGetRef nesting), fst (stGetRef nesting)) in
       refill p
@@ -114,7 +134,7 @@ def fuelMax : Int = 256
   else match p with | Parser _ _ _ _ _ _ name _ -> error p "expected ${name k}"
 
 -- Say what is wrong here, taking nothing.
-@pub fun error (p : Parser s k) (msg : String) : () ! { St s | e } = push p (Error msg)
+@pub fun error (p : Parser s k) (msg : String) : () ! { St s | e } = push p (RError msg)
 
 -- Take the next token into a node of errors, saying what is wrong with it.
 @pub fun advanceWithError (p : Parser s k) (msg : String) : () ! { St s | e } =
@@ -126,10 +146,39 @@ def fuelMax : Int = 256
       let w = close p m errK in
       ()
 
--- Everything it said.
+-- Everything it said, each node's `Open` in its place: a chain of forward
+-- parents opened where its first node was, the outermost first.
 @pub fun events (p : Parser s k) : [Event k] ! { St s | e } =
   match p with
-  | Parser _ _ _ evs _ _ _ _ -> stGetRef evs
+  | Parser _ _ _ evs _ _ _ _ -> resolved (stGetRef evs)
+
+fun resolved (raw : [Raw k]) : [Event k] ! { St s | e } =
+  -- An array, read in constant time, rather than the vector, read in log.
+  let xs = V.toArray raw in
+  let n = arrayLen xs in
+  -- Which `Open`s some chain takes in: marked in place, in one pass.
+  let absorbed = stNewArray n False in
+  let u = V.foldl (\acc i -> match arrayGet xs i with | ROpen _ fp -> (if fp > 0 then stSetArray absorbed (i + fp) True else ()) | _ -> ()) () (V.range 0 n) in
+  V.foldl
+    (\out i ->
+      if stGetArray absorbed i then out
+      else
+        match arrayGet xs i with
+        | ROpen _ _ -> chain xs i out
+        | RClose -> V.pushBack out Close
+        | RAdvance -> V.pushBack out Advance
+        | RError msg -> V.pushBack out (Error msg))
+    V.empty
+    (V.range 0 n)
+
+-- `out`, and after it the opens of the chain of forward parents from `i`,
+-- outermost first.
+fun chain (xs : #[Raw k]) (i : Int) (out : [Event k]) : [Event k] = V.append out (opens xs i [])
+
+fun opens (xs : #[Raw k]) (i : Int) (acc : [Event k]) : [Event k] =
+  match arrayGet xs i with
+  | ROpen k fp -> if fp > 0 then opens xs (i + fp) (V.pushFront acc (Open k)) else V.pushFront acc (Open k)
+  | _ -> acc
 
 -- `by` more nodes open, or fewer; closing out past the fewest there have been
 -- since the last token is progress.

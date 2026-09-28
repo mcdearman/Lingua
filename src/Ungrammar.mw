@@ -31,6 +31,7 @@ use Rule.*
 use Piece.*
 
 -- A rule's body.
+@derive(Debug, PartialEq)
 @pub data Rule
   = Tok String Int
   | Ref String Int

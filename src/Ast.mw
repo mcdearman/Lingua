@@ -60,6 +60,16 @@ fun castAll cast g (p : Int) (c : Int) acc =
 -- Every child token of one of the kinds `ks`.
 @pub fun tokensOf (ks : [k]) (s : Syntax k) : [Syntax k] = childrenWhere (\g c -> isTokenAt g c and V.elem (kindAt g c) ks) s
 
+-- The child token of one of the kinds `ks` after the first `n` of them: the
+-- one a slot is, where `n` slots of the same kinds come before it.
+@pub fun nthTokenOf (ks : [k]) (n : Int) (s : Syntax k) : Maybe (Syntax k) = V.get (tokensOf ks s) n
+
+-- Every child token of one of the kinds `ks` but the first `n`.
+@pub fun tokensOfFrom (ks : [k]) (n : Int) (s : Syntax k) : [Syntax k] = V.drop (tokensOf ks s) n
+
+-- Every child `cast` takes but the first `n`.
+@pub fun childrenOfFrom (cast : Syntax k -> Maybe a) (n : Int) (s : Syntax k) : [a] = V.drop (childrenOf cast s) n
+
 -- --- tests -------------------------------------------------------------------
 
 use Std.Test (assertEq)
@@ -76,3 +86,10 @@ fun num s = if kindOf s == "Num" then Just (text s) else None
   assertEq (childrenOf num sample) ["1", "2"] "both, in order"
 
 @test fun aTokenIsFoundByKind () = assertEq (M.map text (tokenOf ["+", "-"] sample)) (Just "+") "the operator"
+
+def pair = root (node "Pair" [token "name" "a", token "=" "=", token "name" "b", token "name" "c"])
+
+@test fun aSlotAfterOthersOfItsKindSkipsThem () =
+  let a = assertEq (M.map text (nthTokenOf ["name"] 1 pair)) (Just "b") "the second name" in
+  let b = assertEq (V.map text (tokensOfFrom ["name"] 1 pair)) ["b", "c"] "the names after the first" in
+  assertEq (childrenOfFrom num 1 sample) ["2"] "the numbers after the first"

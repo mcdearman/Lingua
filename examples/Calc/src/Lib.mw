@@ -340,3 +340,22 @@ fun twoFiles () =
 @test fun aFileNobodySetIsSaidToBe () =
   let db = twoFiles () in
   assertEq (toResult (\() -> sessionSum db [1, 3])) (Err (Unset (SessionKey.Source 3))) "file 3"
+
+-- --- the abstract syntax, as patterns ------------------------------------------
+
+-- Each node rule is a pattern over the tree: `CalcLet name value` matches a
+-- `let` and binds its children, which the patterns match in their turn --
+-- nothing is built to be matched.
+@test fun theTreeIsMatchedWithItsRulesPatterns () =
+  match parseCalc "let x = 1 + 2;\nlet y = x;" with
+  | (g, _) ->
+      assertEq
+        (V.map
+          (\s ->
+            match s with
+            | CalcLet n (CalcBin l op r) -> "${R.text n} = ${R.text l} ${R.text op} ${R.text r}"
+            | CalcLet n v -> "${R.text n} = ${R.text v}"
+            | _ -> "?")
+          (R.nodes (R.root g)))
+        ["x = 1 + 2", "y = x"]
+        "both lets, the first's value taken apart"

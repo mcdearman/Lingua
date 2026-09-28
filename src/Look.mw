@@ -1,0 +1,452 @@
+-- Lookahead: which way a parse goes, worked out while the grammar is read.
+--
+-- Everywhere a parser chooses -- an enum's alternatives, `( a | b )`, whether
+-- `x?` is there, whether `x*` goes round again -- `syntax!` decides here, once,
+-- what tokens ahead send it each way, and writes that down as a tree of tests
+-- on the tokens: the first token, and -- only where the first cannot tell --
+-- the second under it, and so on, `k` deep at most. The parser that runs is
+-- that tree and nothing else. It never tries a way and comes back: a choice
+-- is made by looking, and made once.
+--
+-- The first token is decided by what each way can begin with -- its FIRST
+-- set, and where it can be empty, what follows the rule it is in -- read off
+-- tables made once for the whole grammar. Most choices end there. Where two
+-- ways can begin with the same token, the grammar is walked as it would be
+-- read, past that token: a configuration is a way, what is left of it to
+-- read, and whose rule's end an empty remainder is; walking it to a token --
+-- through rules, optional parts, repetitions -- gives the tokens it can read
+-- next, and what is left after each. At the end of a rule the walk goes on at
+-- every place that rule is used, which is worked out once per rule and kept.
+-- Strong LL(k), that is -- what follows a rule is what follows it anywhere.
+--
+-- Whether `x*` goes round again, or `x?` is there, is decided as a parser
+-- that tries does it -- one more `x` if one is there to read -- but by looking:
+-- once the tokens ahead are a whole `x`, it goes on, whatever could come after
+-- instead. That is where the tree stops looking, and so it never looks further
+-- than an `x`; and where it cannot tell within `k` tokens, it goes on too. An
+-- alternative is not decided that way: tokens that could begin two of them
+-- are the grammar's to settle, and `syntax!` says where.
+
+use Std.Collections.Vector as V
+use Std.Collections.List as L
+use Std.Collections.HashMap as H
+use Std.Collections.HashMap (HashMap)
+use Std.String as S
+use Std.Maybe.Maybe.*
+use Lingua.Ungrammar (Rule)
+use Lingua.Ungrammar.Rule.*
+use Tree.*
+
+-- A way being walked: which one it is, what is left to read, and the rule the
+-- end of that is the end of.
+@derive(PartialEq)
+@pub data Config = Config Int (List Rule) String
+
+-- A token one of the ways reads next, and after it what is left of it.
+@derive(PartialEq)
+@pub data Item = Item Int String (List Rule) String
+
+-- The grammar as the walk reads it: each rule's body -- an enum read Pratt
+-- style as its prefix alternatives, then any number of what follows its left
+-- side -- each rule's uses, as what is left to read after each one and whose
+-- rule that is; what each rule can begin with and whether it can be empty;
+-- what can follow each; the rule a whole input is; and, as they are worked
+-- out, what can be read once each rule has ended.
+@pub record Grammar = {
+  models : HashMap String Rule,
+  uses : HashMap String [(String, List Rule)],
+  toks : Tokens,
+  firsts : HashMap String (Bits, Bool),
+  follows : HashMap String Bits,
+  root : String,
+  ends : Ref (HashMap String [Item]),
+  cut : Ref Bool,
+  steps : Ref Int
+}
+
+-- What decides a choice: a way, a test of the token `n` ahead -- every branch
+-- the tokens that go there -- or tokens that more than `k` tokens would be
+-- needed to decide, and the ways they could be.
+@derive(Debug, PartialEq)
+@pub data Tree = Leaf Int | Branch Int [([String], Tree)] | Clash [String] [Int]
+
+-- The end of the input, as a token.
+@pub def endOfInput : String = ""
+
+-- Where what a repetition or an option reads is whole: put after it in the
+-- way that reads it, as if a token, and never one the input has.
+@pub def whole : Rule = Tok " whole" 0
+
+def wholeMark : String = " whole"
+
+-- The grammar of these rule bodies and uses, whose whole input is `root`.
+@pub fun grammar (models : [(String, Rule)]) (uses : [(String, [(String, List Rule)])]) (root : String) : Grammar ! { Mut | e } =
+  let ms = H.fromVec models in
+  let us = H.fromVec uses in
+  let names = V.map fst models in
+  let toks = tokensIn (V.map snd models) in
+  let fs = firstsOf toks ms names in
+  Grammar { models = ms, uses = us, toks = toks, firsts = fs, follows = followsOf toks us fs root names, root = root, ends = newRef H.empty, cut = newRef False, steps = newRef 0 }
+
+-- What `r` can begin with, by name, and whether it can be nothing: for what
+-- is said about a choice, and for the tokens a Pratt loop is triggered by.
+@pub fun firstPair (g : Grammar) (r : Rule) : ([String], Bool) =
+  match firstOf g.toks g.firsts r with
+  | (bits, empty) -> (namesOf g.toks bits, empty)
+
+-- How many steps of the walk deciding has taken so far: what it has cost.
+@pub fun stepsTaken (g : Grammar) : Int ! { Mut | e } = getRef g.steps
+
+-- --- FIRST and FOLLOW ----------------------------------------------------------------
+--
+-- Sets of tokens are bits, one per token the grammar writes: taking two
+-- together is an `or` a word at a time, which is what makes settling the
+-- tables of a grammar of a few hundred rules cheap.
+
+-- The grammar's tokens, the end of the input among them, each with its bit.
+@pub record Tokens = { names : [String], index : HashMap String Int, words : Int }
+
+type Bits = [Int]
+
+fun tokensIn (bodies : [Rule]) : Tokens =
+  let names = V.foldl (\acc r -> quotedIn r acc) [endOfInput] bodies in
+  Tokens { names = names, index = H.fromVec (V.map (\i -> (V.getOr "" names i, i)) (V.range 0 (V.len names))), words = V.len names / 64 + 1 }
+
+fun quotedIn (r : Rule) (acc : [String]) : [String] =
+  match r with
+  | Tok t _ -> if t == wholeMark or V.elem t acc then acc else V.pushBack acc t
+  | Ref _ _ -> acc
+  | Label _ _ x -> quotedIn x acc
+  | Opt x -> quotedIn x acc
+  | Rep x -> quotedIn x acc
+  | Alt xs -> V.foldl (\a x -> quotedIn x a) acc xs
+  | Seq xs -> V.foldl (\a x -> quotedIn x a) acc xs
+
+fun noBits (toks : Tokens) : Bits = V.replicate toks.words 0
+
+fun bitOf (toks : Tokens) (t : String) : Bits =
+  match H.lookup t toks.index with
+  | Just i -> V.set (noBits toks) (i / 64) (1 << (i % 64))
+  | None -> noBits toks
+
+fun bitsOf (toks : Tokens) (ts : [String]) : Bits = V.foldl (\acc t -> orBits acc (bitOf toks t)) (noBits toks) ts
+
+fun orBits (a : Bits) (b : Bits) : Bits = V.zipWith bitOr a b
+
+fun meets (a : Bits) (b : Bits) : Bool = V.any (\w -> w != 0) (V.zipWith bitAnd a b)
+
+fun hasBit (toks : Tokens) (bits : Bits) (t : String) : Bool =
+  match H.lookup t toks.index with
+  | Just i -> bitAnd (V.getOr 0 bits (i / 64)) (1 << (i % 64)) != 0
+  | None -> False
+
+fun countBits (bits : Bits) : Int = V.foldl (\acc w -> acc + popCount w) 0 bits
+
+-- The tokens `bits` has, in the order the grammar first wrote them.
+fun namesOf (toks : Tokens) (bits : Bits) : [String] =
+  V.filter (\t -> hasBit toks bits t) toks.names
+
+-- What `r` can begin with, and whether it can be nothing.
+fun firstOf (toks : Tokens) (fs : HashMap String (Bits, Bool)) (r : Rule) : (Bits, Bool) =
+  match r with
+  | Tok t _ -> if t == wholeMark then (noBits toks, True) else (bitOf toks t, False)
+  | Ref n _ -> H.getOr (noBits toks, False) n fs
+  | Label _ _ x -> firstOf toks fs x
+  | Opt x -> (fst (firstOf toks fs x), True)
+  | Rep x -> (fst (firstOf toks fs x), True)
+  | Alt xs -> V.foldl (\acc x -> let f = firstOf toks fs x in (orBits (fst acc) (fst f), snd acc or snd f)) (noBits toks, False) xs
+  | Seq xs -> firstOfAll toks fs (V.toList xs)
+
+fun firstOfAll (toks : Tokens) (fs : HashMap String (Bits, Bool)) (rs : List Rule) : (Bits, Bool) =
+  match rs with
+  | [;] -> (noBits toks, True)
+  | r :: rest ->
+      let f = firstOf toks fs r in
+      if snd f then (let more = firstOfAll toks fs rest in (orBits (fst f) (fst more), snd more)) else f
+
+fun firstsOf (toks : Tokens) (ms : HashMap String Rule) (names : [String]) : HashMap String (Bits, Bool) = settleFirsts toks ms names H.empty 0
+
+fun settleFirsts toks ms names fs n =
+  let next = V.foldl (\acc name -> H.insert name (firstOf toks fs (H.getOr (Seq []) name ms)) acc) H.empty names in
+  if n > 200 or sizeOf next names == sizeOf fs names then next else settleFirsts toks ms names next (n + 1)
+
+-- How much the table says: grows until it is settled.
+fun sizeOf (fs : HashMap String (Bits, Bool)) (names : [String]) : Int =
+  V.foldl (\acc name -> match H.lookup name fs with | Just (ts, e) -> acc + countBits ts + (if e then 1 else 0) | None -> acc) 0 names
+
+fun followsOf (toks : Tokens) (us : HashMap String [(String, List Rule)]) fs (root : String) (names : [String]) : HashMap String Bits =
+  settleFollows toks us fs root names (H.singleton root (bitOf toks endOfInput)) 0
+
+fun settleFollows toks us fs root names (fl : HashMap String Bits) (n : Int) : HashMap String Bits =
+  let eof = bitOf toks endOfInput in
+  let next =
+    V.foldl
+      (\acc name ->
+        let uses = H.getOr [] name us in
+        let here =
+          if V.isEmpty uses then eof
+          else
+            V.foldl
+              (\ts u ->
+                let f = firstOfAll toks fs (snd u) in
+                orBits ts (if snd f then orBits (fst f) (H.getOr (noBits toks) (fst u) fl) else fst f))
+              (if name == root then eof else noBits toks)
+              uses in
+            H.insert name here acc)
+      H.empty
+      names in
+    if n > 200 or followSize next names == followSize fl names then next else settleFollows toks us fs root names next (n + 1)
+
+fun followSize (fl : HashMap String Bits) (names : [String]) : Int = V.foldl (\acc name -> acc + countBits (H.getOr [] name fl)) 0 names
+
+-- What `c` can begin with, reading on past its rule's end.
+fun firstOfConfig (g : Grammar) (c : Config) : Bits =
+  match c with
+  | Config _ pending owner ->
+      let f = firstOfAll g.toks g.firsts pending in
+      if snd f then orBits (fst f) (followOf g owner) else fst f
+
+fun followOf (g : Grammar) (owner : String) : Bits = H.getOr (bitOf g.toks endOfInput) owner g.follows
+
+-- --- the walk ---------------------------------------------------------------------
+
+-- The tokens `c` can read next. A walk that goes on far without reading
+-- anything -- a rule that is its own first part -- is given up: nothing an
+-- LL parser could read.
+fun closure (g : Grammar) (c : Config) : [Item] ! { Mut | e } = close g None c [] 0
+
+-- The same, only as far as it can come to one of `want`: a rule that cannot
+-- begin with any of them, and cannot be empty, is not walked into.
+fun closureFor (g : Grammar) (want : [String]) (c : Config) : [Item] ! { Mut | e } = close g (Just (bitsOf g.toks want)) c [] 0
+
+fun close (g : Grammar) (want : Maybe Bits) (c : Config) (seen : [String]) (depth : Int) : [Item] ! { Mut | e } =
+  let u = setRef g.steps (getRef g.steps + 1) in
+  if depth > 256 then []
+  else
+    match c with
+    | Config alt pending owner ->
+        (match pending with
+         | [;] -> ended g want alt owner seen
+         | r :: rest ->
+             let on = \more -> close g want (Config alt more owner) seen (depth + 1) in
+             (match r with
+              | Tok t _ -> [Item alt t rest owner]
+              | Ref n _ -> if couldBegin g want n then on (H.getOr (Seq []) n g.models :: rest) else []
+              | Seq xs -> on (L.append (V.toList xs) rest)
+              | Alt xs -> V.concatMap (\x -> on (x :: rest)) xs
+              | Opt x -> V.append (on (x :: rest)) (on rest)
+              | Rep x -> V.append (on (x :: Rep x :: rest)) (on rest)
+              | Label _ _ x -> on (x :: rest)))
+
+-- Whether rule `n` could come to one of `want`: begin with one, or be empty.
+fun couldBegin (g : Grammar) (want : Maybe Bits) (n : String) : Bool =
+  match want with
+  | None -> True
+  | Just ws -> (match H.lookup n g.firsts with | Just (ts, empty) -> empty or meets ts ws | None -> True)
+
+-- What can be read once `owner` has ended: the end of the input, if it is the
+-- whole input or used nowhere; else what can be read after each use. Worked
+-- out once per rule -- but not kept where the walk had to stop short of a rule
+-- it was already ending, which is only part of the answer.
+fun ended (g : Grammar) (want : Maybe Bits) (alt : Int) (owner : String) (seen : [String]) : [Item] ! { Mut | e } =
+  if owner == g.root then [Item alt endOfInput [;] owner]
+  else
+    match H.lookup owner (getRef g.ends) with
+    | Just items -> V.map (retag alt) items
+    | None ->
+        if V.elem owner seen then (let u = setRef g.cut True in [])
+        else if not (couldFollow g want owner) then []
+        else
+          let outer = getRef g.cut in
+          let u = setRef g.cut False in
+          let items =
+            (match H.getOr [] owner g.uses with
+             | [] -> [Item 0 endOfInput [;] owner]
+             | os -> distinctItems (V.concatMap (\o -> close g None (Config 0 (snd o) (fst o)) (V.pushBack seen owner) 0) os)) in
+            let cutHere = getRef g.cut in
+            let w = if not cutHere or V.isEmpty seen then setRef g.ends (H.insert owner items (getRef g.ends)) else () in
+            let v = setRef g.cut (outer or cutHere) in
+            V.map (retag alt) items
+
+-- Whether what follows `owner` could be one of `want`.
+fun couldFollow (g : Grammar) (want : Maybe Bits) (owner : String) : Bool =
+  match want with
+  | None -> True
+  | Just ws -> meets (followOf g owner) ws
+
+fun retag (alt : Int) (i : Item) : Item = match i with | Item _ t r o -> Item alt t r o
+
+fun itemAlt (i : Item) : Int = match i with | Item a _ _ _ -> a
+
+fun itemTok (i : Item) : String = match i with | Item _ t _ _ -> t
+
+fun itemNext (i : Item) : Config = match i with | Item a _ r o -> Config a r o
+
+fun configAlt (c : Config) : Int = match c with | Config a _ _ -> a
+
+-- `xs` each once, in the order first met: kept in a set as well, so that
+-- asking whether one was met costs its hash, not a look at every other.
+fun distinctItems (xs : [Item]) : [Item] =
+  fst (V.foldl (\acc x -> match acc with | (ys, met) -> if H.member x met then acc else (V.pushBack ys x, H.insert x () met)) ([], H.empty) xs)
+
+fun distinctConfigs (xs : [Config]) : [Config] =
+  fst (V.foldl (\acc x -> match acc with | (ys, met) -> if H.member x met then acc else (V.pushBack ys x, H.insert x () met)) ([], H.empty) xs)
+
+fun distinct (xs : [a]) : [a] = V.foldl (\acc x -> if V.elem x acc then acc else V.pushBack acc x) [] xs
+
+-- --- deciding ---------------------------------------------------------------------
+
+-- The tree that tells `choices` apart, looking `k` tokens ahead at most: the
+-- first token by the tables, and the walk only where they say it has to be.
+--
+-- `greedy` is a repetition's or an option's choice, whose first way is to go
+-- on and whose other is to stop. It goes on as long as the tokens ahead are
+-- what going on reads: it stops where they are not, or -- where both could
+-- read them -- where they are not, further on. So only going on is walked,
+-- and stopping only for the tokens going on could read too; and once what
+-- going on has read is whole, it goes on.
+--
+-- Where a choice is walked at all, it is walked for `budget` branches at
+-- most: two ways that read the same thing for long are told apart only by
+-- how long, and looking that far would make a tree with a branch for every
+-- way to write it. A repetition goes on there, as one that tries would; two
+-- alternatives are said to clash.
+@pub fun decide (g : Grammar) (choices : [Config]) (k : Int) (greedy : Bool) : Tree ! { Mut | e } =
+  let budget = newRef budgetDefault in
+  let sets = V.map (\c -> (configAlt c, firstOfConfig g c)) choices in
+  let altsOf = \t -> distinct (V.concatMap (\s -> if hasBit g.toks (snd s) t then [fst s] else []) sets) in
+  let arms =
+    V.map
+      (\t ->
+        let alts = altsOf t in
+        if V.len alts == 1 then (t, Leaf (V.getOr 0 alts 0))
+        else if t == endOfInput or k <= 1 then (t, Clash [t] alts)
+        else
+          let past = \cs -> distinctConfigs (V.map itemNext (V.filter (\i -> itemTok i == t) (V.concatMap (closureFor g [t]) cs))) in
+          let zero = past (V.filter (\c -> configAlt c == 0) choices) in
+          if greedy and wholeIn g zero then (t, Leaf 0)
+          else (t, step g greedy budget (distinctConfigs (V.append zero (past (V.filter (\c -> configAlt c != 0 and V.elem (configAlt c) alts) choices)))) 1 k [t]))
+      (namesOf g.toks (V.foldl (\acc s -> orBits acc (snd s)) (noBits g.toks) sets)) in
+    Branch 0 (grouped arms)
+
+-- How many branches a choice is walked for before it is left as it stands.
+def budgetDefault : Int = 16
+
+-- Whether any of `cs` has read a whole `x`: walked only as far as it can go
+-- without reading anything.
+fun wholeIn (g : Grammar) (cs : [Config]) : Bool ! { Mut | e } =
+  V.any (\i -> itemTok i == wholeMark) (V.concatMap (closureFor g [wholeMark]) cs)
+
+fun step (g : Grammar) (greedy : Bool) (budget : Ref Int) (configs : [Config]) (depth : Int) (k : Int) (prefix : [String]) : Tree ! { Mut | e } =
+  let first = V.filter (\c -> configAlt c == 0) configs in
+  let rest = V.filter (\c -> configAlt c != 0) configs in
+  if getRef budget <= 0 then Clash prefix (distinct (V.map configAlt configs))
+  -- The first way has read a whole `x` in what has been seen: it is taken,
+  -- and nothing else need be walked.
+  else if greedy and wholeIn g first then Leaf 0
+  else
+    let u = setRef budget (getRef budget - 1) in
+    -- A repetition's way out is walked only for what going on could read:
+    -- for anything else, it stops.
+    let firstItems = distinctItems (V.concatMap (closure g) first) in
+    let others =
+      if greedy then distinctItems (V.concatMap (closureFor g (distinct (V.map itemTok firstItems))) rest)
+      else distinctItems (V.concatMap (closure g) rest) in
+      let reading = V.filter (\i -> itemTok i != wholeMark) (V.append firstItems others) in
+      let arms =
+        V.map
+        (\t ->
+          let here = V.filter (\i -> itemTok i == t) reading in
+          let alts = distinct (V.map itemAlt here) in
+          let seen = V.pushBack prefix t in
+          if V.len alts == 1 then (t, Leaf (V.getOr 0 alts 0))
+          else if t == endOfInput or depth + 1 >= k then (t, Clash seen alts)
+          else (t, step g greedy budget (distinctConfigs (V.map itemNext here)) (depth + 1) k seen))
+        (distinct (V.map itemTok reading)) in
+        Branch depth (grouped arms)
+
+-- Tokens that lead to the same way tested together, in the order they were
+-- first met.
+fun grouped (arms : [(String, Tree)]) : [([String], Tree)] =
+  V.foldl
+    (\acc arm ->
+      match arm with
+      | (t, Leaf a) ->
+          if V.any (\g -> snd g == Leaf a) acc then V.map (\g -> if snd g == Leaf a then (V.pushBack (fst g) t, snd g) else g) acc
+          else V.pushBack acc ([t], Leaf a)
+      | (t, sub) -> V.pushBack acc ([t], sub))
+    []
+    arms
+
+-- The first place `t` cannot decide: the tokens, and the ways they fit.
+@pub fun clashIn (t : Tree) : Maybe ([String], [Int]) =
+  match t with
+  | Leaf _ -> None
+  | Clash ts alts -> Just (ts, alts)
+  | Branch _ arms -> V.foldl (\acc arm -> match acc with | Just c -> Just c | None -> clashIn (snd arm)) None arms
+
+-- The tree as code answering the way it takes, `otherwise` where no branch
+-- fits: each test reads the token it looks at once. Where it could not
+-- decide, the first of the ways it could be.
+@pub fun treeCode (kindOf : String -> String) (t : Tree) (otherwise : String) : String =
+  match t with
+  | Leaf a -> show a
+  | Clash _ alts -> show (V.getOr 0 alts 0)
+  | Branch d arms ->
+      let k = "lingua_k${show d}" in
+      "(let ${k} = LinguaP.nth p ${show d} in "
+        ++ V.foldr
+             (\arm acc -> "if ${S.join " or " (V.map (\tk -> "${k} == ${kindOf tk}") (fst arm))} then ${treeCode kindOf (snd arm) otherwise} else ${acc}")
+             otherwise
+             arms
+        ++ ")"
+
+-- How far the tree looks: 1 for a choice the next token makes.
+@pub fun depthOf (t : Tree) : Int =
+  match t with
+  | Leaf _ -> 0
+  | Clash ts _ -> V.len ts
+  | Branch _ arms -> 1 + V.foldl (\acc arm -> max acc (depthOf (snd arm))) 0 arms
+
+-- Tokens as a message says them.
+@pub fun spelled (ts : [String]) : String =
+  S.join " " (V.map (\t -> if t == endOfInput then "the end of the input" else "`${t}`") ts)
+
+-- --- tests ---------------------------------------------------------------------------
+
+use Std.Test (assertEq)
+
+-- `A = 'x' 'y' | 'x' 'z'`: the first token is the same, the second is not.
+fun twoDeep () =
+  grammar
+    [("A", Alt [Ref "B" 0, Ref "C" 0]), ("B", Seq [Tok "x" 0, Tok "y" 0]), ("C", Seq [Tok "x" 0, Tok "z" 0])]
+    [("B", [("A", [;])]), ("C", [("A", [;])])]
+    "A"
+
+@test fun aSecondTokenDecidesWhatTheFirstCannot () =
+  let t = decide (twoDeep ()) [Config 0 [Ref "B" 0;] "A", Config 1 [Ref "C" 0;] "A"] 2 False in
+  let a = assertEq (clashIn t) None "two tokens tell them apart" in
+  assertEq (depthOf t) 2 "and it looks two deep"
+
+@test fun oneTokenIsNotEnoughToLookThatFar () =
+  let t = decide (twoDeep ()) [Config 0 [Ref "B" 0;] "A", Config 1 [Ref "C" 0;] "A"] 1 False in
+  assertEq (clashIn t) (Just (["x"], [0, 1])) "both start with x"
+
+-- `A = 'x'* 'y'`: another round on `x`, out on `y`.
+@test fun aLoopLooksAtWhatFollowsIt () =
+  let g = grammar [("A", Seq [Rep (Tok "x" 0), Tok "y" 0])] [] "A" in
+  let t = decide g [Config 0 [Tok "x" 0; whole; Rep (Tok "x" 0); Tok "y" 0] "A", Config 1 [Tok "y" 0;] "A"] 1 True in
+  assertEq (clashIn t) None "`x` goes round, `y` leaves"
+
+-- `A = ('x' 'y')? 'x' 'z'`: whether the option is there shows at its second
+-- token; `x y` is a whole one, so it is there without looking further.
+@test fun anOptionIsThereOnceWhatItReadsIsWhole () =
+  let g = grammar [("A", Seq [Opt (Seq [Tok "x" 0, Tok "y" 0]), Tok "x" 0, Tok "z" 0])] [] "A" in
+  let t = decide g [Config 0 [Seq [Tok "x" 0, Tok "y" 0]; whole; Tok "x" 0; Tok "z" 0] "A", Config 1 [Tok "x" 0; Tok "z" 0] "A"] 3 True in
+  assertEq t (Branch 0 [(["x"], Branch 1 [(["y"], Leaf 0), (["z"], Leaf 1)])]) "`x y` is the option, `x z` is not"
+
+@test fun theEndOfARuleIsWhatFollowsItsUses () =
+  -- `A = B 'z'`, `B = 'x'?`: at B's `?`, a `z` means it is not there.
+  let g = grammar [("A", Seq [Ref "B" 0, Tok "z" 0]), ("B", Opt (Tok "x" 0))] [("B", [("A", [Tok "z" 0;])])] "A" in
+  let t = decide g [Config 0 [Tok "x" 0; whole] "B", Config 1 [;] "B"] 1 True in
+  assertEq t (Branch 0 [(["z"], Leaf 1), (["x"], Leaf 0)]) "`z` leaves, `x` is the option"

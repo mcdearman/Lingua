@@ -63,7 +63,7 @@ use Std.Macro.Delim.*
 use Std.Macro.Parse (Tokens, parseTokens, ident, keyword, punct, group, treesUntil)
 use Std.String.Parse as P
 use Std.String.Parse (Parser)
-use Lingua.Lang (Lang, Sort, Prod, Field, Ty, langName, langRoot, langSorts, langGrammar, langParams, sortName, sortProds, prodName, prodFields, fieldName, fieldTy, fieldAccessor, fieldIsToken, sortOfProd, findSort)
+use Lingua.Lang (Lang, Sort, Prod, Field, Ty, reservedSorts, langName, langRoot, langSorts, langGrammar, langParams, sortName, sortProds, prodName, prodFields, fieldName, fieldTy, fieldAccessor, fieldIsToken, sortOfProd, findSort)
 use Lingua.Lang.Lang.*
 use Lingua.Lang.Sort.*
 use Lingua.Lang.Prod.*
@@ -100,7 +100,7 @@ def fieldDecl : Parser Tokens (String, Written) = comma (P.bind ident (\n -> P.s
 
 -- A change to the language extended: `Sort - Prod`, `Sort + Prod { fields }`,
 -- or `Sort * { fields }` -- the fields added to every production of the sort.
-data Delta = Remove String String Loc | Add String String [(String, Written)] | Every String Loc [(String, Written)]
+data Delta = Remove String String Loc | Add String Loc String [(String, Written)] | Every String Loc [(String, Written)]
 
 use Delta.*
 
@@ -109,11 +109,13 @@ def delta : Parser Tokens Delta =
     P.alt
       (P.skipThen (punct "-") (P.map (\p -> Remove (fst s) (fst p) (snd p)) named))
       (P.alt
-        (P.skipThen (punct "+") (P.bind ident (\p -> P.map (\fs -> Add (fst s) p fs) (group Brace (P.many fieldDecl)))))
+        (P.skipThen (punct "+") (P.bind ident (\p -> P.map (\fs -> Add (fst s) (snd s) p fs) (group Brace (P.many fieldDecl)))))
         (P.skipThen (punct "*") (P.map (\fs -> Every (fst s) (snd s) fs) (group Brace (P.many fieldDecl))))))
 
 -- Where a language comes from.
-data Source = FromGrammar String Loc | Extends String Loc [Delta]
+-- Where a language comes from: a grammar, another language it changes, or --
+-- written out whole -- nothing but what it says.
+data Source = FromGrammar String Loc | Extends String Loc [Delta] | Written [Delta]
 
 use Source.*
 
@@ -122,9 +124,10 @@ def langCall : Parser Tokens (Bool, String, [String], Source) =
     P.bind ident (\name ->
       P.bind (P.many (P.token (\t -> match t with | Word w _ -> (if lowerStart w and w != "from" and w != "extends" then Just w else None) | _ -> None) [])) (\params ->
           P.map (\src -> (M.isSome pub, name, params, src))
-          (P.alt
-            (P.skipThen (keyword "from") (P.map (\g -> FromGrammar (fst g) (snd g)) named))
-            (P.skipThen (keyword "extends") (P.bind named (\b -> P.map (\ds -> Extends (fst b) (snd b) ds) (P.many delta))))))))
+          (P.choice
+            [ P.skipThen (keyword "from") (P.map (\g -> FromGrammar (fst g) (snd g)) named),
+              P.skipThen (keyword "extends") (P.bind named (\b -> P.map (\ds -> Extends (fst b) (snd b) ds) (P.many delta))),
+              P.map Written (P.many delta) ]))))
 
 -- --- lang! ------------------------------------------------------------------------------
 
@@ -133,9 +136,8 @@ def langCall : Parser Tokens (Bool, String, [String], Source) =
   match parseTokens langCall ts with
   | Err failed -> failed
   | Ok (pub, name, params, src) ->
-      let from = (match src with | FromGrammar g at -> (g, at) | Extends b at _ -> (b, at)) in
-      match lookupAs (fst from) with
-      | Err why -> [Fail "no language or grammar is called `${fst from}`" (snd from)]
+      match baseOf src with
+      | Err failed -> failed
       | Ok base ->
           match built name params base src with
           | Err failed -> failed
@@ -143,12 +145,41 @@ def langCall : Parser Tokens (Bool, String, [String], Source) =
               let u = defineAs name l in
               [Code (langCode (if pub then "@pub " else "") l)]
 
+-- What a language starts from: the grammar's or the other language's, or --
+-- written out whole -- a language of nothing, whose whole program is the sort
+-- it says first.
+fun baseOf (src : Source) : Result [TokenTree] Lang ! { Expand | e } =
+  match src with
+  | Written ds -> Ok (Lang "" (firstSort ds) [] "" [])
+  | FromGrammar g at -> found g at
+  | Extends b at _ -> found b at
+
+fun found (n : String) (at : Loc) : Result [TokenTree] Lang ! { Expand | e } =
+  match lookupAs n with
+  | Err why -> Err [Fail "no language or grammar is called `${n}`" at]
+  | Ok base -> Ok base
+
+fun firstSort (ds : [Delta]) : String =
+  match V.get ds 0 with
+  | Just (Remove s _ _) -> s
+  | Just (Add s _ _ _) -> s
+  | Just (Every s _ _) -> s
+  | None -> ""
+
 -- The language `name` makes of `base`.
 -- A language takes its base's type parameters, and any it declares.
 fun built (name : String) (params : [String]) (base : Lang) (src : Source) : Result [TokenTree] Lang =
   let ps = V.append (langParams base) (V.filter (\p -> not (V.elem p (langParams base))) params) in
   match src with
   | FromGrammar g _ -> Ok (Lang name (langRoot base) (langSorts base) g ps)
+  | Written ds ->
+      -- Every sort it writes, empty, first: a field may name one written
+      -- further down.
+      let sorts = V.foldl (\acc d -> let n = firstSort [d] in if V.elem n acc then acc else V.pushBack acc n) [] ds in
+      V.foldl
+        (\acc d -> match acc with | Err e -> Err e | Ok l -> change l d)
+        (Ok (Lang name (langRoot base) (V.map (\n -> Sort n []) sorts) "" ps))
+        ds
   | Extends _ _ ds ->
       V.foldl
         (\acc d -> match acc with | Err e -> Err e | Ok l -> change l d)
@@ -163,11 +194,13 @@ fun change (l : Lang) (d : Delta) : Result [TokenTree] Lang =
        | Just sort ->
            if not (V.any (\q -> prodName q == p) (sortProds sort)) then Err [Fail "`${s}` has no `${p}`" at]
            else Ok (withSort l (Sort s (V.filter (\q -> prodName q != p) (sortProds sort)))))
-  | Add s p fs ->
-      let sort = M.unwrapOr (Sort s []) (findSort l s) in
-      let l2 = withSort l sort in
-      let fields = V.map (\f -> Field (fst f) (resolve l2 (snd f)) "" False) fs in
-      Ok (withSort l2 (Sort s (V.pushBack (V.filter (\q -> prodName q != p) (sortProds sort)) (Prod p fields))))
+  | Add s at p fs ->
+      if V.elem s reservedSorts then Err [Fail "a sort cannot be called `${s}`: the language calls its own tables `${langName l}${s}` -- give the sort another name" at]
+      else
+        let sort = M.unwrapOr (Sort s []) (findSort l s) in
+        let l2 = withSort l sort in
+        let fields = V.map (\f -> Field (fst f) (resolve l2 (snd f)) "" False) fs in
+        Ok (withSort l2 (Sort s (V.pushBack (V.filter (\q -> prodName q != p) (sortProds sort)) (Prod p fields))))
   | Every s at fs ->
       (match findSort l s with
        | None -> Err [Fail "no sort is called `${s}`" at]

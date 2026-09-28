@@ -43,6 +43,11 @@ use Ty.*
 @derive(Reflect, PartialEq)
 @pub data Lang = Lang String String [Sort] String [String]
 
+-- What no sort may be called: a language's own types are its name and these
+-- -- `CoreProgram`, `CoreArena`, `CoreBuilder` -- and a sort's type is its
+-- name after the language's too.
+@pub def reservedSorts : [String] = ["Program", "Arena", "Builder"]
+
 @pub fun langName (l : Lang) : String = match l with | Lang n _ _ _ _ -> n
 
 @pub fun langRoot (l : Lang) : String = match l with | Lang _ r _ _ _ -> r

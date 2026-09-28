@@ -10,6 +10,7 @@
 @pub mod Parser
 @pub mod Build
 @pub mod Ungrammar
+@pub mod Look
 @pub mod Ast
 @pub mod Lang
 @pub mod Gen

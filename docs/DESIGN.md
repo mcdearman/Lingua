@@ -112,11 +112,25 @@ compile-time binding, a `Datum`, for `lang` and `pass` to read (§5).
 
 - every rule a rule mentions is defined, and every quoted token is in the
   lexer or the `tokens` table;
-- the grammar is LL(1) once the precedence table has taken the left
-  recursion out: the FIRST sets of an enum's alternatives are disjoint, and a
-  `*` or `?` does not start with what may follow it. A conflict names the two
-  alternatives and the token they share;
-- no left recursion is left over.
+- the grammar is LL(k) once the precedence table has taken the left
+  recursion out: every choice -- an enum's alternatives, a `|`, whether a `*`
+  goes on or a `?` is taken -- is decided by at most the next k tokens, k 4
+  unless a `lookahead N` section says otherwise. The parser is an automaton
+  worked out when the program is compiled: each choice a test of the tokens
+  ahead, and nothing tried and taken back. Two alternatives no k tokens tell
+  apart are an error naming both and the tokens they share; a `*` or `?` that
+  could go on or stop takes what it can, as a greedy loop does;
+- no left recursion is left over;
+- no rule is named `Program`, `Arena` or `Builder`, which the language's
+  tables are named with (§5).
+
+How far ahead a decision looks is found by walking configurations -- an
+alternative and the rules still to finish after it -- a token at a time,
+through FOLLOW where a rule ends, with a budget of nodes per decision; FIRST
+and FOLLOW are bitsets over the kinds. Where one alternative is a prefix of
+another's, the grammar is written so the next tokens decide it: a pattern in
+parentheses read as an expression and told apart after, a signature and a
+definition read as one form.
 
 ## 2. Parsing: events
 
@@ -219,7 +233,7 @@ Each **node** rule becomes a type wrapping a red node, and each **enum** a sum
 of its alternatives, with a checked cast from `Syntax` and the way back:
 
 ```meadow
-data CalcLet = CalcLet (Syntax Calc)
+data CalcLet = CalcLetNode (Syntax Calc)
 asCalcLet : Syntax Calc -> Maybe CalcLet
 syntaxCalcLet : CalcLet -> Syntax Calc
 
@@ -270,6 +284,26 @@ an `Expr` too — are told apart by position among all the node's children,
 since counting `Atom`s would find `func` again whenever it is one.
 `astCalc` casts a parse's root.
 
+**Patterns.** Each node rule is also a pattern over the tree, named as its
+type is: `CalcBin lhs op rhs` matches a `Bin` node and binds its children,
+each a `Syntax Calc` to match further --
+
+```meadow
+match s with
+| CalcLet n (CalcBin l op r) -> …
+| CalcLet n v -> …
+```
+
+-- the abstract syntax read straight off the lossless tree, with nothing built.
+A pattern binds what the language the grammar implies keeps (§5): every node
+child, and every token that is labelled or has text of its own. A child that
+is always there binds as itself, and a node missing it -- a tree with an
+error in it -- does not match; a child that may be missing binds as a `Maybe`,
+and one that may be several as a list. Each is a synonym with a view
+(`pattern CalcBin l op r <- (view -> [(l, op, r);])`), so it is found,
+imported and exported as any pattern is. MeadowBoot's parser reads Meadow's
+tree this way into the dump its differential test compares.
+
 ## 5. `lang` and `pass`
 
 A language is a set of **sorts** — `Expr`, `Stmt` — each a choice of
@@ -296,6 +330,11 @@ lang! {
   Expr + Prim { op : String, args : [Expr] }
 }
 ```
+
+A language may also be written out whole, from nothing -- `lang! { pub Core
+Expr + Lam { param : Int, body : Expr } … }` -- its sorts all known before any
+field's type is read, so a field may name a sort written further down. `Program`,
+`Arena` and `Builder` are not sorts' names: the tables are named with them.
 
 `Sort - Prod` removes a production; `Sort + Prod { field : Type, … }` adds one
 (to a new sort, if there is none by that name); `Sort * { field : Type, … }`

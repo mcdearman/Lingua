@@ -1,84 +1,101 @@
 -- The red view: a green node seen from where it is.
 --
--- A `Syntax` is a green node or token with its absolute offset in the file
--- and the `Syntax` it is a child of. It is made on demand, walking down from
--- the root, and never stored: the green tree is the data, and this is a
--- cursor over it. Positions, parents and "what is at this offset" live here.
+-- A `Syntax` is a tree and a slot in it. The tree's tables already say where
+-- each slot starts and which slot is its parent, so a `Syntax` is only that
+-- pair: made on demand, never stored, and never holding more than the one
+-- reference to the tree -- a cursor, not a copy. Positions, parents and "what
+-- is at this offset" live here.
 
 use Std.Collections.Vector as V
-use Std.String as S
-use Lingua.Green (Green, kind, width, isToken)
-use Lingua.Green as G
+use Lingua.Green (Green, kindAt, startAt, endAt, isTokenAt, parentAt, childSlots, textAt, subtree, firstChild, nextSibling)
 
 use Syntax.*
 
-@pub data Syntax k = Syntax (Green k) Int (Maybe (Syntax k))
+@pub data Syntax k = Syntax (Green k) Int
 
 -- The whole file, from its green root.
-@pub fun root (g : Green k) : Syntax k = Syntax g 0 None
+@pub fun root (g : Green k) : Syntax k = Syntax g 0
 
-@pub fun green (s : Syntax k) : Green k = match s with | Syntax g _ _ -> g
+-- Its subtree, as a tree of its own.
+@pub fun green (s : Syntax k) : Green k = match s with | Syntax g i -> subtree g i
 
-@pub fun kindOf (s : Syntax k) : k = kind (green s)
+@pub fun kindOf (s : Syntax k) : k = match s with | Syntax g i -> kindAt g i
 
 -- Where it starts, in bytes from the start of the file.
-@pub fun offset (s : Syntax k) : Int = match s with | Syntax _ at _ -> at
+@pub fun offset (s : Syntax k) : Int = match s with | Syntax g i -> startAt g i
+
+-- Where it ends: the byte after its last.
+@pub fun endOffset (s : Syntax k) : Int = match s with | Syntax g i -> endAt g i
 
 -- The bytes it covers: from its offset up to, not including, its end.
-@pub fun range (s : Syntax k) : (Int, Int) = (offset s, offset s + width (green s))
+@pub fun range (s : Syntax k) : (Int, Int) = match s with | Syntax g i -> (startAt g i, endAt g i)
 
-@pub fun text (s : Syntax k) : String = G.text (green s)
+@pub fun text (s : Syntax k) : String = match s with | Syntax g i -> textAt g i
 
-@pub fun parent (s : Syntax k) : Maybe (Syntax k) = match s with | Syntax _ _ p -> p
+@pub fun parent (s : Syntax k) : Maybe (Syntax k) =
+  match s with
+  | Syntax g i -> (let p = parentAt g i in if p < 0 then None else Just (Syntax g p))
 
 -- Its parent, the parent's parent, and so on up to the root.
 @pub fun ancestors (s : Syntax k) : [Syntax k] =
-  match parent s with
-  | Just p -> V.pushFront (ancestors p) p
-  | None -> []
+  match s with
+  | Syntax g i ->
+      let rec up p acc = if p < 0 then acc else up (parentAt g p) (V.pushBack acc (Syntax g p)) in
+      up (parentAt g i) []
 
-@pub fun isTokenOf (s : Syntax k) : Bool = isToken (green s)
+@pub fun isTokenOf (s : Syntax k) : Bool = match s with | Syntax g i -> isTokenAt g i
 
 -- Its children -- nodes and tokens, trivia included -- each where it is.
-@pub fun children (s : Syntax k) : [Syntax k] =
-  let cs = G.children (green s) in
-  V.foldl
-    (\acc c ->
-      match acc with
-      | (out, at) -> (V.pushBack out (Syntax c at (Just s)), at + width c))
-    ([], offset s)
-    cs
-    |> fst
+@pub fun children (s : Syntax k) : [Syntax k] = match s with | Syntax g i -> V.map (\c -> Syntax g c) (childSlots g i)
 
 -- Its children that are nodes.
-@pub fun nodes (s : Syntax k) : [Syntax k] = V.filter (\c -> not (isTokenOf c)) (children s)
+@pub fun nodes (s : Syntax k) : [Syntax k] = childrenWhere (\g c -> not (isTokenAt g c)) s
 
 -- Its children that are tokens.
-@pub fun tokens (s : Syntax k) : [Syntax k] = V.filter isTokenOf (children s)
+@pub fun tokens (s : Syntax k) : [Syntax k] = childrenWhere isTokenAt s
 
 -- Its first child of kind `k`, node or token.
-@pub fun childOfKind (k : k) (s : Syntax k) : Maybe (Syntax k) = V.find (\c -> kindOf c == k) (children s)
+@pub fun childOfKind (k : k) (s : Syntax k) : Maybe (Syntax k) = childWhere (\g c -> kindAt g c == k) s
 
 -- Every child of kind `k`.
-@pub fun childrenOfKind (k : k) (s : Syntax k) : [Syntax k] = V.filter (\c -> kindOf c == k) (children s)
+@pub fun childrenOfKind (k : k) (s : Syntax k) : [Syntax k] = childrenWhere (\g c -> kindAt g c == k) s
+
+-- Its first child whose slot `p` holds of, if one does -- found by stepping
+-- from slot to slot, making nothing for the children it passes.
+@pub fun childWhere (p : Green k -> Int -> Bool) (s : Syntax k) : Maybe (Syntax k) =
+  match s with
+  | Syntax g i ->
+      let rec go c = if c < 0 then None else if p g c then Just (Syntax g c) else go (nextSibling g i c) in
+      go (firstChild g i)
+
+-- Every child whose slot `p` holds of, in order.
+@pub fun childrenWhere (p : Green k -> Int -> Bool) (s : Syntax k) : [Syntax k] =
+  match s with
+  | Syntax g i ->
+      let rec go c acc = if c < 0 then acc else go (nextSibling g i c) (if p g c then V.pushBack acc (Syntax g c) else acc) in
+      go (firstChild g i) []
 
 -- The token covering byte `at`, if any does.
 @pub fun tokenAt (at : Int) (s : Syntax k) : Maybe (Syntax k) =
-  if isTokenOf s then (if inside at s then Just s else None)
-  else
-    match V.find (inside at) (children s) with
-    | Just c -> tokenAt at c
-    | None -> None
+  match s with
+  | Syntax g i ->
+      if isTokenAt g i then (if inside g at i then Just s else None)
+      else
+        match childWhere (\h c -> inside h at c) s with
+        | Just c -> tokenAt at c
+        | None -> None
 
 -- The innermost node covering byte `at`.
 @pub fun nodeAt (at : Int) (s : Syntax k) : Maybe (Syntax k) =
-  if isTokenOf s or not (inside at s) then None
-  else
-    match V.find (\c -> not (isTokenOf c) and inside at c) (children s) with
-    | Just c -> nodeAt at c
-    | None -> Just s
+  match s with
+  | Syntax g i ->
+      if isTokenAt g i or not (inside g at i) then None
+      else
+        match childWhere (\h c -> not (isTokenAt h c) and inside h at c) s with
+        | Just c -> nodeAt at c
+        | None -> Just s
 
-fun inside at s = match range s with | (from, to) -> at >= from and at < to
+fun inside (g : Green k) (at : Int) (i : Int) : Bool = at >= startAt g i and at < endAt g i
 
 -- --- tests -------------------------------------------------------------------
 
@@ -103,3 +120,8 @@ def sample : Green String =
 @test fun theInnermostNodeAtAnOffset () =
   let a = assertEq (M.map kindOf (nodeAt 3 (root sample))) (Just "Sum") "inside the sum" in
   assertEq (M.map kindOf (nodeAt 0 (root sample))) (Just "Paren") "the bracket is the paren's"
+
+@test fun aTokensAncestorsGoUpToTheRoot () =
+  match tokenAt 5 (root sample) with
+  | Just t -> assertEq (V.map kindOf (ancestors t)) ["Sum", "Paren"] "the sum, then the bracket"
+  | None -> assertEq 0 1 "a token covers byte 5"

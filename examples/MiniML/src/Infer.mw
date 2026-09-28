@@ -234,31 +234,42 @@ pass! {
 }
 
 -- Every expression in `e`, outermost first.
-@pub fun subexpressions (e : TypedExpr) : [TypedExpr] = V.pushFront (V.concatMap subexpressions (children e)) e
+@pub fun subexpressions (a : TypedArena) (e : TypedExpr) : [TypedExpr] = V.pushFront (V.concatMap (subexpressions a) (children a e)) e
 
-fun children (e : TypedExpr) : [TypedExpr] =
-  match e with
-  | TypedExpr.App r -> [r.func, r.arg]
-  | TypedExpr.Prim r -> r.args
-  | TypedExpr.Lam r -> [r.body]
-  | TypedExpr.Let r -> [r.value, r.body]
-  | TypedExpr.LetRec r -> [r.value, r.body]
-  | TypedExpr.If r -> [r.cond, r.yes, r.no]
+fun children (a : TypedArena) (e : TypedExpr) : [TypedExpr] =
+  match kindTypedExpr a e with
+  | TypedExprKind.App -> [typedAppFunc a e, typedAppArg a e]
+  | TypedExprKind.Prim -> typedPrimArgs a e
+  | TypedExprKind.Lam -> [typedLamBody a e]
+  | TypedExprKind.Let -> [typedLetValue a e, typedLetBody a e]
+  | TypedExprKind.LetRec -> [typedLetRecValue a e, typedLetRecBody a e]
+  | TypedExprKind.If -> [typedIfCond a e, typedIfYes a e, typedIfNo a e]
   | _ -> []
+
+-- The expression an elaborated program is: its root. An elaboration is the
+-- program's expression copied out on its own, so that what is around it in
+-- the file -- a comment after it -- is no part of it.
+@pub fun typedExpr (t : TypedProgram) : TypedExpr = typedRoot t
+
+-- The type an elaborated program has.
+@pub fun programType (t : TypedProgram) : Type = tyTypedExpr (typedArena t) (typedExpr t)
 
 -- A program elaborated -- every expression in it with its type -- or why it
 -- has none, where. Every cell is made and written inside the `runSt`, and
--- only `Typed`, which has none, comes out of it.
-@pub fun typed (e : CoreExpr) : Result Diagnostic TypedExpr = typedIn [] e
+-- only `Typed`, which has none, comes out of it. The passes write their
+-- tables inside it too (`inferSt`, `settleSt`): their cases use its cells.
+@pub fun typed (p : CoreProgram) : Result Diagnostic TypedProgram = typedIn [] p
 
 -- The same, with what another unit exports in scope, each at its type: the
 -- `i`th import is binder `i`, as `Names.resolved` entered it.
-@pub fun typedIn (imports : [Type]) (e : CoreExpr) : Result Diagnostic TypedExpr =
+@pub fun typedIn (imports : [Type]) (p : CoreProgram) : Result Diagnostic TypedProgram =
   toResult (\() ->
     runSt (\() ->
       let start = Ctx [;] 0 (St.newRef 0) in
       let ctx = V.foldl (\c i -> bind c i (thaw c (V.getOr Type.Int imports i))) start (V.range 0 (V.len imports)) in
-      settleExpr (inferExpr ctx e)))
+      let t = settleSt (inferSt ctx p) in
+      let a = typedArena t in
+      subTypedExpr a (typedFileExpr a (typedRoot t))))
 
 -- An imported type as inference holds one: each of its variables a new one,
 -- and generalized -- it was a `let`'s, in the unit it came from.
@@ -280,17 +291,18 @@ fun genericVar c =
   | t -> t
 
 -- The type of a program, or why it has none.
-@pub fun typeOf (e : CoreExpr) : Result Diagnostic String =
-  match typed e with
-  | Ok t -> Ok (typeName (tyTypedExpr t))
+@pub fun typeOf (p : CoreProgram) : Result Diagnostic String =
+  match typed p with
+  | Ok t -> Ok (typeName (programType t))
   | Err d -> Err d
 
 -- Each expression of a program as it was written, with its type, outermost
 -- first.
-@pub fun annotated (src : String) (e : TypedExpr) : [String] =
+@pub fun annotated (src : String) (t : TypedProgram) : [String] =
+  let a = typedArena t in
   V.map
-    (\x -> match metaTypedExpr x with | Meta a b -> "${S.trim (stringSlice src a b)} : ${typeName (tyTypedExpr x)}")
-    (subexpressions e)
+    (\x -> match metaTypedExpr a x with | Meta i j -> "${S.trim (stringSlice src i j)} : ${typeName (tyTypedExpr a x)}")
+    (subexpressions a (typedExpr t))
 
 -- --- tests ---------------------------------------------------------------------------------
 

@@ -411,7 +411,16 @@ fun ty spec r = "${spec.name}${r}"
 
 fun fn spec r = "lingua${spec.name}_${r}"
 
-fun anyOf spec env ts = "LinguaP.atAny p [${S.join ", " (V.map (\t -> kq spec t) ts)}]"
+-- Whether the next token is one of `ts`: its kind read once and compared here,
+-- where the kind type is known. `LinguaP.at` would compare it too, but as a
+-- function over any kind type, called under the `runSt` every parse runs in --
+-- and a trait's method is found at compile time only where the types are
+-- known, so there it was looked up at run time, at every token.
+fun anyOf spec env ts =
+  match V.toList ts with
+  | Nil -> "False"
+  | Cons t Nil -> "(LinguaP.nth p 0 == ${kq spec t})"
+  | _ -> "(let k = LinguaP.nth p 0 in ${S.join " or " (V.map (\t -> "k == ${kq spec t}") ts)})"
 
 -- The kinds, as constructor and display name: every node rule, every token
 -- the table names and the trivia, and the three every tree may need.
@@ -516,7 +525,7 @@ fun ruleFun spec env counter root d =
 -- read for: its last element, if it is that enum, is read at a binding power.
 fun body spec env counter self (r : Rule) : String ! { Mut | e } =
   match r with
-  | Tok t _ -> "LinguaP.expect p ${kq spec t}"
+  | Tok t _ -> "(if LinguaP.nth p 0 == ${kq spec t} then LinguaP.advance p else LinguaP.error p \"expected `${escape t}`\")"
   | Ref n _ -> "(let _ = ${fn spec n} p in ())"
   | Label _ _ x -> body spec env counter self x
   | Seq xs -> "(" ++ V.foldl (\acc x -> acc ++ "let _ = ${body spec env counter self x} in ") "" xs ++ "())"
@@ -603,30 +612,31 @@ fun isSeq x = match x with | Seq _ -> True | _ -> False
 -- `parseCalc`: lex, parse, build.
 fun entry spec pub root lx =
   "-- The lexer's tokens, and the text between them it skipped, as trivia: every
--- byte of `input`, in order.
-fun ${fn spec "lexemes"} (input : String) ts =
-  let n = stringByteLength input in
-  let step = \\acc l ->
-    match acc with
-    | (out, at) ->
-        let s = LinguaScythe.start l in
-        let e = LinguaScythe.stop l in
-        let out2 = if s > at then LinguaV.pushBack out (LinguaB.lexeme ${kx spec "Unknown"} (stringSlice input at s) True) else out in
-        let kd = ${fn spec "kindOf"} (LinguaScythe.token l) in
-        (LinguaV.pushBack out2 (LinguaB.lexeme kd (stringSlice input s e) (${fn spec "isTrivia"} kd)), e)
-  in
-  match LinguaV.foldl step ([], 0) ts with
-  | (out, at) -> if at < n then LinguaV.pushBack out (LinguaB.lexeme ${kx spec "Unknown"} (stringSlice input at n) True) else out
+-- byte of `input`, in order -- as tables, a token at a time, keeping none.
+fun ${fn spec "lexemes"} (input : String) =
+  runSt (\\() ->
+    let l = LinguaB.lexing ${kx spec "Unknown"} in
+    let n = stringByteLength input in
+    let step = \\at t s e ->
+      let _ = if s > at then LinguaB.lexed l ${kx spec "Unknown"} s True else () in
+      let kd = ${fn spec "kindOf"} t in
+      let _ = LinguaB.lexed l kd e (${fn spec "isTrivia"} kd) in
+      e
+    in
+    match fold${lx} step 0 input with
+    | Err err -> Err err
+    | Ok at ->
+        let _ = if at < n then LinguaB.lexed l ${kx spec "Unknown"} n True else () in
+        Ok (LinguaB.lexemesFrom input l))
 
 -- `input` as a lossless tree, and every error with the byte it is at: a pure
 -- function of the text.
 ${pub}fun parse${spec.name} (input : String) =
-  match lex${lx} input with
+  match ${fn spec "lexemes"} input with
   | Err err ->
       (LinguaG.node ${kn spec root} [LinguaG.token ${kx spec "Unknown"} input], [(LinguaScythe.errorAt err, \"the lexer stopped here\")])
-  | Ok ts ->
-      let lexemes = ${fn spec "lexemes"} input ts in
-      let kinds = LinguaV.toArray (LinguaV.map LinguaB.lexemeKind (LinguaV.filter (\\l -> not (LinguaB.lexemeTrivia l)) lexemes)) in
+  | Ok lexemes ->
+      let kinds = LinguaB.parsedKinds lexemes in
       let events =
         runSt (\\() ->
           let p = LinguaP.parser kinds ${kx spec "Eof"} ${kx spec "ErrorNode"} ${fn spec "name"} in

@@ -1,0 +1,74 @@
+-- Lingua.Buf: an array written a slot at a time inside a `runSt`, growing as
+-- it goes -- what the lexer, the parser, the tree builder and every language's
+-- tables are written into.
+--
+-- A table of numbers, or of kinds -- which are constructors with no fields --
+-- is one block however long it is: nothing in it is counted, and dropping it
+-- is dropping one thing. A list of small records is a block each, every one
+-- counted as it is passed around and freed one by one. So what a parse or a
+-- pass makes by the node, it keeps here, and a tree is a handful of these.
+--
+-- A push that finds the array full copies it into one twice the size, so a
+-- push is constant time on average on every back end -- where an `Array`'s
+-- `arrayPush` is only when nothing else holds the array, and on Glade never.
+-- A buffer starts with no array at all, and the value that first finds it
+-- full is what the new slots hold until they are written: so a buffer of any
+-- type can be made, with nothing to make its slots of beforehand.
+
+@pub data Buf s a = Buf (StRef s (StArray s a)) (StRef s Int)
+
+-- An empty buffer.
+@pub fun buffer () : Buf s a ! { St s | e } = Buf (stNewRef (stThaw #[])) (stNewRef 0)
+
+-- How many slots have been pushed.
+@pub fun len (b : Buf s a) : Int ! { St s | e } = match b with | Buf _ n -> stGetRef n
+
+-- Slot `i`, which must have been pushed.
+@pub fun at (b : Buf s a) (i : Int) : a ! { St s | e } = match b with | Buf xs _ -> stGetArray (stGetRef xs) i
+
+-- Write slot `i`, which must have been pushed.
+@pub fun put (b : Buf s a) (i : Int) (x : a) : () ! { St s | e } = match b with | Buf xs _ -> stSetArray (stGetRef xs) i x
+
+-- `x` in the next slot; its index.
+@pub fun push (b : Buf s a) (x : a) : Int ! { St s | e } =
+  match b with
+  | Buf xs n ->
+      let arr = stGetRef xs in
+      let i = stGetRef n in
+      let cap = stArrayLen arr in
+      let room = if i < cap then arr else grown xs arr cap x in
+      let _ = stSetArray room i x in
+      let _ = stSetRef n (i + 1) in
+      i
+
+fun grown xs arr (cap : Int) fill =
+  let bigger = stNewArray (if cap < 32 then 64 else 2 * cap) fill in
+  let _ = copyInto arr bigger 0 cap in
+  let _ = stSetRef xs bigger in
+  bigger
+
+fun copyInto from to (i : Int) (n : Int) =
+  if i >= n then () else (let _ = stSetArray to i (stGetArray from i) in copyInto from to (i + 1) n)
+
+-- What has been pushed, as an `Array`.
+@pub fun freeze (b : Buf s a) : #[a] ! { St s | e } =
+  match b with
+  | Buf xs n -> arraySlice (stFreeze (stGetRef xs)) 0 (stGetRef n)
+
+-- --- tests -------------------------------------------------------------------
+
+use Std.Test (assertEq)
+
+@test fun aBufferGrowsPastItsFirstArray () =
+  let got =
+    runSt (\() ->
+      let b = buffer () in
+      let rec fill i = if i >= 200 then () else (let _ = push b (i * 2) in fill (i + 1)) in
+      let _ = fill 0 in
+      let _ = put b 3 7 in
+      (len b, at b 199, freeze b)) in
+    match got with
+    | (n, last, xs) -> assertEq (n, last, arrayLen xs, arrayGet xs 3, arrayGet xs 4) (200, 398, 200, 7, 8) "every push kept, in order"
+
+@test fun anEmptyBufferFreezesEmpty () =
+  assertEq (arrayLen (runSt (\() -> freeze (buffer ())))) 0 "nothing pushed, nothing there"

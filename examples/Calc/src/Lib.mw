@@ -195,42 +195,54 @@ pass! {
 use Std.Maybe as M
 use Lingua.Lang (Meta)
 
-fun core (input : String) : Maybe CoreFile =
+fun core (input : String) : Maybe CoreProgram =
   match parseCalc input with
   | (g, _) -> M.map lower (surfaceFromCalc g)
 
--- What a `Core` program leaves bound.
+-- What a `Core` program leaves bound. A program is its tables and its root,
+-- and a node the row it is in them: read here by viewing a node as a value,
+-- and -- in `evalCore` -- by asking which production it is and reading its
+-- fields, which makes nothing at all.
 fun runCore (input : String) : [(String, Int)] =
   match core input with
-  | Just f -> (match f with | CoreFile.File r -> V.foldl stepCore [] r.stmts)
+  | Just p -> bindingsOf p
   | None -> []
 
-fun stepCore env s =
-  match s with
-  | CoreStmt.Let r -> (match r.name with | CoreName.Name n -> V.pushBack env (n.ident, evalCore env r.value))
-  | CoreStmt.ExprStmt _ -> env
+fun bindingsOf (p : CoreProgram) : [(String, Int)] =
+  let a = coreArena p in
+  match viewCoreFile a (coreRoot p) with
+  | CoreFileView.File r -> V.foldl (stepCore a) [] r.stmts
 
-fun evalCore env (e : CoreExpr) : Int =
-  match e with
-  | CoreExpr.Literal r -> (match S.toInt r.number with | Just n -> n | None -> 0)
-  | CoreExpr.NameRef r -> lookup env r.ident
-  | CoreExpr.Paren r -> evalCore env r.expr
-  | CoreExpr.Prim r ->
-      (match (V.get r.args 0, V.get r.args 1) with
-       | (Just a, Just b) -> apply r.op (evalCore env a) (evalCore env b)
-       | _ -> 0)
-  | CoreExpr.Call _ -> 0
+fun stepCore a env s =
+  match viewCoreStmt a s with
+  | CoreStmtView.Let r -> V.pushBack env (coreNameIdent a r.name, evalCore a env r.value)
+  | CoreStmtView.ExprStmt _ -> env
+
+fun evalCore (a : CoreArena) env (e : CoreExpr) : Int =
+  match kindCoreExpr a e with
+  | CoreExprKind.Literal -> (match S.toInt (coreLiteralNumber a e) with | Just n -> n | None -> 0)
+  | CoreExprKind.NameRef -> lookup env (coreNameRefIdent a e)
+  | CoreExprKind.Paren -> evalCore a env (coreParenExpr a e)
+  | CoreExprKind.Prim ->
+      (let args = corePrimArgs a e in
+        match (V.get args 0, V.get args 1) with
+        | (Just x, Just y) -> apply (corePrimOp a e) (evalCore a env x) (evalCore a env y)
+        | _ -> 0)
+  | CoreExprKind.Call -> 0
 
 @test fun aPassRewritesWhatChangedAndCopiesTheRest () =
   assertEq (runCore "let x = 2 * (3 + 4);\nlet y = x - 10 - 1;") [("x", 14), ("y", 3)] "lowered, and the same answers"
 
 @test fun aRewrittenNodeKeepsWhereItCameFrom () =
   match core "let x = 1 + 2;" with
-  | Just (CoreFile.File r) ->
-      (match V.get r.stmts 0 with
-       | Just (CoreStmt.Let l) -> assertEq (metaCoreExpr l.value) (Meta.Meta 8 13) "the bytes of `1 + 2`"
-       | _ -> assertEq 0 1 "a let")
-  | _ -> assertEq 0 1 "a program"
+  | Just p ->
+      (let a = coreArena p in
+        match viewCoreFile a (coreRoot p) with
+        | CoreFileView.File r ->
+            (match M.map (viewCoreStmt a) (V.get r.stmts 0) with
+             | Just (CoreStmtView.Let l) -> assertEq (metaCoreExpr a l.value) (Meta.Meta 8 13) "the bytes of `1 + 2`"
+             | _ -> assertEq 0 1 "a let"))
+  | None -> assertEq 0 1 "a program"
 
 @test fun aProgramWithSomethingMissingHasNoSurface () =
   match parseCalc "let x = ;" with
@@ -269,8 +281,8 @@ database! {
   pub Session
     | input source (file : Int) : String
     | query tree (file : Int) : Green Calc = fst (parseCalc (querySource file))
-    | query program (file : Int) : Maybe CoreFile = M.map lower (surfaceFromCalc (queryTree file))
-    | query bindings (file : Int) : [(String, Int)] = (match queryProgram file with | Just (CoreFile.File r) -> V.foldl stepCore [] r.stmts | None -> [])
+    | query program (file : Int) : Maybe CoreProgram = M.map lower (surfaceFromCalc (queryTree file))
+    | query bindings (file : Int) : [(String, Int)] = (match queryProgram file with | Just p -> bindingsOf p | None -> [])
     | persisted query sum (files : [Int]) : Int = V.foldl (\acc bs -> acc + V.foldl (\a b -> a + snd b) 0 bs) 0 (queryBindingsEach files)
 }
 

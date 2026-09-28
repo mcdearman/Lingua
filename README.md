@@ -75,11 +75,14 @@ syntax! {
   a table, and nothing carries it from case to case. MiniML's name
   resolution is such a pass: every name becomes the id of its binder, and
   the table of binders is what its editor reads.
-- **`Lingua.Green`**, the lossless tree: kinds, widths and text, no positions.
+- **`Lingua.Green`**, the lossless tree: its text and a table per property --
+  kind, span, subtree size, parent -- a slot per node or token, so a whole
+  tree is a handful of values rather than one per node.
 - **`Lingua.Red`**, a view with offsets and parents: `range`, `children`,
   `parent`, `ancestors`, `tokenAt`, `nodeAt`.
 - **`Lingua.Parser`** and **`Lingua.Build`**, the runtime a generated parser
-  stands on, usable by hand.
+  stands on, usable by hand. What each says -- tokens, events, the tree -- is
+  written into growing tables (**`Lingua.Buf`**) rather than a list of values.
 - **`database!`** declares a compiler's steps as queries -- inputs set from
   outside, and derived queries whose bodies are ordinary Meadow reading the
   others by name -- and **`Lingua.Query`** runs them in the style of salsa:

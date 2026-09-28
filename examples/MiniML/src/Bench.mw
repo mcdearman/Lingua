@@ -56,14 +56,13 @@ def config : BenchConfig = BenchConfig { warmupNanos = 0, sampleNanos = 1, sampl
   | (_, None) -> println "the generated program has no surface"
   | (_, Just surface) ->
       let core = fst (fst (collect (\() -> tabled (\() -> desugar (resolved [] surface))))) in
-      let e = programExpr core in
-      let a = println "it is ${show (typeOf e)}, and runs to ${show (run e)}\n" in
+      let a = println "it is ${show (typeOf core)}, and runs to ${show (run core)}\n" in
       report
         [ benchUnitsWith config "parse" bytes (\() -> parseMini src),
           benchUnitsWith config "surface" bytes (\() -> surfaceFromMini (fst parsed)),
           benchUnitsWith config "resolve + desugar" bytes (\() -> collect (\() -> tabled (\() -> desugar (resolved [] surface)))),
-          benchUnitsWith config "infer" bytes (\() -> typed e),
-          benchUnitsWith config "run" bytes (\() -> run e) ]
+          benchUnitsWith config "infer" bytes (\() -> typed core),
+          benchUnitsWith config "run" bytes (\() -> run core) ]
 
 -- --- tests ---------------------------------------------------------------------------------
 

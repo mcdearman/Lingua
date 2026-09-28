@@ -4,7 +4,7 @@
 --     pub Session
 --     | input source (file : Int) : String
 --     | query tree (file : Int) : Green Calc = fst (parseCalc (querySource file))
---     | query program (file : Int) : Maybe CoreFile = M.map lower (surfaceFromCalc (queryTree file))
+--     | query program (file : Int) : Maybe CoreProgram = M.map lower (surfaceFromCalc (queryTree file))
 --     | persisted query sum (files : [Int]) : Int = V.sum (queryCountEach files)
 --   }
 --

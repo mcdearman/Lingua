@@ -19,6 +19,8 @@
 
 use Std.Collections.Vector as V
 use Std.Maybe.Maybe.*
+use Lingua.Buf as B
+use Lingua.Buf (Buf)
 
 @pub effect Table v {
   enter : v -> Int,
@@ -33,14 +35,23 @@ use Std.Maybe.Maybe.*
   | Just x -> revise (id, f x)
   | None -> ()
 
--- Run `act`, keeping the table it fills.
+-- Run `act`, keeping the table it fills: a buffer (`Lingua.Buf`), each entry
+-- written where it is and each revision written over it, rather than a
+-- vector rebuilt along the path to the entry at every change.
 @pub fun tabled (act : () -> a ! { Table v | e }) : (a, [v]) ! e =
+  runSt (\() ->
+    let t = B.buffer () in
+    let x = filling t act in
+    (x, V.fromArray (B.freeze t)))
+
+-- `act`, its entries written into `t`.
+fun filling (t : Buf s v) (act : () -> a ! { Table v | e }) : a ! { St s | e } =
   handle act () with {
-    enter x k -> \t -> (k (V.len t)) (V.pushBack t x),
-    entry i k -> \t -> (k (V.get t i)) t,
-    revise p k -> \t -> (k ()) (match p with | (i, x) -> if i >= 0 and i < V.len t then V.set t i x else t),
-    return x -> \t -> (x, t)
-  } []
+    enter x k -> k (B.push t x),
+    entry i k -> k (if i >= 0 and i < B.len t then Just (B.at t i) else None),
+    revise p k -> k (match p with | (i, y) -> if i >= 0 and i < B.len t then B.put t i y else ()),
+    return x -> x
+  }
 
 -- --- tests -------------------------------------------------------------------
 

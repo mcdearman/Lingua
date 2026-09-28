@@ -7,105 +7,219 @@
 -- belongs to what holds the declaration, as rust-analyzer attaches it -- and
 -- otherwise into the node being read. What is left at the end, and any token
 -- the parser never took, goes to the root, so that nothing written is lost.
+--
+-- The tree's tables are written directly, a slot per node and token as each
+-- is met (`Lingua.Green`): a node's slot when it opens, its size and end when
+-- it closes. Nothing is made per token but the numbers in those tables.
 
 use Std.Collections.Vector as V
-use Lingua.Green (Green, node, token)
-use Lingua.Parser (Event)
-use Lingua.Parser.Event.*
+use Lingua.Green (Green, fromTables)
+use Lingua.Parser (Events, eventCount, isOpenAt, isCloseAt, isAdvanceAt, openKindAt, messageAt)
+use Lingua.Buf as B
+use Lingua.Buf (Buf)
 
--- A token the lexer made: its kind, its text, and whether it is trivia.
-use Lexeme.*
+-- What the lexer made, as tables: the text; for each token -- trivia
+-- included, in order, covering the text -- its kind, where it ends, and
+-- whether it is trivia, each starting where the one before it ended; and the
+-- kinds of those that are not trivia, which are what the parser reads.
+use Lexemes.*
 
-@pub data Lexeme k = Lexeme k String Bool
+@pub data Lexemes k = Lexemes String #[k] #[Int] #[Bool] #[k]
 
-@pub fun lexeme (k : k) (text : String) (trivia : Bool) : Lexeme k = Lexeme k text trivia
+@pub fun lexemesOf (text : String) (kinds : #[k]) (ends : #[Int]) (trivia : #[Bool]) : Lexemes k =
+  let parsed = V.toArray (V.map (\i -> arrayGet kinds i) (V.filter (\i -> not (arrayGet trivia i)) (V.range 0 (arrayLen kinds)))) in
+  Lexemes text kinds ends trivia parsed
 
-@pub fun lexemeKind (l : Lexeme k) : k = match l with | Lexeme k _ _ -> k
+-- A lexer's tables, written a token at a time inside a `runSt`: the kinds,
+-- where each ends, whether each is trivia, and the kinds of those that are
+-- not.
+use Lexing.*
 
-@pub fun lexemeTrivia (l : Lexeme k) : Bool = match l with | Lexeme _ _ t -> t
+@pub data Lexing s k = Lexing (Buf s k) (Buf s Int) (Buf s Bool) (Buf s k)
+
+@pub fun lexing (filler : k) : Lexing s k ! { St s | e } = Lexing (B.buffer ()) (B.buffer ()) (B.buffer ()) (B.buffer ())
+
+-- One more token, of kind `k`, ending at byte `stop`.
+@pub fun lexed (l : Lexing s k) (k : k) (stop : Int) (trivia : Bool) : () ! { St s | e } =
+  match l with
+  | Lexing ks es ts ps ->
+      let _ = B.push ks k in
+      let _ = B.push es stop in
+      let _ = B.push ts trivia in
+      let _ = if trivia then () else (let _ = B.push ps k in ()) in
+      ()
+
+@pub fun lexemesFrom (text : String) (l : Lexing s k) : Lexemes k ! { St s | e } =
+  match l with
+  | Lexing ks es ts ps -> Lexemes text (B.freeze ks) (B.freeze es) (B.freeze ts) (B.freeze ps)
+
+-- The tokens a parser reads: the kinds of those that are not trivia.
+@pub fun parsedKinds (ls : Lexemes k) : #[k] = match ls with | Lexemes _ _ _ _ ps -> ps
+
+-- --- building ------------------------------------------------------------------
+
+-- The tables being written -- kinds, starts, ends, sizes and parents; the next
+-- token and the byte it starts at; the slots of the nodes open, innermost
+-- last, and how many are; the errors so far, where and what; and whether the
+-- root has closed.
+use Builder.*
+
+data Builder s k = Builder (Buf s k) (Buf s Int) (Buf s Int) (Buf s Int) (Buf s Int) (StRef s Int) (StRef s Int) (Buf s Int) (StRef s Int) (Buf s Int) (Buf s String) (StRef s Bool)
 
 -- The tree the events describe over `lexemes`, and every error with the byte
 -- it was said at. `root` is the kind of the whole file, for the tree of a
 -- parse that said nothing at all.
-@pub fun build (root : k) (events : [Event k]) (lexemes : [Lexeme k]) : (Green k, [(Int, String)]) =
-  let start = { stack = [], cursor = 0, offset = 0, errors = [], done = [] } in
-  let finished = V.foldl (\st e -> step lexemes st e) start events in
-  -- Whatever is still open is closed, the root last, with what is left over
-  -- in it.
-  let closed = closeAll lexemes finished in
-  (V.getOr (node root (V.map green lexemes)) closed.done 0, closed.errors)
+@pub fun build (root : k) (events : Events k) (lexemes : Lexemes k) : (Green k, [(Int, String)]) =
+  match lexemes with
+  | Lexemes text _ _ _ _ ->
+      runSt (\() ->
+        let b = Builder (B.buffer ()) (B.buffer ()) (B.buffer ()) (B.buffer ()) (B.buffer ()) (stNewRef 0) (stNewRef 0) (B.buffer ()) (stNewRef 0) (B.buffer ()) (B.buffer ()) (stNewRef False) in
+        let _ = walk b lexemes events 0 (eventCount events) in
+        let _ = closeAll b lexemes in
+        -- A parse that opened nothing: one root, holding every token.
+        let _ = if B.len (kindsOf b) == 0 then (let _ = openSlot b root in let _ = remaining b lexemes in closeTop b) else () in
+        match b with
+        | Builder kinds starts stops sizes parents _ _ _ _ errAt errMsg _ ->
+            let g = fromTables text (B.freeze kinds) (B.freeze starts) (B.freeze stops) (B.freeze sizes) (B.freeze parents) in
+            let errs = V.map (\i -> (B.at errAt i, B.at errMsg i)) (V.range 0 (B.len errAt)) in
+            (g, errs))
 
-fun step lexemes st e =
-  match e with
-  | Open k ->
-      let st2 = if V.isEmpty st.stack then st else trivia lexemes st in
-      { st2 | stack = V.pushBack st2.stack (k, []) }
-  | Advance ->
-      let st2 = trivia lexemes st in
-      (match V.get lexemes st2.cursor with
-       | Just l -> take (append st2 (green l)) l
-       | None -> st2)
-  | Error msg ->
-      let st2 = trivia lexemes st in
-      { st2 | errors = V.pushBack st2.errors (st2.offset, msg) }
-  | Close ->
-      if V.len st.stack <= 1 then closeAll lexemes st
+fun kindsOf b = match b with | Builder kinds _ _ _ _ _ _ _ _ _ _ _ -> kinds
+
+fun walk b lexemes events (i : Int) (n : Int) =
+  if i >= n then ()
+  else
+    let _ = step b lexemes events i in
+    walk b lexemes events (i + 1) n
+
+fun step b lexemes events (i : Int) =
+  match b with
+  | Builder _ _ _ _ _ cursor offset _ depth errAt errMsg closed ->
+      if stGetRef closed then ()
+      else if isOpenAt events i then
+        let _ = if stGetRef depth > 0 then trivia b lexemes else () in
+        openSlot b (openKindAt events i)
+      else if isAdvanceAt events i then
+        let _ = trivia b lexemes in
+        if stGetRef cursor < lexemeCount lexemes then take b lexemes else ()
+      else if isCloseAt events i then
+        if stGetRef depth <= 1 then closeAll b lexemes else closeTop b
       else
-        match V.last st.stack with
-        | Just frame -> append { st | stack = V.popBack st.stack } (node (fst frame) (snd frame))
-        | None -> st
+        let _ = trivia b lexemes in
+        let _ = B.push errAt (stGetRef offset) in
+        let _ = B.push errMsg (messageAt events i) in
+        ()
 
--- Put every trivia token from the cursor on into the node being read.
-fun trivia lexemes st =
-  match V.get lexemes st.cursor with
-  | Just l -> if isTrivia l then trivia lexemes (take (append st (green l)) l) else st
-  | None -> st
+fun lexemeCount ls = match ls with | Lexemes _ ks _ _ _ -> arrayLen ks
+
+-- A node of kind `k` opening here, inside the one open.
+fun openSlot b k =
+  match b with
+  | Builder kinds starts stops sizes parents _ offset stack depth _ _ _ ->
+      let d = stGetRef depth in
+      let parent = if d > 0 then B.at stack (d - 1) else 0 - 1 in
+      let at = stGetRef offset in
+      let slot = B.push kinds k in
+      let _ = B.push starts at in
+      let _ = B.push stops at in
+      let _ = B.push sizes 1 in
+      let _ = B.push parents parent in
+      let _ = if d < B.len stack then B.put stack d slot else (let _ = B.push stack slot in ()) in
+      stSetRef depth (d + 1)
+
+-- The innermost node open, closed here.
+fun closeTop b =
+  match b with
+  | Builder kinds _ stops sizes _ _ offset stack depth _ _ _ ->
+      let d = stGetRef depth in
+      if d <= 0 then ()
+      else
+        let slot = B.at stack (d - 1) in
+        let _ = B.put sizes slot (B.len kinds - slot) in
+        let _ = B.put stops slot (stGetRef offset) in
+        stSetRef depth (d - 1)
+
+-- Every trivia token from the cursor on, into the node being read.
+fun trivia b lexemes =
+  match (b, lexemes) with
+  | (Builder _ _ _ _ _ cursor _ _ _ _ _ _, Lexemes _ _ _ ts _) ->
+      let c = stGetRef cursor in
+      if c < arrayLen ts and arrayGet ts c then (let _ = take b lexemes in trivia b lexemes) else ()
+
+-- The next token, into the node being read -- nowhere, if none is open.
+fun take b lexemes =
+  match (b, lexemes) with
+  | (Builder _ _ _ _ _ cursor offset stack depth _ _ _, Lexemes _ ks ends _ _) ->
+      let c = stGetRef cursor in
+      let from = stGetRef offset in
+      let to = arrayGet ends c in
+      let d = stGetRef depth in
+      let _ = if d > 0 then tokenSlot b (arrayGet ks c) from to (B.at stack (d - 1)) else () in
+      let _ = stSetRef cursor (c + 1) in
+      stSetRef offset to
+
+-- A token's slot: of kind `k`, from byte `from` to `to`, inside `parent`.
+fun tokenSlot b k (from : Int) (to : Int) (parent : Int) =
+  match b with
+  | Builder kinds starts stops sizes parents _ _ _ _ _ _ _ ->
+      let _ = B.push kinds k in
+      let _ = B.push starts from in
+      let _ = B.push stops to in
+      let _ = B.push sizes 0 in
+      let _ = B.push parents parent in
+      ()
 
 -- Close every open node, the root last, with every token still unread in it.
-fun closeAll lexemes st =
-  if V.isEmpty st.stack then st
-  else if V.len st.stack == 1 then
-    let rest = remaining lexemes st in
-    match V.last rest.stack with
-    | Just frame -> { rest | stack = [], done = [node (fst frame) (snd frame)] }
-    | None -> rest
-  else
-    match V.last st.stack with
-    | Just frame -> closeAll lexemes (append { st | stack = V.popBack st.stack } (node (fst frame) (snd frame)))
-    | None -> st
+fun closeAll b lexemes =
+  match b with
+  | Builder _ _ _ _ _ _ _ _ depth _ _ closed ->
+      let d = stGetRef depth in
+      if d == 0 then ()
+      else if d == 1 then
+        let _ = remaining b lexemes in
+        let _ = closeTop b in
+        stSetRef closed True
+      else
+        let _ = closeTop b in
+        closeAll b lexemes
 
-fun remaining lexemes st =
-  match V.get lexemes st.cursor with
-  | Just l -> remaining lexemes (take (append st (green l)) l)
-  | None -> st
-
--- `g` as the last child of the node being read.
-fun append st g =
-  match V.last st.stack with
-  | Just frame -> { st | stack = V.set st.stack (V.len st.stack - 1) (fst frame, V.pushBack (snd frame) g) }
-  | None -> st
-
--- Past `l`.
-fun take st l = { st | cursor = st.cursor + 1, offset = st.offset + stringByteLength (textOf l) }
-
-fun green l = match l with | Lexeme k t _ -> token k t
-
-fun textOf l = match l with | Lexeme _ t _ -> t
-
-fun isTrivia l = match l with | Lexeme _ _ t -> t
+fun remaining b lexemes =
+  match b with
+  | Builder _ _ _ _ _ cursor _ _ _ _ _ _ ->
+      if stGetRef cursor < lexemeCount lexemes then (let _ = take b lexemes in remaining b lexemes) else ()
 
 -- --- tests -------------------------------------------------------------------
 
 use Std.Test (assertEq)
 use Lingua.Green (text, dump)
+use Lingua.Parser (parser, open, close, advance, error, events)
 
 -- `let x` with a space before, between and after.
-def sample : [Lexeme String] =
-  [Lexeme "ws" " " True, Lexeme "let" "let" False, Lexeme "ws" " " True, Lexeme "ident" "x" False, Lexeme "ws" "\n" True]
+def sample : Lexemes String =
+  lexemesOf " let x\n" #["ws", "let", "ws", "ident", "ws"] #[1, 4, 5, 6, 7] #[True, False, True, False, True]
+
+-- What a parse says, from a script: 0 opens, 1 takes a token, 2 says what is
+-- wrong, and 3 closes the innermost node -- the last one as the file.
+fun said (script : [Int]) : Events String =
+  runSt (\() ->
+    let p = parser #["let", "ident"] "eof" "error" (\k -> k) in
+    let marks = stNewRef [] in
+    let _ =
+      V.foldl
+        (\u s ->
+          if s == 0 then (let m = open p in stSetRef marks (V.pushBack (stGetRef marks) m))
+          else if s == 1 then advance p
+          else if s == 2 then error p "expected `=`"
+          else
+            let ms = stGetRef marks in
+            let _ = close p (V.getOr 0 ms (V.len ms - 1)) (if V.len ms == 1 then "File" else "Let") in
+            stSetRef marks (V.popBack ms))
+        ()
+        script in
+      events p)
 
 @test fun everyByteIsInTheTree () =
-  let events = [Open "File", Open "Let", Advance, Advance, Close, Close] in
-  match build "File" events sample with
+  match build "File" (said [0, 0, 1, 1, 3, 3]) sample with
   | (g, errs) ->
       let a = assertEq (text g) " let x\n" "the file, back" in
       assertEq
@@ -114,11 +228,13 @@ def sample : [Lexeme String] =
         "leading trivia outside the node, trailing trivia at the root"
 
 @test fun anErrorIsAtTheByteItWasSaid () =
-  let events = [Open "File", Advance, Error "expected `=`", Close] in
-  match build "File" events sample with
+  match build "File" (said [0, 1, 2, 3]) sample with
   | (g, errs) -> assertEq errs [(5, "expected `=`")] "where the `x` starts, past the space"
 
 @test fun tokensNeverTakenStillBelong () =
-  let events = [Open "File", Advance, Close] in
-  match build "File" events sample with
+  match build "File" (said [0, 1, 3]) sample with
   | (g, errs) -> assertEq (text g) " let x\n" "the `x` the parser never read is there too"
+
+@test fun aParseThatSaidNothingIsOneRoot () =
+  match build "File" (said []) sample with
+  | (g, errs) -> assertEq (dump (\k -> k) g) "File\n  ws \" \"\n  let \"let\"\n  ws \" \"\n  ident \"x\"\n  ws \"\\n\"" "every token in it"

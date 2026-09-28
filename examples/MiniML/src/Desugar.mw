@@ -37,31 +37,34 @@ use Std.Maybe as M
 -- read as a `let`, so the rest of the program is still checked.
 pass! {
   pub desugar : Resolved -> Core
-    | Atom { atom } -> atomExpr atom
-    | App { func, arg } -> App { func = func, arg = atomExpr arg }
+    | Atom { atom } -> atomExpr out atom
+    | App { func, arg } -> App { func = func, arg = atomExpr out arg }
     | Bin { lhs, op, rhs } -> Prim { op = op, args = [lhs, rhs] }
-    | Lam { params, body } -> lambdas here params body
+    | Lam { params, body } -> lambdas out here params body
     | Let { recursive, id, params, value, body } ->
         (match (recursive, V.get params 0) with
-         | (True, Just first) -> LetRec { id = id, param = first, value = lambdas here (V.drop params 1) value, body = body }
+         | (True, Just first) -> LetRec { id = id, param = first, value = lambdas out here (V.drop params 1) value, body = body }
          | (True, None) ->
              (let u = say (errorAt here "`let rec` needs an argument" |> withNote "a recursive value that is not a function has nothing to stand on: write `let rec f x = …`") in
                Let { id = id, value = value, body = body })
-         | _ -> Let { id = id, value = lambdas here params value, body = body })
+         | _ -> Let { id = id, value = lambdas out here params value, body = body })
 }
 
 -- `fun` of each of `params` in turn, around `body`: each where the node
--- that took them was, `at`.
-fun lambdas (at : Meta) (params : [Int]) (body : CoreExpr) : CoreExpr =
-  V.foldr (\p acc -> CoreExpr.Lam { meta = at, param = p, body = acc }) body params
+-- that took them was, `at`, and written into `out`.
+fun lambdas out (at : Meta) (params : [Int]) (body : CoreExpr) =
+  V.foldr (\p acc -> newCoreLam out at p acc) body params
 
--- An atom, as the expression it is.
-fun atomExpr (a : CoreAtom) : CoreExpr =
-  match a with
-  | CoreAtom.Literal r -> CoreExpr.Int { meta = r.meta, value = M.unwrapOr 0 (S.toInt r.number) }
-  | CoreAtom.BoolLit r -> CoreExpr.Bool { meta = r.meta, value = r.value == "true" }
-  | CoreAtom.NameRef r -> CoreExpr.Var { meta = r.meta, id = r.id }
-  | CoreAtom.Paren r -> r.expr
+-- An atom, as the expression it is: read off the atom `out` has just been
+-- given, and written after it.
+fun atomExpr out (a : CoreAtom) =
+  let s = coreStartIn out a in
+  let e = coreEndIn out a in
+  match kindCoreAtomIn out a with
+  | CoreAtomKind.Literal -> newCoreIntSpan out s e (M.unwrapOr 0 (S.toInt (coreLiteralNumberIn out a)))
+  | CoreAtomKind.BoolLit -> newCoreBoolSpan out s e (coreBoolLitValueIn out a == "true")
+  | CoreAtomKind.NameRef -> newCoreVarSpan out s e (coreNameRefIdIn out a)
+  | CoreAtomKind.Paren -> coreParenExprIn out a
 
 -- The expression a program is.
-@pub fun programExpr (f : CoreFile) : CoreExpr = match f with | CoreFile.File r -> r.expr
+@pub fun programExpr (p : CoreProgram) : CoreExpr = coreFileExpr (coreArena p) (coreRoot p)

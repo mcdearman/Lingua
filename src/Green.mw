@@ -1,12 +1,25 @@
--- The green tree: what a file says, every byte of it, and nothing about where.
+-- The green tree: what a file says, every byte of it, and nothing about where
+-- the file is.
 --
--- A node is a kind, how many bytes it covers, and its children; a token is a
--- kind and its exact text -- whitespace and comments included, so the tokens
--- of a tree, in order, are the file. There are no offsets and no parents: a
--- subtree means the same wherever it sits, so two versions of a file can share
--- the parts that did not change, and a result computed from one can be
--- compared with the result from the other by value. Where things are is the
--- red view's business (`Lingua.Red`).
+-- A tree is a text and a handful of tables, one slot per node or token, in
+-- the order they are met reading down and left to right: its kind, where it
+-- starts and ends in the text, how many slots its subtree takes -- 0 for a
+-- token -- and the slot of its parent. The first slot is the root, and a
+-- node's children follow it, each after the whole subtree of the one before.
+-- A token is a kind and a range of the text, so the tokens, in order, are the
+-- file: whitespace and comments included.
+--
+-- Nothing in it is counted but the tables themselves. A tree of a hundred
+-- thousand tokens is six blocks, not a hundred thousand, so passing one around
+-- or dropping it costs what one value does -- where a node or token a block
+-- each is a count moved at every step of every walk, and a block freed at the
+-- end.
+--
+-- Positions are the tree's own: a tree starts at 0, whatever file it came
+-- from. `subtree` copies a node out as a tree of its own, with its text, so
+-- that the same declaration read from two versions of a file is the same
+-- value however far it moved -- what lets a query that read it cut off. Where
+-- a node is in the file is the red view's business (`Lingua.Red`).
 --
 -- `k` is the language's kind type, written by `syntax!`.
 
@@ -15,59 +28,124 @@ use Std.String as S
 
 use Green.*
 
-@pub data Green k
-  = Node k Int [Green k]
-  | Token k String
+@derive(Debug, PartialEq)
+@pub data Green k = Green String #[k] #[Int] #[Int] #[Int] #[Int]
 
--- A node of kind `k` over `children`, its width theirs.
-@pub fun node (k : k) (children : [Green k]) : Green k = Node k (V.sum (V.map width children)) children
+-- A tree from its tables, as `Lingua.Build` writes them: the text, and for
+-- each slot its kind, start, end, subtree size (0 for a token) and parent (-1
+-- for the root).
+@pub fun fromTables (text : String) (kinds : #[k]) (starts : #[Int]) (ends : #[Int]) (sizes : #[Int]) (parents : #[Int]) : Green k =
+  Green text kinds starts ends sizes parents
 
 -- A token of kind `k` whose text is `text`.
-@pub fun token (k : k) (text : String) : Green k = Token k text
+@pub fun token (k : k) (text : String) : Green k = Green text #[k] #[0] #[stringByteLength text] #[0] #[0 - 1]
 
-@pub fun kind (g : Green k) : k =
+-- A node of kind `k` over `children`, in order: a copy of each, one after the
+-- other. What a test writes a tree with; a parse builds the tables directly.
+@pub fun node (k : k) (children : [Green k]) : Green k =
+  let root = Green "" #[k] #[0] #[0] #[1] #[0 - 1] in
+  match V.foldl graft root children with
+  | Green t ks ss es zs ps ->
+      Green t ks (arraySet ss 0 0) (arraySet es 0 (stringByteLength t)) (arraySet zs 0 (arrayLen ks)) ps
+
+-- `c`'s slots after `g`'s, `c`'s root a child of `g`'s.
+fun graft (g : Green k) (c : Green k) : Green k =
+  match (g, c) with
+  | (Green t ks ss es zs ps, Green ct cks css ces czs cps) ->
+      let off = stringByteLength t in
+      let base = arrayLen ks in
+      Green
+        (t ++ ct)
+        (arrayConcat ks cks)
+        (arrayConcat ss (shifted off css))
+        (arrayConcat es (shifted off ces))
+        (arrayConcat zs czs)
+        (arrayConcat ps (V.toArray (V.map (\p -> if p < 0 then 0 else p + base) (V.fromArray cps))))
+
+fun shifted (by : Int) (xs : #[Int]) : #[Int] = V.toArray (V.map (\x -> x + by) (V.fromArray xs))
+
+-- --- a slot ------------------------------------------------------------------
+
+-- How many slots the tree has.
+@pub fun slots (g : Green k) : Int = match g with | Green _ ks _ _ _ _ -> arrayLen ks
+
+@pub fun kindAt (g : Green k) (i : Int) : k = match g with | Green _ ks _ _ _ _ -> arrayGet ks i
+
+@pub fun startAt (g : Green k) (i : Int) : Int = match g with | Green _ _ ss _ _ _ -> arrayGet ss i
+
+@pub fun endAt (g : Green k) (i : Int) : Int = match g with | Green _ _ _ es _ _ -> arrayGet es i
+
+@pub fun isTokenAt (g : Green k) (i : Int) : Bool = match g with | Green _ _ _ _ zs _ -> arrayGet zs i == 0
+
+-- The slot of `i`'s parent; -1 for the root.
+@pub fun parentAt (g : Green k) (i : Int) : Int = match g with | Green _ _ _ _ _ ps -> arrayGet ps i
+
+-- The slot after `i`'s subtree: its next sibling, if it has one.
+@pub fun after (g : Green k) (i : Int) : Int =
   match g with
-  | Node k _ _ -> k
-  | Token k _ -> k
+  | Green _ _ _ _ zs _ -> (let z = arrayGet zs i in if z == 0 then i + 1 else i + z)
+
+-- The slot of `i`'s first child; -1 if it has none.
+@pub fun firstChild (g : Green k) (i : Int) : Int = if i + 1 < after g i then i + 1 else 0 - 1
+
+-- The slot of the child of `p` after its child `c`; -1 if `c` is the last.
+@pub fun nextSibling (g : Green k) (p : Int) (c : Int) : Int =
+  let n = after g c in
+  if n < after g p then n else 0 - 1
+
+-- The slots of `i`'s children, in order.
+@pub fun childSlots (g : Green k) (i : Int) : [Int] =
+  let stop = after g i in
+  let rec go c acc = if c >= stop then acc else go (after g c) (V.pushBack acc c) in
+  go (i + 1) []
+
+-- The text of slot `i`.
+@pub fun textAt (g : Green k) (i : Int) : String =
+  match g with
+  | Green t _ ss es _ _ -> stringSlice t (arrayGet ss i) (arrayGet es i)
+
+-- Slot `i`'s subtree as a tree of its own: its text, and its slots, starting
+-- from 0.
+@pub fun subtree (g : Green k) (i : Int) : Green k =
+  match g with
+  | Green t ks ss es zs ps ->
+      let stop = after g i in
+      let from = arrayGet ss i in
+      let cut = \xs -> arraySlice xs i stop in
+      Green
+        (stringSlice t from (arrayGet es i))
+        (cut ks)
+        (shifted (0 - from) (cut ss))
+        (shifted (0 - from) (cut es))
+        (cut zs)
+        (arraySet (shifted (0 - i) (cut ps)) 0 (0 - 1))
+
+-- --- the whole tree ------------------------------------------------------------
+
+@pub fun kind (g : Green k) : k = kindAt g 0
 
 -- How many bytes of the file it covers.
-@pub fun width (g : Green k) : Int =
-  match g with
-  | Node _ w _ -> w
-  | Token _ t -> stringByteLength t
+@pub fun width (g : Green k) : Int = match g with | Green t _ _ _ _ _ -> stringByteLength t
 
--- Its children; a token has none.
-@pub fun children (g : Green k) : [Green k] =
-  match g with
-  | Node _ _ cs -> cs
-  | Token _ _ -> []
+-- Its children, each a tree of its own; a token has none.
+@pub fun children (g : Green k) : [Green k] = V.map (subtree g) (childSlots g 0)
 
-@pub fun isToken (g : Green k) : Bool =
-  match g with
-  | Token _ _ -> True
-  | Node _ _ _ -> False
+@pub fun isToken (g : Green k) : Bool = isTokenAt g 0
 
--- Every token under it, in order.
-@pub fun tokens (g : Green k) : [Green k] =
-  match g with
-  | Token _ _ -> [g]
-  | Node _ _ cs -> V.concatMap tokens cs
+-- Every token under it, in order, each a tree of its own.
+@pub fun tokens (g : Green k) : [Green k] = V.map (subtree g) (V.filter (isTokenAt g) (V.range 0 (slots g)))
 
--- The text it covers: its tokens' texts, in order. For the root, the file.
-@pub fun text (g : Green k) : String =
-  match g with
-  | Token _ t -> t
-  | Node _ _ _ -> S.join "" (V.map (\t -> match t with | Token _ s -> s | Node _ _ _ -> "") (tokens g))
+-- The text it covers. For the root, the file.
+@pub fun text (g : Green k) : String = match g with | Green t _ _ _ _ _ -> t
 
 -- The tree drawn one line per node or token, indented by depth: what a test
 -- compares a parse against.
-@pub fun dump (show : k -> String) (g : Green k) : String = S.join "\n" (dumpLines show 0 g)
+@pub fun dump (show : k -> String) (g : Green k) : String = S.join "\n" (dumpLines show g 0 0)
 
-fun dumpLines show depth g =
+fun dumpLines show g (i : Int) (depth : Int) =
   let pad = S.join "" (V.replicate depth "  ") in
-  match g with
-  | Token k t -> [pad ++ show k ++ " " ++ debug t]
-  | Node k _ cs -> V.pushFront (V.concatMap (dumpLines show (depth + 1)) cs) (pad ++ show k)
+  if isTokenAt g i then [pad ++ show (kindAt g i) ++ " " ++ debug (textAt g i)]
+  else V.pushFront (V.concatMap (\c -> dumpLines show g c (depth + 1)) (childSlots g i)) (pad ++ show (kindAt g i))
 
 -- --- tests -------------------------------------------------------------------
 
@@ -81,3 +159,10 @@ use Std.Test (assertEq)
 @test fun aTreeIsDrawnByDepth () =
   let g = node "Sum" [token "Num" "1", node "Rest" [token "Plus" "+"]] in
   assertEq (dump (\k -> k) g) "Sum\n  Num \"1\"\n  Rest\n    Plus \"+\"" "one line each"
+
+@test fun aSubtreeIsTheSameWhereverItWas () =
+  let rest = node "Rest" [token "Plus" "+", token "Num" "2"] in
+  let near = node "Sum" [token "Num" "1", rest] in
+  let far = node "Sum" [token "Num" "100", token "Space" "  ", rest] in
+  let a = assertEq (V.getOr near (children near) 1) rest "copied out of one" in
+  assertEq (V.getOr far (children far) 2) (V.getOr near (children near) 1) "and equal to the one further along"

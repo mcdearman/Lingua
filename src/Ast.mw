@@ -8,28 +8,57 @@
 
 use Std.Collections.Vector as V
 use Std.Maybe.Maybe.*
-use Lingua.Red (Syntax, nodes, tokens, kindOf)
+use Lingua.Red (Syntax, kindOf, childWhere, childrenWhere)
+use Lingua.Red.Syntax.*
+use Lingua.Green (isTokenAt, kindAt, firstChild, nextSibling)
+
+-- Each walks the children slot by slot, and makes a `Syntax` only for the
+-- ones it hands to `cast` or answers.
 
 -- The `n`th child node, counting only those that cast.
-@pub fun nthChild (cast : Syntax k -> Maybe a) (n : Int) (s : Syntax k) : Maybe a = V.get (childrenOf cast s) n
+@pub fun nthChild (cast : Syntax k -> Maybe a) (n : Int) (s : Syntax k) : Maybe a =
+  match s with
+  | Syntax g i -> nthCast cast g i (firstChild g i) n
+
+fun nthCast cast g (p : Int) (c : Int) (m : Int) =
+  if c < 0 then None
+  else if isTokenAt g c then nthCast cast g p (nextSibling g p c) m
+  else
+    match cast (Syntax g c) with
+    | Just x -> if m == 0 then Just x else nthCast cast g p (nextSibling g p c) (m - 1)
+    | None -> nthCast cast g p (nextSibling g p c) m
 
 -- The `n`th child node of any kind, if it casts: what tells apart two
 -- children whose types overlap -- `func:Expr arg:Atom`, where an `Atom` is an
 -- `Expr` too -- by where they are rather than by what they are.
 @pub fun nthNodeAs (cast : Syntax k -> Maybe a) (n : Int) (s : Syntax k) : Maybe a =
-  match V.get (nodes s) n with
-  | Just c -> cast c
-  | None -> None
+  match s with
+  | Syntax g i -> nthNode cast g i (firstChild g i) n
+
+fun nthNode cast g (p : Int) (c : Int) (m : Int) =
+  if c < 0 then None
+  else if isTokenAt g c then nthNode cast g p (nextSibling g p c) m
+  else if m == 0 then cast (Syntax g c)
+  else nthNode cast g p (nextSibling g p c) (m - 1)
 
 -- Every child node that casts, in order.
 @pub fun childrenOf (cast : Syntax k -> Maybe a) (s : Syntax k) : [a] =
-  V.concatMap (\c -> match cast c with | Just x -> [x] | None -> []) (nodes s)
+  match s with
+  | Syntax g i -> castAll cast g i (firstChild g i) []
+
+fun castAll cast g (p : Int) (c : Int) acc =
+  if c < 0 then acc
+  else if isTokenAt g c then castAll cast g p (nextSibling g p c) acc
+  else
+    match cast (Syntax g c) with
+    | Just x -> castAll cast g p (nextSibling g p c) (V.pushBack acc x)
+    | None -> castAll cast g p (nextSibling g p c) acc
 
 -- The first child token of one of the kinds `ks`.
-@pub fun tokenOf (ks : [k]) (s : Syntax k) : Maybe (Syntax k) = V.find (\t -> V.elem (kindOf t) ks) (tokens s)
+@pub fun tokenOf (ks : [k]) (s : Syntax k) : Maybe (Syntax k) = childWhere (\g c -> isTokenAt g c and V.elem (kindAt g c) ks) s
 
 -- Every child token of one of the kinds `ks`.
-@pub fun tokensOf (ks : [k]) (s : Syntax k) : [Syntax k] = V.filter (\t -> V.elem (kindOf t) ks) (tokens s)
+@pub fun tokensOf (ks : [k]) (s : Syntax k) : [Syntax k] = childrenWhere (\g c -> isTokenAt g c and V.elem (kindAt g c) ks) s
 
 -- --- tests -------------------------------------------------------------------
 

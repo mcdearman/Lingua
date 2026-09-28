@@ -48,18 +48,18 @@ pass! {
          | Just id -> (let u = amend id (\(b : Binder) -> { b | uses = V.pushBack b.uses here }) in NameRef { id = id })
          | None -> (let u = say (errorAt here "unbound variable: ${ident}") in NameRef { id = unbound }))
     | Lam { params, later body } ->
-        (let ids = V.map (\p -> declare (paramIdent p) (metaResolvedParam p) "parameter") params in
-          let b = body (bindAll params ids env) in
+        (let ids = V.map (\p -> declare (paramIdent out p) (metaResolvedParam p) "parameter") params in
+          let b = body (bindAll out params ids env) in
           let u = seenIn ids [metaResolvedExpr b] in
           Lam { params = ids, body = b })
     | Let { recursive, name, params, later value, later body } ->
         (let rec = M.isSome recursive in
-          let self = declare (nameIdent name) (metaResolvedName name) "variable" in
-          let outer = (nameIdent name, self) :: env in
-          let ids = V.map (\p -> declare (paramIdent p) (metaResolvedParam p) "parameter") params in
-          let v = value (bindAll params ids (if rec then outer else env)) in
+          let self = declare (nameIdent out name) (metaResolvedName name) "variable" in
+          let outer = (nameIdent out name, self) :: env in
+          let ids = V.map (\p -> declare (paramIdent out p) (metaResolvedParam p) "parameter") params in
+          let v = value (bindAll out params ids (if rec then outer else env)) in
           let b = body outer in
-          let kind = if not (V.isEmpty ids) or isLam v then "function" else "variable" in
+          let kind = if not (V.isEmpty ids) or isLam out v then "function" else "variable" in
           let scopes = if rec then [metaResolvedExpr v, metaResolvedExpr b] else [metaResolvedExpr b] in
           let u = amend self (\(x : Binder) -> { x | kind = kind, scopes = scopes }) in
           let w = seenIn ids [metaResolvedExpr v] in
@@ -72,17 +72,19 @@ fun declare (name : String) (at : Meta) (kind : String) : Int ! { Table Binder |
 
 fun seenIn (ids : [Int]) (scopes : [Meta]) = V.foldl (\u id -> amend id (\(b : Binder) -> { b | scopes = scopes })) () ids
 
-fun bindAll (ps : [ResolvedParam]) (ids : [Int]) env = V.foldl (\acc p -> (paramIdent (fst p), snd p) :: acc) env (V.zip ps ids)
+-- These read the `Resolved` nodes the pass has written so far -- `out`, the
+-- tables it is writing into.
+fun bindAll out (ps : [ResolvedParam]) (ids : [Int]) env = V.foldl (\acc p -> (paramIdent out (fst p), snd p) :: acc) env (V.zip ps ids)
 
-fun nameIdent (n : ResolvedName) : String = match n with | ResolvedName.Name r -> r.ident
+fun nameIdent out (n : ResolvedName) = resolvedNameIdentIn out n
 
-fun paramIdent (p : ResolvedParam) : String = match p with | ResolvedParam.Param r -> r.ident
+fun paramIdent out (p : ResolvedParam) = resolvedParamIdentIn out p
 
-fun isLam (e : ResolvedExpr) = match e with | ResolvedExpr.Lam _ -> True | _ -> False
+fun isLam out (e : ResolvedExpr) = kindResolvedExprIn out e == ResolvedExprKind.Lam
 
 -- A program resolved, with `imports` -- names another unit exports -- in
 -- scope. Each import is a binder too, entered first: the `i`th is id `i`.
-@pub(pkg) fun resolved (imports : [String]) (s : SurfaceFile) : ResolvedFile ! { Table Binder, Report | e } =
+@pub(pkg) fun resolved (imports : [String]) (s : SurfaceProgram) : ResolvedProgram ! { Table Binder, Report | e } =
   let env = V.foldl (\acc n -> (n, declare n noMeta "import") :: acc) [;] imports in
   resolve env s
 

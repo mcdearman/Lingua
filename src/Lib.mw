@@ -4,6 +4,7 @@
 -- stands on: the green tree, the red view over it, the event parser, and the
 -- builder that makes one from the other.
 
+@pub mod Buf
 @pub mod Green
 @pub mod Red
 @pub mod Parser

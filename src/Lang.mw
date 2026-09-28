@@ -15,6 +15,8 @@ use Std.Maybe.Maybe.*
 use Std.Macro (Datum, Reflect, toDatum, fromDatum)
 use Std.Result.Result.*
 use Lingua.Red (Syntax, range)
+use Lingua.Buf as B
+use Lingua.Buf (Buf)
 use Ty.*
 
 -- What a field holds: a node of a sort of the same language, several, maybe
@@ -84,6 +86,22 @@ use Ty.*
 
 -- A made-up node's: nowhere in particular.
 @pub def noMeta : Meta = Meta 0 0
+
+-- The bytes from `a` up to `b`.
+@pub fun spanMeta (a : Int) (b : Int) : Meta = Meta a b
+
+@pub fun metaStart (m : Meta) : Int = match m with | Meta a _ -> a
+
+@pub fun metaEnd (m : Meta) : Int = match m with | Meta _ b -> b
+
+-- --- what a language's tables stand on ----------------------------------------------
+
+-- `xs` written into a language's slots, how many first: where they start.
+-- What a list field -- or a `Maybe` one, a list of none or one -- holds.
+@pub fun pushList (slots : Buf s Int) (xs : [Int]) : Int ! { St s | e } =
+  let at = B.push slots (V.len xs) in
+  let _ = V.foldl (\u x -> (let _ = B.push slots x in ())) () xs in
+  at
 
 -- --- what a conversion from the typed AST stands on -------------------------------
 

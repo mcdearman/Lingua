@@ -20,25 +20,34 @@ fun showValue v =
   | Value.Bool b -> if b then "true" else "false"
   | _ -> "<function>"
 
-fun eval env (e : CoreExpr) =
-  match e with
-  | CoreExpr.Int r -> Value.Int r.value
-  | CoreExpr.Bool r -> Value.Bool r.value
-  | CoreExpr.Var r -> (match L.lookupAssoc r.id env with | Just v -> v | None -> raise (errorAt r.meta "binder ${show r.id} has no value"))
-  | CoreExpr.Lam r -> Value.Closure r.param r.body env
-  | CoreExpr.App r -> apply r.meta (eval env r.func) (eval env r.arg)
-  | CoreExpr.Let r -> eval ((r.id, eval env r.value) :: env) r.body
-  | CoreExpr.LetRec r -> eval ((r.id, Value.Rec r.id r.param r.value env) :: env) r.body
-  | CoreExpr.If r -> (match eval env r.cond with | Value.Bool True -> eval env r.yes | _ -> eval env r.no)
-  | CoreExpr.Prim r ->
-      (match (V.get r.args 0, V.get r.args 1) with
-       | (Just a, Just b) -> primitive r.meta r.op (eval env a) (eval env b)
-       | _ -> raise (errorAt r.meta "`${r.op}` wants two operands"))
+-- The program's tables are `a`, and a node the row it is in them. Its
+-- production and fields are matched as if they were a constructor's: each
+-- `Core…` pattern is a synonym `lang!` made, which reads the node's kind and
+-- the fields the arm binds from the tables -- nothing is built to match on.
+fun eval (a : CoreArena) env (e : CoreExpr) =
+  match (a, e) with
+  | CoreInt n -> Value.Int n
+  | CoreBool b -> Value.Bool b
+  | CoreVar id ->
+      (match L.lookupAssoc id env with
+       | Just v -> v
+       | None -> raise (errorAt (metaCoreExpr a e) "binder ${show id} has no value"))
+  | CoreLam param body -> Value.Closure param body env
+  | CoreApp func arg -> apply a (metaCoreExpr a e) (eval a env func) (eval a env arg)
+  | CoreLet id value body -> eval a ((id, eval a env value) :: env) body
+  | CoreLetRec id param value body -> eval a ((id, Value.Rec id param value env) :: env) body
+  | CoreIf cond yes no -> (match eval a env cond with | Value.Bool True -> eval a env yes | _ -> eval a env no)
+  | CorePrim op args -> operate a env e op args
 
-fun apply at f x =
+fun operate a env e op args =
+  match (V.get args 0, V.get args 1) with
+  | (Just x, Just y) -> primitive (metaCoreExpr a e) op (eval a env x) (eval a env y)
+  | _ -> raise (errorAt (metaCoreExpr a e) "`${op}` wants two operands")
+
+fun apply a at f x =
   match f with
-  | Value.Closure p body env -> eval ((p, x) :: env) body
-  | Value.Rec name p body env -> eval ((p, x) :: (name, f) :: env) body
+  | Value.Closure p body env -> eval a ((p, x) :: env) body
+  | Value.Rec name p body env -> eval a ((p, x) :: (name, f) :: env) body
   | other -> raise (errorAt at "not a function: ${showValue other}")
 
 fun primitive at op l r =
@@ -56,7 +65,7 @@ fun primitive at op l r =
   | _ -> raise (errorAt at "`${op}` wants numbers")
 
 -- What a program evaluates to, or what went wrong running it, where.
-@pub fun run (e : CoreExpr) : Result Diagnostic String = toResult (\() -> showValue (eval [;] e))
+@pub fun run (p : CoreProgram) : Result Diagnostic String = toResult (\() -> showValue (eval (coreArena p) [;] (programExpr p)))
 
 -- --- tests ---------------------------------------------------------------------------------
 

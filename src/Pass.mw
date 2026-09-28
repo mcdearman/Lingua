@@ -13,15 +13,19 @@
 --     | Bin { lhs, op, rhs } -> Prim { op = op, args = [lhs, rhs] }
 --   }
 --
--- A language is written out as ordinary `data`, a type per sort -- `CoreExpr`
--- -- whose productions each hold an anonymous record: its fields, and a `meta`
--- nobody writes, saying where the node came from. One read off a grammar also
--- gets its conversion from the typed AST: `surfaceFromCalc`.
+-- A language is written out as tables -- see "a language's code" below: a
+-- node is a row, and a program is a handful of arrays, whatever its size.
+-- Every node also has a `meta` nobody writes, saying where it came from. One
+-- read off a grammar also gets its conversion from the typed AST:
+-- `surfaceFromCalc`.
 --
 -- A pass is the cases that change something. Everything else is written for
--- it: a function per sort, the children of every node translated before its
--- case sees them, and a copy of each production the target language kept as
--- it was. A production the target dropped or changed with no case is reported
+-- it: a function per sort, reading the source's tables and writing the
+-- target's, the children of every node translated before its case sees them,
+-- and a copy of each production the target language kept as it was. In a
+-- case, the target's reading functions -- `metaCoreExpr`, `tyTypedExpr` --
+-- read the nodes written so far, and `out` is the target being written, for
+-- a function the case calls to write nodes into or read them from. A production the target dropped or changed with no case is reported
 -- where the pass is. In a case, a production of the target written with a
 -- record -- `Prim { … }` -- is that language's, and gets the `meta` of the
 -- node it replaces. A case's body is ordinary Meadow: it may call anything,
@@ -186,112 +190,453 @@ fun resolve l w =
   | WMaybe x -> TOpt (resolve l x)
   | WName n -> if M.isSome (findSort l n) then TSort n else TPrim n
 
-fun typeName l t =
+-- --- a language's code -------------------------------------------------------------
+--
+-- A language is written out as tables, not as a type of node. Every node of a
+-- program is a row: its production, where it came from, and where its fields
+-- start in one table of slots -- and a node is the number of its row. A field
+-- that is a node, a number or a truth is one slot; a list, or a `Maybe`, is
+-- where its elements start in the slots, how many first; anything else is
+-- kept in a column of its own type, the slot saying where. A program of a
+-- hundred thousand nodes is a handful of arrays: passing it, walking it and
+-- dropping it move no count and free nothing per node.
+--
+-- For a language `Core` the code has
+--
+--   type CoreExpr = Int                   a node of a sort, by its row
+--   data CoreProgram                      the tables, and the root's row
+--   data CoreArena, CoreBuilder lst       the tables, and the same being written
+--   newCoreBuilder, freezeCore            to start writing one, and to finish
+--   newCoreLam b meta param body          a node, written: its row
+--   data CoreExprKind, kindCoreExpr a e   which production a node is
+--   coreLamBody a e                       a field of a node
+--   metaCoreExpr a e                      where a node came from
+--   data CoreExprView, viewCoreExpr a e   a node as a value to match on
+--
+-- and each reading function again, suffixed `In`, reading a builder while it
+-- is written: what a pass reads the nodes it has just made with.
+
+fun lowerOf l = lowerFirst (langName l)
+
+-- Every production of the language: a production's tag is its place here.
+fun allProds l = V.concatMap sortProds (langSorts l)
+
+fun tagOf l p = indexOf p (V.map prodName (allProds l))
+
+fun indexOf x xs = V.foldl (\acc i -> if acc < 0 and V.get xs i == Just x then i else acc) (0 - 1) (V.range 0 (V.len xs))
+
+-- The types kept in columns of their own: every field type that is neither a
+-- node, a number nor a truth, once each.
+fun columns l : [String] =
+  V.foldl
+    (\acc n -> if V.elem n acc then acc else V.pushBack acc n)
+    []
+    (V.concatMap (\p -> V.concatMap (\f -> primsOf (fieldTy f)) (prodFields p)) (allProds l))
+
+fun primsOf t =
   match t with
-  | TSort n -> applied l "${langName l}${n}"
-  | TMany x -> "[${typeName l x}]"
-  | TOpt x -> "(Maybe ${typeName l x})"
-  | TPrim n -> n
+  | TPrim n -> if n == "Int" or n == "Bool" then [] else [n]
+  | TMany x -> primsOf x
+  | TOpt x -> primsOf x
+  | TSort _ -> []
+
+fun columnOf l n = indexOf n (columns l)
+
+-- The type `t` of language `l`, applied to the language's type parameters.
+fun applied l t = if V.isEmpty (langParams l) then t else "(${t} ${S.join " " (langParams l)})"
+
+fun params l = S.join "" (V.map (\p -> " ${p}") (langParams l))
+
+fun arenaTy l = applied l "${langName l}Arena"
+
+fun programTy l = applied l "${langName l}Program"
+
+fun builderTy l = "(${langName l}Builder lst${params l})"
+
+fun paren t = if V.len (S.split " " t) > 1 then "(${t})" else t
+
+-- A field's value, as its type says: a node is its row.
+fun valueTy l t =
+  match t with
+  | TSort n -> "${langName l}${n}"
+  | TMany x -> "[${valueTy l x}]"
+  | TOpt x -> "(Maybe ${valueTy l x})"
+  | TPrim n -> paren n
+
+-- The tables of an arena or a builder, bound by name.
+fun tables l ctor = "${ctor} lingua_kinds lingua_starts lingua_ends lingua_firsts lingua_slots${S.join "" (V.map (\i -> " lingua_c${show i}") (V.range 0 (V.len (columns l))))}"
+
+-- How a reading function reads table `t`'s entry `i`: from an arena's arrays,
+-- or a builder's buffers.
+fun tableGet (builder : Bool) (t : String) (i : String) : String = if builder then "LinguaBuf.at ${t} (${i})" else "arrayGet ${t} (${i})"
+
+fun slotGet builder i = tableGet builder "lingua_slots" i
+
+-- The value of type `t` a slot holding `raw` stands for. `d` numbers the
+-- names a list inside a list binds.
+fun decode l (builder : Bool) (t : Ty) (raw : String) (d : Int) : String =
+  match t with
+  | TSort _ -> raw
+  | TPrim n ->
+      if n == "Int" then raw
+      else if n == "Bool" then "(${raw} != 0)"
+      else tableGet builder "lingua_c${show (columnOf l n)}" raw
+  | TMany x ->
+      let at = "lingua_at${show d}" in
+      let i = "lingua_i${show d}" in
+      "(let ${at} = ${raw} in LinguaV.map (\\${i} -> ${decode l builder x (slotGet builder "${at} + 1 + ${i}") (d + 1)}) (LinguaV.range 0 (${slotGet builder at})))"
+  | TOpt x ->
+      let at = "lingua_at${show d}" in
+      "(let ${at} = ${raw} in if ${slotGet builder at} == 0 then None else Just (${decode l builder x (slotGet builder "${at} + 1") (d + 1)}))"
+
+-- The slot a value `v` of type `t` is written as: itself, or where it went.
+fun encode l (t : Ty) (v : String) (d : Int) : String =
+  match t with
+  | TSort _ -> v
+  | TPrim n ->
+      if n == "Int" then v
+      else if n == "Bool" then "(if ${v} then 1 else 0)"
+      else "LinguaBuf.push lingua_c${show (columnOf l n)} (${v})"
+  | TMany x -> "LinguaL.pushList lingua_slots (${elements l x v d})"
+  | TOpt x ->
+      let y = "lingua_y${show d}" in
+      "LinguaL.pushList lingua_slots (match ${v} with | Just ${y} -> [${encode l x y (d + 1)}] | None -> [])"
+
+fun elements l x v d =
+  if isWord x then v
+  else
+    let y = "lingua_y${show d}" in
+    "LinguaV.map (\\${y} -> ${encode l x y (d + 1)}) (${v})"
+
+-- Whether a value of type `t` is its own slot.
+fun isWord t = match t with | TSort _ -> True | TPrim n -> n == "Int" | _ -> False
 
 fun header =
   "use Lingua.Lang (Meta)
 use Lingua.Lang as LinguaL
 use Lingua.Red as LinguaR
+use Lingua.Buf as LinguaBuf
+use Lingua.Buf (Buf)
 use Std.Maybe as LinguaM
 use Std.Collections.Vector as LinguaV
 "
 
 fun langCode pub (l : Lang) : String =
-  let ln = langName l in
-  header ++ S.join "\n" (V.map (\s -> sortCode pub l s) (langSorts l)) ++ (if langGrammar l == "" then "" else fromCode pub l)
+  V.foldl
+    (\acc x -> acc ++ x)
+    ""
+    (V.concat
+      [ [header, tablesCode pub l],
+        V.map (\s -> sortCode pub l s) (langSorts l),
+        V.map (\s -> patternCode pub l s) (langSorts l),
+        V.map (\p -> prodCode pub l p) (allProds l),
+        [if langGrammar l == "" then "" else fromCode pub l] ])
 
--- The type `t` of language `l`, applied to the language's type parameters.
-fun applied l t = if V.isEmpty (langParams l) then t else "(${t} ${S.join " " (langParams l)})"
+fun tablesCode pub l =
+  let n = langName l in
+  let lower = lowerOf l in
+  let cols = columns l in
+  let colTys = S.join "" (V.map (\c -> " #[${c}]") cols) in
+  let colBufs = S.join "" (V.map (\c -> " (Buf lst (${c}))") cols) in
+  let bufs = S.join "" (V.map (\i -> " (LinguaBuf.buffer ())") (V.range 0 (5 + V.len cols))) in
+  let names = V.append ["lingua_kinds", "lingua_starts", "lingua_ends", "lingua_firsts", "lingua_slots"] (V.map (\i -> "lingua_c${show i}") (V.range 0 (V.len cols))) in
+  let frozen = S.join "" (V.map (\t -> " (LinguaBuf.freeze ${t})") names) in
+  "
+-- `${n}`'s tables, as a program's are kept: each node's production, where it
+-- came from, and where its fields start in the slots; the slots; and the
+-- columns the fields that are neither nodes, numbers nor truths are kept in.
+${pub}data ${n}Arena${params l} = ${n}Arena #[Int] #[Int] #[Int] #[Int] #[Int]${colTys}
+
+-- The same, being written.
+${pub}data ${n}Builder lst${params l} = ${n}Builder (Buf lst Int) (Buf lst Int) (Buf lst Int) (Buf lst Int) (Buf lst Int)${colBufs}
+
+-- A `${n}` program: its tables, and its root.
+${pub}data ${n}Program${params l} = ${n}Program ${arenaTy l} Int
+
+${pub}fun ${lower}Arena (p : ${programTy l}) : ${arenaTy l} = match p with | ${n}Program a _ -> a
+
+${pub}fun ${lower}Root (p : ${programTy l}) : Int = match p with | ${n}Program _ r -> r
+
+-- Empty tables, to write a program into.
+${pub}fun new${n}Builder () = ${n}Builder${bufs}
+
+-- What has been written, as a program's tables.
+${pub}fun freeze${n} (b : ${builderTy l}) = match b with | ${tables l "${n}Builder"} -> ${n}Arena${frozen}
+
+-- Where a node starts and ends.
+${pub}fun ${lower}Start (a : ${arenaTy l}) (e : Int) : Int = match a with | ${tables l "${n}Arena"} -> arrayGet lingua_starts e
+
+${pub}fun ${lower}End (a : ${arenaTy l}) (e : Int) : Int = match a with | ${tables l "${n}Arena"} -> arrayGet lingua_ends e
+
+${pub}fun ${lower}StartIn (b : ${builderTy l}) (e : Int) = match b with | ${tables l "${n}Builder"} -> LinguaBuf.at lingua_starts e
+
+${pub}fun ${lower}EndIn (b : ${builderTy l}) (e : Int) = match b with | ${tables l "${n}Builder"} -> LinguaBuf.at lingua_ends e
+"
 
 fun sortCode pub l s =
-  let t = "${langName l}${sortName s}" in
+  let n = langName l in
+  let t = "${n}${sortName s}" in
   let prods = sortProds s in
   "
-${pub}data ${t}${S.join "" (V.map (\p -> " ${p}") (langParams l))} = ${S.join " | " (V.map (\p -> "${prodName p} ({ ${S.join ", " (V.pushFront (V.map (\f -> "${fieldName f} : ${typeName l (fieldTy f)}") (prodFields p)) "meta : Meta")} })") prods)}
+-- A `${sortName s}` of a `${n}` program: the row of its node.
+${pub}type ${t} = Int
+${if V.isEmpty prods then "" else kindCode pub l s ++ viewCode pub l s ++ copyCode pub l s ++ S.join "" (V.map (\f -> shared pub l s f) (common prods))}"
+
+-- A node copied out with everything under it, as a program of its own whose
+-- root it is: what a query answers when what matters is one part of a
+-- program, so that the same part is the same value whatever is around it --
+-- a comment after it, a declaration before it. `Lingua.Green.subtree` is the
+-- same for a tree.
+fun copyCode pub l s =
+  let n = langName l in
+  let lower = lowerOf l in
+  let t = "${n}${sortName s}" in
+  let copied = copyArm l t in
+  "
+fun ${lower}Copy${sortName s} (lingua_src : ${arenaTy l}) lingua_out (e : Int) =
+  match kind${t} lingua_src e with
+${S.join "\n" (V.map copied (sortProds s))}
+
+-- `${t}` `e` of `a`, and everything under it, as a program of its own.
+${pub}fun sub${t} (a : ${arenaTy l}) (e : Int) : ${programTy l} =
+  runSt (\\() ->
+    let lingua_out = new${n}Builder () in
+    let lingua_r = ${lower}Copy${sortName s} a lingua_out e in
+    ${n}Program (freeze${n} lingua_out) lingua_r)
+"
+
+-- One production's arm of a copy: the node written again, its nodes copied.
+fun copyArm l t p =
+  let n = langName l in
+  let lower = lowerOf l in
+  let fs = V.map (\f -> " (${copyField l (fieldTy f) "${lower}${prodName p}${upperFirst (fieldName f)} lingua_src e"})") (prodFields p) in
+  "  | ${t}Kind.${prodName p} -> new${n}${prodName p}Span lingua_out (${lower}Start lingua_src e) (${lower}End lingua_src e)${S.join "" fs}"
+
+fun copyField l t v =
+  match t with
+  | TSort n -> "${lowerOf l}Copy${n} lingua_src lingua_out (${v})"
+  | TMany x -> "LinguaV.map (\\y -> ${copyField l x "y"}) (${v})"
+  | TOpt x -> "LinguaM.map (\\y -> ${copyField l x "y"}) (${v})"
+  | TPrim _ -> v
+
+fun kindCode pub l s =
+  let n = langName l in
+  let t = "${n}${sortName s}" in
+  let prods = sortProds s in
+  let decide = "${lowerOf l}${sortName s}Kind" in
+  let last = V.getOr (Prod "" []) prods (V.len prods - 1) in
+  let tests = V.map (\p -> "if tag == ${show (tagOf l (prodName p))} then ${t}Kind.${prodName p} else ") (V.take prods (V.len prods - 1)) in
+  "
+-- Which production a `${t}` is.
+@derive(Debug, PartialEq)
+${pub}data ${t}Kind = ${S.join " | " (V.map prodName prods)}
+
+fun ${decide} (tag : Int) : ${t}Kind = ${S.join "" tests}${t}Kind.${prodName last}
+
+${pub}fun kind${t} (a : ${arenaTy l}) (e : Int) : ${t}Kind = match a with | ${tables l "${n}Arena"} -> ${decide} (arrayGet lingua_kinds e)
+
+${pub}fun kind${t}In (b : ${builderTy l}) (e : Int) = match b with | ${tables l "${n}Builder"} -> ${decide} (LinguaBuf.at lingua_kinds e)
 
 -- Where a `${t}` came from.
-${pub}fun meta${t} (x : ${applied l t}) : Meta =
-  match x with
-${S.join "\n" (V.map (\p -> "  | ${t}.${prodName p} r -> r.meta") prods)}
-${S.join "" (V.map (\f -> shared pub l t prods f) (common prods))}"
+${pub}fun meta${t} (a : ${arenaTy l}) (e : Int) : Meta = match a with | ${tables l "${n}Arena"} -> LinguaL.spanMeta (arrayGet lingua_starts e) (arrayGet lingua_ends e)
+
+${pub}fun meta${t}In (b : ${builderTy l}) (e : Int) = match b with | ${tables l "${n}Builder"} -> LinguaL.spanMeta (LinguaBuf.at lingua_starts e) (LinguaBuf.at lingua_ends e)
+"
+
+fun viewCode pub l s =
+  let n = langName l in
+  let t = "${n}${sortName s}" in
+  let prods = sortProds s in
+  let fieldsTy = \p -> S.join ", " (V.pushFront (V.map (\f -> "${fieldName f} : ${valueTy l (fieldTy f)}") (prodFields p)) "meta : Meta") in
+  let arm = viewArm l t in
+  "
+-- A `${t}` as a value to match on: its production, where it came from and its
+-- fields -- the nodes among them rows still.
+${pub}data ${t}View${params l} = ${S.join " | " (V.map (\p -> "${prodName p} ({ ${fieldsTy p} })") prods)}
+
+${pub}fun view${t} (a : ${arenaTy l}) (e : Int) : ${applied l "${t}View"} =
+  match kind${t} a e with
+${S.join "\n" (V.map (arm "" "a") prods)}
+
+${pub}fun view${t}In (b : ${builderTy l}) (e : Int) =
+  match kind${t}In b e with
+${S.join "\n" (V.map (arm "In" "b") prods)}
+"
+
+-- A `${t}` node with its arena, `(a, e)`, as if its productions were
+-- constructors: `match (a, e) with | CoreLam x b -> …`. Each is a pattern
+-- synonym, of a view of the node's kind and fields, and together they cover
+-- the sort -- and once inlined nothing is left of them but the switch on the
+-- kind and the reads of the fields the arm uses.
+fun patternCode pub l s =
+  let n = langName l in
+  let t = "${n}${sortName s}" in
+  let prods = sortProds s in
+  let names = V.map (\p -> "${n}${prodName p}") prods in
+  "
+${S.join "\n" (V.map (synonymCode pub l t) prods)}
+
+${pub}pattern ${S.join " | " names}
+"
+
+-- One production's synonym, and the view it is of, written in it: what the
+-- node's fields are when it is that production, in the shape a synonym's
+-- matcher answers -- `True` for none, `[x;]` for one, `[(x, y);]` for more.
+-- In the synonym rather than beside it, so the matcher is one function, which
+-- is inlined where it is used.
+fun synonymCode pub l t p =
+  let n = langName l in
+  let fs = prodFields p in
+  let params = V.map (\f -> "f${upperFirst (fieldName f)}") fs in
+  let reads = V.map (\f -> "${lowerOf l}${prodName p}${upperFirst (fieldName f)} a e") fs in
+  let view = "(\\(t : (${arenaTy l}, Int)) -> match t with | (a, e) -> (match kind${t} a e with | ${t}Kind.${prodName p} -> ${answer reads} | _ -> ${nothing (V.len fs)}))" in
+  "
+${pub}pattern ${n}${prodName p} ${S.join " " params} <- (${view} -> ${answer params})
+"
+
+-- What a synonym's matcher answers for `xs`, and when there is nothing to.
+fun answer (xs : [String]) : String =
+  match V.len xs with
+  | 0 -> "True"
+  | 1 -> "[${S.join "" xs};]"
+  | _ -> "[(${S.join ", " xs});]"
+
+fun nothing (k : Int) : String = if k == 0 then "False" else "[;]"
+
+-- One production's arm of a view: the node's fields read into a value, by
+-- the functions with `suffix` from `src`.
+fun viewArm l t (suffix : String) (src : String) p =
+  let fs = V.map (\f -> "${fieldName f} = ${lowerOf l}${prodName p}${upperFirst (fieldName f)}${suffix} ${src} e") (prodFields p) in
+  "  | ${t}Kind.${prodName p} -> ${t}View.${prodName p} { ${S.join ", " (V.pushFront fs "meta = meta${t}${suffix} ${src} e")} }"
 
 -- The fields every one of `prods` has, as the first has them -- what a `*`
 -- in a `lang!` gives a whole sort. A sort of one production has none: its
--- fields are its record's.
+-- fields are its production's.
 fun common prods =
   match V.get prods 0 with
   | Just first -> if V.len prods < 2 then [] else V.filter (\f -> V.all (\p -> V.any (\g -> g == f) (prodFields p)) prods) (prodFields first)
   | None -> []
 
--- A field every production of a sort has, read off whichever it is.
-fun shared pub l t prods f =
-  let n = fieldName f in
+fun fieldIndex p n = indexOf n (V.map fieldName (prodFields p))
+
+-- A field every production of a sort has, read off whichever it is: where it
+-- is among the fields depends on the production.
+fun shared pub l s f =
+  let n = langName l in
+  let t = "${n}${sortName s}" in
+  let name = fieldName f in
+  let prods = sortProds s in
+  let reader = sharedReader l f prods in
   "
--- The `${n}` of a `${t}`, whichever production it is.
-${pub}fun ${n}${t} (x : ${applied l t}) : ${typeName l (fieldTy f)} =
-  match x with
-${S.join "\n" (V.map (\p -> "  | ${t}.${prodName p} r -> r.${n}") prods)}
+-- The `${name}` of a `${t}`, whichever production it is.
+${pub}fun ${name}${t} (a : ${arenaTy l}) (e : Int) : ${valueTy l (fieldTy f)} = match a with | ${tables l "${n}Arena"} -> ${reader False}
+
+${pub}fun ${name}${t}In (b : ${builderTy l}) (e : Int) = match b with | ${tables l "${n}Builder"} -> ${reader True}
+"
+
+-- A shared field read off node `e`, where its production keeps it.
+fun sharedReader l f prods (builder : Bool) =
+  let place = S.join "" (V.map (\p -> "if lingua_t == ${show (tagOf l (prodName p))} then ${show (fieldIndex p (fieldName f))} else ") prods) in
+  "(let lingua_t = ${tableGet builder "lingua_kinds" "e"} in let lingua_j = ${place}0 in ${decode l builder (fieldTy f) (slotGet builder "${tableGet builder "lingua_firsts" "e"} + lingua_j") 0})"
+
+def noField : Field = Field "" (TPrim "Int") "" False
+
+-- A production's constructor -- a node written, in `meta`, or in the bytes
+-- from `lingua_s` to `lingua_t` -- and its fields' readers.
+fun prodCode pub l p =
+  let n = langName l in
+  let fs = prodFields p in
+  let idx = V.range 0 (V.len fs) in
+  let fieldOf = \i -> V.getOr noField fs i in
+  let ps = S.join "" (V.map (\i -> " (lingua_f${show i} : ${valueTy l (fieldTy (fieldOf i))})") idx) in
+  let args = S.join "" (V.map (\i -> " lingua_f${show i}") idx) in
+  let encoded = S.join "" (V.map (\i -> "      let lingua_v${show i} = ${encode l (fieldTy (fieldOf i)) "lingua_f${show i}" 0} in\n") idx) in
+  let pushed = S.join "" (V.map (\i -> "      let _ = LinguaBuf.push lingua_slots lingua_v${show i} in\n") idx) in
+  "
+-- A `${prodName p}` node, written: its row.
+${pub}fun new${n}${prodName p} (b : ${builderTy l}) (m : Meta)${ps} = new${n}${prodName p}Span b (LinguaL.metaStart m) (LinguaL.metaEnd m)${args}
+
+${pub}fun new${n}${prodName p}Span (b : ${builderTy l}) (lingua_s : Int) (lingua_t : Int)${ps} =
+  match b with
+  | ${tables l "${n}Builder"} ->
+${encoded}      let lingua_first = LinguaBuf.len lingua_slots in
+${pushed}      let _ = LinguaBuf.push lingua_starts lingua_s in
+      let _ = LinguaBuf.push lingua_ends lingua_t in
+      let _ = LinguaBuf.push lingua_firsts lingua_first in
+      LinguaBuf.push lingua_kinds ${show (tagOf l (prodName p))}
+${S.join "" (V.map (\i -> accessor pub l p i) idx)}"
+
+-- Field `i` of production `p`, read off a node.
+fun accessor pub l p i =
+  let n = langName l in
+  let f = V.getOr noField (prodFields p) i in
+  let name = "${lowerOf l}${prodName p}${upperFirst (fieldName f)}" in
+  "
+${pub}fun ${name} (a : ${arenaTy l}) (e : Int) : ${valueTy l (fieldTy f)} = match a with | ${tables l "${n}Arena"} -> ${decode l False (fieldTy f) (slotGet False "arrayGet lingua_firsts e + ${show i}") 0}
+
+${pub}fun ${name}In (b : ${builderTy l}) (e : Int) = match b with | ${tables l "${n}Builder"} -> ${decode l True (fieldTy f) (slotGet True "LinguaBuf.at lingua_firsts e + ${show i}") 0}
 "
 
 -- The conversion from the typed AST of the grammar the language was read off:
--- a function per sort, `None` for a tree with something missing in it.
+-- a function per sort, writing each node into the tables and answering its
+-- row, or -1 for a tree with something missing in it.
 fun fromCode pub l =
-  let lower = lowerFirst (langName l) in
+  let lower = lowerOf l in
+  let n = langName l in
+  let g = langGrammar l in
   V.foldl (\acc s -> acc ++ fromSort pub l lower s) "" (langSorts l) ++ "
--- The `${langName l}` program a tree `parse${langGrammar l}` made, if nothing is missing from it.
-${pub}fun ${lower}From${langGrammar l} g = LinguaM.andThen ${lower}Of${langRoot l} (ast${langGrammar l} g)
+-- The `${n}` program a tree `parse${g}` made, if nothing is missing from it.
+${pub}fun ${lower}From${g} lingua_g : Maybe ${programTy l} =
+  runSt (\\() ->
+    let lingua_out = new${n}Builder () in
+    match ast${g} lingua_g with
+    | Just lingua_f -> (let lingua_r = ${lower}Of${langRoot l} lingua_out lingua_f in if lingua_r < 0 then None else Just (${n}Program (freeze${n} lingua_out) lingua_r))
+    | None -> None)
 "
 
 fun fromSort pub l lower s =
-  let t = "${langName l}${sortName s}" in
+  let g = langGrammar l in
   let prods = sortProds s in
   let single = V.len prods == 1 and (match V.get prods 0 with | Just p -> prodName p == sortName s | None -> False) in
   if single then
     "
-${pub}fun ${lower}Of${sortName s} (y : ${langGrammar l}${sortName s}) : Maybe ${t} = ${build l lower t (V.getOr (Prod "" []) prods 0)}
+fun ${lower}Of${sortName s} lingua_out (y : ${g}${sortName s}) = ${build l lower (V.getOr (Prod "" []) prods 0)}
 "
   else
     "
-${pub}fun ${lower}Of${sortName s} (x : ${langGrammar l}${sortName s}) : Maybe ${t} =
+fun ${lower}Of${sortName s} lingua_out (x : ${g}${sortName s}) =
   match x with
-${S.join "\n" (V.map (\p -> "  | ${langGrammar l}${sortName s}.${prodName p} y -> ${build l lower t p}") prods)}
+${S.join "\n" (V.map (\p -> "  | ${g}${sortName s}.${prodName p} y -> ${build l lower p}") prods)}
 "
 
 -- A production from typed node `y`: each field converted, in turn, and the
--- node only if every one was there.
-fun build l lower t p =
+-- node written only if every one was there.
+fun build l lower p =
   let fs = prodFields p in
-  let made = "Just (${t}.${prodName p} { ${S.join ", " (V.pushFront (V.map (\i -> "${fieldName (V.getOr (Field "" (TPrim "") "" False) fs i)} = v${show i}") (V.range 0 (V.len fs))) (metaFrom l p))} })" in
-  V.foldr
-    (\i acc -> match V.get fs i with | Just f -> "LinguaM.andThen (\\v${show i} -> ${acc}) (${convert lower f})" | None -> acc)
-    made
-    (V.range 0 (V.len fs))
+  let made = "new${langName l}${prodName p}Span lingua_out (LinguaR.offset lingua_sy) (LinguaR.endOffset lingua_sy)${S.join "" (V.map (\i -> " v${show i}") (V.range 0 (V.len fs)))}" in
+  "(let lingua_sy = syntax${langGrammar l}${prodName p} y in ${V.foldr (\i acc -> convert lower (V.getOr noField fs i) i acc) made (V.range 0 (V.len fs))})"
 
--- Where a production's node is: its syntax's range -- for one that only wraps
--- another rule, `Atom` in `Expr`, the wrapped node's, which is the same bytes.
-fun metaFrom l p = "meta = LinguaL.metaOf (syntax${langGrammar l}${prodName p} y)"
-
--- One field of typed node `y`, converted: `Maybe` the value.
-fun convert lower f =
+-- One field of typed node `y`, converted and bound to `v<i>`, then `rest` --
+-- or -1, if it is missing.
+fun convert lower f i rest =
+  let v = "v${show i}" in
   let acc = "${fieldAccessor f} y" in
+  let fail = "(0 - 1)" in
   if fieldAccessor f == "" then
-    (match fieldTy f with | TSort n -> "${lower}Of${n} y" | _ -> "Just y")
+    (match fieldTy f with
+     | TSort n -> "(let ${v} = ${lower}Of${n} lingua_out y in if ${v} < 0 then ${fail} else ${rest})"
+     | _ -> "(let ${v} = y in ${rest})")
   else if fieldIsToken f then
     (match fieldTy f with
-     | TMany _ -> "Just (LinguaV.map LinguaR.text (${acc}))"
-     | TOpt _ -> "Just (LinguaM.map LinguaR.text (${acc}))"
-     | _ -> "LinguaM.map LinguaR.text (${acc})")
+     | TMany _ -> "(let ${v} = LinguaV.map LinguaR.text (${acc}) in ${rest})"
+     | TOpt _ -> "(let ${v} = LinguaM.map LinguaR.text (${acc}) in ${rest})"
+     | _ -> "(match ${acc} with | Just lingua_t${show i} -> (let ${v} = LinguaR.text lingua_t${show i} in ${rest}) | None -> ${fail})")
   else
     match fieldTy f with
-    | TMany (TSort n) -> "LinguaL.allOf (LinguaV.map ${lower}Of${n} (${acc}))"
-    | TOpt (TSort n) -> "LinguaL.optOf ${lower}Of${n} (${acc})"
-    | TSort n -> "LinguaM.andThen ${lower}Of${n} (${acc})"
-    | _ -> "Just (${acc})"
+    | TMany (TSort n) -> "(let ${v} = LinguaV.map (\\lingua_z -> ${lower}Of${n} lingua_out lingua_z) (${acc}) in if LinguaV.any (\\lingua_z -> lingua_z < 0) ${v} then ${fail} else ${rest})"
+    | TOpt (TSort n) -> "(match (match ${acc} with | None -> Just None | Just lingua_z -> (let lingua_w = ${lower}Of${n} lingua_out lingua_z in if lingua_w < 0 then None else Just (Just lingua_w))) with | None -> ${fail} | Just ${v} -> ${rest})"
+    | TSort n -> "(match ${acc} with | Just lingua_z${show i} -> (let ${v} = ${lower}Of${n} lingua_out lingua_z${show i} in if ${v} < 0 then ${fail} else ${rest}) | None -> ${fail})"
+    | _ -> "(let ${v} = ${acc} in ${rest})"
 
 -- --- pass! ------------------------------------------------------------------------------
 
@@ -374,74 +719,158 @@ fun copies to s p =
 fun passCode pub pass ctx from to cases : [TokenTree] =
   let sorts = V.filter (\s -> M.isSome (findSort to (sortName s))) (langSorts from) in
   let c = given ctx in
+  let fromN = langName from in
+  let toN = langName to in
   V.concat
     [ [Code "use Std.Maybe as LinguaM\nuse Std.Collections.Vector as LinguaV\n"],
       V.concatMap (\s -> sortPass pub pass ctx from to cases s) sorts,
-      [Code "-- `${pass}`: a `${langName from}` program as a `${langName to}` one.\n${pub}fun ${pass} ${c}x = ${pass}${langRoot from} ${c}x\n"] ]
+      [Code (if stateful from to then "" else "\n-- `${pass}`: a `${fromN}` program as a `${toN}` one, written into tables of its own.\n${pub}fun ${pass} ${c}lingua_p = runSt (\\() -> ${pass}St ${c}lingua_p)\n"),
+        Code "\n-- `${pass}`, writing its tables inside the caller's `runSt`: for a pass whose cases\n-- use the caller's state too. A function using two `runSt`s' state at once is\n-- not one Meadow can type, so a `runSt` of its own would be one too many.\n${pub}fun ${pass}St ${c}lingua_p =\n  match lingua_p with\n  | ${fromN}Program lingua_a lingua_r ->\n      let lingua_out = new${toN}Builder () in\n      let lingua_root = ${pass}${langRoot from} lingua_a lingua_out ${c}lingua_r in\n      ${toN}Program (freeze${toN} lingua_out) lingua_root\n"] ]
+
+-- Whether a pass goes to or from a language with type parameters: one whose
+-- values -- `MType s`, cells of a `runSt`'s -- belong to some `runSt`. Such a
+-- pass writes its tables in that `runSt`, and has no entry with one of its
+-- own: using two `runSt`s' state at once is not something Meadow can type.
+fun stateful from to = not (V.isEmpty (langParams from)) or not (V.isEmpty (langParams to))
 
 -- The context as a function takes it, a parameter or an argument: its name
 -- and a space, or nothing.
 fun given ctx = match ctx with | Just c -> "${c} " | None -> ""
 
+-- A sort's function: the node's production decides the arm, read off the
+-- source's tables, and each arm answers the row it wrote into the target's.
 fun sortPass pub pass ctx from to cases s =
   let st = "${langName from}${sortName s}" in
-  V.concat
-    [ [Code "${pub}fun ${pass}${sortName s} ${given ctx}x =\n  match x with"],
-      V.concatMap (\p -> arm pass ctx from to cases s p) (sortProds s) ]
+  if V.isEmpty (sortProds s) then [Code "\n${pub}fun ${pass}${sortName s} lingua_src lingua_out ${given ctx}lingua_x = lingua_x\n"]
+  else
+    V.concat
+      [ [Code "\n${pub}fun ${pass}${sortName s} lingua_src lingua_out ${given ctx}lingua_x =\n  match kind${st} lingua_src lingua_x with"],
+        V.concatMap (\p -> arm pass ctx from to cases s p) (sortProds s),
+        [Code "\n"] ]
 
 fun arm pass ctx from to cases s p =
   let st = "${langName from}${sortName s}" in
   let c = given ctx in
+  let fl = lowerFirst (langName from) in
+  let read = \f -> "${fl}${prodName p}${upperFirst f} lingua_src lingua_x" in
   match V.find (\k -> caseName k == prodName p) cases with
   | Just (Case _ _ fs lates body) ->
-      let bind = \f ->
-        let t = fieldTyOf p (fst f) in
-        if V.elem (fst f) lates then
-          (match ctx with
-           | Just _ -> "let ${fst f} = \\lingua_c -> ${translate pass "lingua_c " t "r.${fst f}"} in "
-           | None -> "let ${fst f} = \\() -> ${translate pass "" t "r.${fst f}"} in ")
-        else "let ${fst f} = ${translate pass c t "r.${fst f}"} in " in
-        [Code "| ${st}.${prodName p} r -> let lingua_meta = r.meta in let here = lingua_meta in ${S.join "" (V.map bind fs)}", Group Paren (rewrite to body) Nowhere]
+      let span = "let lingua_ms = ${fl}Start lingua_src lingua_x in let lingua_me = ${fl}End lingua_src lingua_x in " in
+      let here = if mentions "here" body then "let here = LinguaL.spanMeta lingua_ms lingua_me in " else "" in
+      let out = if mentions "out" body then "let out = lingua_out in " else "" in
+      let binds = S.join "" (V.map (bindField pass ctx p lates read) fs) in
+      [Code "\n  | ${st}Kind.${prodName p} -> ${span}${here}${out}${binds}", Group Paren (rewrite to body) Nowhere]
   | None ->
-      let tt = "${langName to}${sortName s}" in
-      let fields = V.map (\f -> "${fieldName f} = ${translate pass c (fieldTy f) "r.${fieldName f}"}") (prodFields p) in
-      [Code "| ${st}.${prodName p} r -> ${tt}.${prodName p} { ${S.join ", " (V.pushFront fields "meta = r.meta")} }"]
+      let fields = V.map (\f -> " (${translate pass c (fieldTy f) (read (fieldName f))})") (prodFields p) in
+      [Code "\n  | ${st}Kind.${prodName p} -> new${langName to}${prodName p}Span lingua_out (${fl}Start lingua_src lingua_x) (${fl}End lingua_src lingua_x)${S.join "" fields}"]
+
+-- A field a case names, bound: translated already, or -- taken `later` -- a
+-- function from a context to the child translated in it.
+fun bindField pass ctx p lates read f =
+  let t = fieldTyOf p (fst f) in
+  if V.elem (fst f) lates then
+    (match ctx with
+     | Just _ -> "let ${fst f} = \\lingua_c -> ${translate pass "lingua_c " t (read (fst f))} in "
+     | None -> "let ${fst f} = \\() -> ${translate pass "" t (read (fst f))} in ")
+  else "let ${fst f} = ${translate pass (given ctx) t (read (fst f))} in "
 
 fun fieldTyOf p n = M.unwrapOr (TPrim "") (M.map fieldTy (V.find (\f -> fieldName f == n) (prodFields p)))
+
+-- Whether word `w` is written anywhere in `ts`.
+fun mentions (w : String) (ts : [TokenTree]) : Bool =
+  V.any (\t -> match t with | Word x _ -> x == w | Group _ inner _ -> mentions w inner | _ -> False) ts
 
 -- A child, translated by the pass in context `c` (see `given`): a node by its
 -- sort's function, a list or an option inside, anything else as it is.
 fun translate pass c t v =
   match t with
-  | TSort n -> "${pass}${n} ${c}(${v})"
+  | TSort n -> "${pass}${n} lingua_src lingua_out ${c}(${v})"
   | TMany x -> "LinguaV.map (\\y -> ${translate pass c x "y"}) (${v})"
   | TOpt x -> "LinguaM.map (\\y -> ${translate pass c x "y"}) (${v})"
   | TPrim _ -> v
 
--- A case's body with each `Prod { … }` of the target language made that
--- language's, holding the `meta` of the node the case replaces. Everything
+-- A case's body, with each `Prod { … }` of the target language written into
+-- its tables -- where the node it replaces came from -- and each of the
+-- target's reading functions reading what has been written so far. Everything
 -- else, and the case's own tokens, stay where they were written.
-fun rewrite to (ts : [TokenTree]) : [TokenTree] =
+fun rewrite to (ts : [TokenTree]) : [TokenTree] = rewriteWith to (targetReaders to) ts
+
+fun rewriteWith to readers (ts : [TokenTree]) : [TokenTree] =
+  match
+    V.foldl
+      (\acc i ->
+        match acc with
+        | (done, skip) ->
+            if skip then (done, False)
+            else
+              (match V.get ts i with
+               | Just (Word w at) -> placed to readers ts i w at done
+               | Just (Group d inner at) -> (V.pushBack done (Group d (rewriteWith to readers inner) at), False)
+               | Just t -> (V.pushBack done t, False)
+               | None -> (done, False)))
+      ([], False)
+      (V.range 0 (V.len ts)) with
+      | (done, _) -> done
+
+-- Word `w`, at `i`: a production of the target written with its fields, a
+-- reading function of the target's, or itself.
+fun placed to readers ts i w at done =
+  match (V.get ts (i + 1), prodIn to w, qualified ts i) with
+  | (Just (Group Brace inner _), Just prod, False) -> (V.append done (construct to readers w prod inner at), True)
+  | _ ->
+      if V.elem w readers and not (qualified ts i) then (V.pushBack done (Group Paren [Word "${w}In" at, Word "lingua_out" Nowhere] Nowhere), False)
+      else (V.pushBack done (Word w at), False)
+
+-- `Prod { f = …, … }`: the node written, its fields in the production's order.
+fun construct to readers w prod inner at : [TokenTree] =
+  let fields = fieldsGiven inner in
+  let missing = V.filter (\f -> not (V.any (\g -> fst g == fieldName f) fields)) (prodFields prod) in
+  match V.get missing 0 with
+  | Just f -> [Fail "`${w}` needs its `${fieldName f}`" at]
+  | None ->
+      [ Group
+          Paren
+          (V.concat
+            [ [Word "new${langName to}${w}Span" at, Code "lingua_out lingua_ms lingua_me"],
+              V.map (\f -> Group Paren (rewriteWith to readers (valueOf fields (fieldName f))) Nowhere) (prodFields prod) ])
+          Nowhere ]
+
+-- The fields a record literal gives: `name = value`, or `name` for a value
+-- of that name.
+fun fieldsGiven (ts : [TokenTree]) : [(String, [TokenTree])] =
   V.concatMap
-    (\i ->
-      match V.get ts i with
-      | Just (Word w at) ->
-          (match (V.get ts (i + 1), sortOfProd to w, qualified ts i) with
-           | (Just (Group Brace _ _), Just s, False) -> [Word "${langName to}${sortName s}.${w}" at]
-           | _ -> [Word w at])
-      | Just (Group Brace inner at) ->
-          (match (if i > 0 then V.get ts (i - 1) else None) with
-           | Just (Word w _) ->
-               if M.isSome (sortOfProd to w) and not (qualified ts (i - 1)) then
-                 [Group Brace (V.append [Word "meta" Nowhere, Punct "=" Nowhere, Word "lingua_meta" Nowhere] (V.append (if V.isEmpty inner then [] else [Punct "," Nowhere]) (rewrite to inner))) at]
-               else [Group Brace (rewrite to inner) at]
-           | _ -> [Group Brace (rewrite to inner) at])
-      | Just (Group d inner at) -> [Group d (rewrite to inner) at]
-      | Just t -> [t]
-      | None -> [])
-    (V.range 0 (V.len ts))
+    (\part ->
+      match (V.get part 0, V.get part 1) with
+      | (Just (Word n _), Just t) -> if isPunct "=" t then [(n, V.drop part 2)] else []
+      | (Just (Word n at), None) -> [(n, [Word n at])]
+      | _ -> [])
+    (splitCommas ts)
+
+fun splitCommas ts =
+  match V.foldl (\acc t -> match acc with | (done, cur) -> (if isPunct "," t then (V.pushBack done cur, []) else (done, V.pushBack cur t))) ([], []) ts with
+                           | (done, cur) -> if V.isEmpty cur then done else V.pushBack done cur
+
+fun valueOf fields n = M.unwrapOr [] (M.map snd (V.find (\g -> fst g == n) fields))
+
+-- Every reading function the target language has: what a case reads the
+-- nodes it has made with, from the tables being written.
+fun targetReaders to : [String] =
+  let n = langName to in
+  let lower = lowerFirst n in
+  V.concat
+    [ ["${lower}Start", "${lower}End"],
+      V.concatMap
+        (\s -> V.append ["kind${n}${sortName s}", "meta${n}${sortName s}", "view${n}${sortName s}"] (V.map (\f -> "${fieldName f}${n}${sortName s}") (common (sortProds s))))
+        (langSorts to),
+      V.concatMap (\p -> V.map (\f -> "${lower}${prodName p}${upperFirst (fieldName f)}") (prodFields p)) (V.concatMap sortProds (langSorts to)) ]
 
 fun qualified ts i = i > 0 and M.isSome (M.keepIf (isPunct ".") (V.get ts (i - 1)))
+
+fun upperFirst (s : String) : String =
+  if stringByteLength s == 0 then s
+  else
+    let b = toInt (stringByteAt s 0) in
+    (if b >= 97 and b <= 122 then stringSlice "ABCDEFGHIJKLMNOPQRSTUVWXYZ" (b - 97) (b - 96) else stringSlice s 0 1) ++ stringSlice s 1 (stringByteLength s)
 
 fun lowerFirst (s : String) : String =
   if stringByteLength s == 0 then s

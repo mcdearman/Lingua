@@ -122,14 +122,19 @@ compile-time binding, a `Datum`, for `lang` and `pass` to read (§5).
 
 The generated parser follows matklad's
 [resilient LL parsing](https://matklad.github.io/2023/05/21/resilient-ll-parsing-tutorial.html).
-It never builds a tree. It reads the lexer's tokens — trivia filtered out —
-and emits a flat list of events:
+It never builds a tree. It reads the kinds of the lexer's tokens — trivia
+filtered out — and emits a flat list of events:
 
 ```meadow
 data Event = Open Kind | Close | Advance | Error String
 ```
 
-over a small runtime, written once in Lingua:
+kept not as a list of `Event`s but as tables (`Events`): what each event is,
+the kind of each `Open`, and each `Error`'s message, a slot per event in
+arrays that grow as the parse goes (`Lingua.Buf`). The lexer's output is
+tables too — each token's kind, where it ends and whether it is trivia — so
+a parse makes no value per token or event that is counted and freed one by
+one. The runtime, written once in Lingua:
 
 | operation                      | what it does                                                                        |
 | ------------------------------ | ----------------------------------------------------------------------------------- |
@@ -152,7 +157,9 @@ From the grammar:
   `openBefore` the left side, read the operator, recurse with its binding
   power, `close` as `Bin`; a postfix form the same, without the recursion;
 - a **token** is `expect`; a `?` is an `if at FIRST`; a `*` is a loop while at
-  FIRST.
+  FIRST. The generated code tests the next kind itself, with the kind type's
+  `==` where that type is known, rather than calling `at` and `expect`, which
+  are generic in it and would look its equality up at run time.
 
 **Recovery** is by recovery sets, computed rather than written: a loop over
 `X*` inside rule `R` gives up — breaking out without consuming — on a token in
@@ -163,16 +170,29 @@ tree; nothing is dropped.
 
 ## 3. Trees: green and red
 
-The events and the tokens are built into a **green tree**, the lossless one:
+The events and the tokens are built into a **green tree**, the lossless one.
+It is the text and a handful of tables, one slot per node or token in the
+order they are met reading down and left to right:
 
 ```meadow
-data Green = Node Kind Int [Green]     -- kind, width in bytes, children
-           | Token Kind String         -- kind and exact text
+data Green k = Green String   -- the text it covers
+  #[k]                        -- each slot's kind
+  #[Int] #[Int]               -- where each starts and ends in that text
+  #[Int]                      -- how many slots its subtree takes; 0 for a token
+  #[Int]                      -- its parent's slot; -1 for the root
 ```
 
-It has no positions, only widths, so a subtree is a value that can be shared
-between versions of a file and compared by value — what makes a reparse cheap
-and a query's early cutoff (§6) possible.
+A node's children follow it, each after the whole subtree of the one before,
+so they are found by stepping from slot to slot. A tree of a hundred thousand
+tokens is six blocks rather than a hundred thousand: passing it, walking it
+and dropping it move one count, not one per node.
+
+Positions are the tree's own — it starts at 0 whatever file it came from —
+and `subtree` copies a node out as a tree of its own, with its text. So a
+declaration read from two versions of a file is the same value however far it
+moved, which is what a query's early cutoff (§6) needs. What the tables give
+up is sharing: two versions of a file hold a copy each of what did not change,
+rather than one node both point at.
 
 **Trivia** — whitespace and comments — are tokens like any other: the Scythe
 lexer declares them as variants and leaves off `@skip`, so they are lexed
@@ -185,11 +205,11 @@ a test says so for every example. A lexer error is kept too: the text Scythe
 stopped on becomes an error token, and the tree still covers every byte.
 
 The **red view** is where positions and parents live: a cursor over the green
-tree with its absolute offset and the path to the root, made on demand and
-never stored.
+tree, made on demand and never stored. The tables already say where each slot
+starts and which is its parent, so a cursor is only a tree and a slot.
 
 ```meadow
-record Syntax = { green : Green, offset : Int, parent : Maybe Syntax }
+data Syntax k = Syntax (Green k) Int
 kind, text, range, children, parent, ancestors, tokenAt, nodeAt
 ```
 
@@ -286,14 +306,52 @@ expression. A field every production of a sort has gets an accessor like
 pub Inferring s extends Core … }` -- which its types take in turn, and a field
 may be of a type applied to them, `MType s`; a language extending it takes
 them too. A field's type is a sort of
-the language, `[T]`, `Maybe T`, or any other type by name. Each language is
-written out as ordinary `data`, a type per sort named with the language —
-`CoreExpr`, `CoreStmt` — whose productions each hold an anonymous record: the
-fields, and a `meta : Meta` nobody writes, the bytes of the source the node
-came from. `metaCoreExpr` reads it. A language read off a grammar also gets its
-conversion from the typed AST, `surfaceFromCalc : Green Calc -> Maybe
-SurfaceFile` — `None` when the tree has something missing in it, since only an
-error-free tree is a program.
+the language, `[T]`, `Maybe T`, or any other type by name.
+
+Each language is written out as **tables**, not as a type of node. A program
+is a handful of arrays: for each node its production, the bytes of the source
+it came from, and where its fields start in one table of slots. A node is the
+number of its row -- `CoreExpr` is an `Int` -- and a field that is a node, a
+number or a truth is one slot; a list, or a `Maybe`, is where its elements
+start in the slots; any other type is kept in a column of its own. However
+many nodes a program has, passing it, walking it and dropping it move no
+count and free nothing per node, which is what a compiler written in a
+reference-counted language needs of its trees. For `Core` the code has:
+
+| written                                       | what it is                                                   |
+| --------------------------------------------- | ------------------------------------------------------------ |
+| `CoreProgram`, `coreArena`, `coreRoot`        | a program: its tables, and its root's row                    |
+| `CoreBuilder`, `newCoreBuilder`, `freezeCore` | the tables being written, inside a `runSt`, and finished     |
+| `newCoreLam b meta param body`                | a node, written: its row                                     |
+| `CoreExprKind`, `kindCoreExpr a e`            | which production a node is -- a constructor with no fields   |
+| `coreLamBody a e`, `metaCoreExpr a e`         | a field of a node, and where it came from                    |
+| `CoreExprView`, `viewCoreExpr a e`            | a node as a value to `match` on, its nodes rows still        |
+| `CoreLam param body`, matching `(a, e)`       | a production as a pattern: a synonym, of the kind and fields |
+| `subCoreExpr a e`                             | a node and everything under it, as a program of its own      |
+
+and each reading function again, suffixed `In`, reading a builder while it is
+written. Asking a node's kind and reading its fields makes nothing; a view
+makes one value, to match on where that reads better. Each production is also
+a **pattern synonym** over a node and its tables, and a sort's productions
+together cover it, so the tables are matched as if they were a data type:
+
+```meadow
+fun eval (a : CoreArena) env (e : CoreExpr) =
+  match (a, e) with
+  | CoreInt n -> Value.Int n
+  | CoreLam param body -> Value.Closure param body env
+  | CoreApp func arg -> apply a (eval a env func) (eval a env arg)
+  …
+```
+
+and cost what the kind and the accessors do: the synonyms are inlined, their
+answers taken apart where they are made, and the arms become one switch on
+the node's kind -- nothing is built to match on. `subCoreExpr` is the
+tables' `Green.subtree`: the same part of a program is the same value whatever
+is around it, which is what an early cutoff (§6) compares. A language read off
+a grammar also gets its conversion from the typed AST, `surfaceFromCalc :
+Green Calc -> Maybe SurfaceProgram` — `None` when the tree has something
+missing in it, since only an error-free tree is a program.
 
 A **`pass!`** is a function from one language to another, written as the
 cases that change something:
@@ -306,11 +364,16 @@ pass! {
 ```
 
 It reads both languages and writes the rest: a function per sort —
-`lowerExpr`, `lowerStmt` — the children of every node translated before its
-case sees them, and a copy of every production the target kept as it was. A
-case names the fields it wants, bound already translated. In its body, a
-production of the target written with a record — `Prim { … }` — is that
-language's and holds the `meta` of the node the case replaces.
+`lowerExpr`, `lowerStmt` — reading the source's tables and writing the
+target's, the children of every node translated before its case sees them,
+and a copy of every production the target kept as it was. A case names the
+fields it wants, bound already translated: rows of the target. In its body, a
+production of the target written with a record — `Prim { … }` — is that node
+written into the target's tables, where the node the case replaces came from;
+the target's reading functions — `metaCoreExpr`, `tyTypedExpr` — read what
+has been written so far; and `out` is the target being written, for a
+function the case calls to write nodes into or read them from. `lower` runs in
+a `runSt` of its own and answers a program; `lowerSt` writes into the caller's.
 
 What cannot be written is said where it is: a case for a production the source
 does not have, at the case; a field it does not have, at the field; a
@@ -376,7 +439,10 @@ body being ordinary Meadow buys. Its type variables are mutable cells --
 goes from `Core` to `Inferring s`, whose nodes hold types made of those cells,
 and `settle` from there to `Typed`, reading each. Both run inside one
 `runSt`, which takes the `St s` away: `typed` is pure, and runs inside a
-query like anything else, though every step of it writes.
+query like anything else, though every step of it writes. A pass to or from a
+language with type parameters writes its tables in that same `runSt` --
+`inferSt`, `settleSt` -- since a function using the state of two at once is
+not one Meadow can type.
 
 ## 6. Queries: incremental and parallel
 
@@ -391,7 +457,7 @@ database! {
   pub Session
   | input source (file : Int) : String
   | query tree (file : Int) : Green Calc = fst (parseCalc (querySource file))
-  | query program (file : Int) : Maybe CoreFile = M.map lower (surfaceFromCalc (queryTree file))
+  | query program (file : Int) : Maybe CoreProgram = M.map lower (surfaceFromCalc (queryTree file))
   | query bindings (file : Int) : [(String, Int)] = evaluate (queryProgram file)
   | query sum (files : [Int]) : Int = V.foldl (\acc f -> acc + total (queryBindings f)) 0 files
 }

@@ -42,9 +42,10 @@ fun hoverAt db file at =
     match sessionElaborated db file with
     | Err _ -> None
     | Ok t ->
-        let around = V.filter (\x -> contains (metaTypedExpr x) at) (subexpressions t) in
+        let a = typedArena t in
+        let around = V.filter (\x -> contains (metaTypedExpr a x) at) (subexpressions a (typedExpr t)) in
         match V.get around (V.len around - 1) with
-        | Just x -> Just (metaTypedExpr x, "```\n${typeName (tyTypedExpr x)}\n```")
+        | Just x -> Just (metaTypedExpr a x, "```\n${typeName (tyTypedExpr a x)}\n```")
         | None -> None)
 
 -- The binders of a file: the side table name resolution filled.

@@ -60,6 +60,7 @@ use Std.String.Parse (Parser)
 data Decl = Decl Bool Bool String Loc String [TokenTree] [TokenTree] [TokenTree]
 
 use Decl.*
+use Std.Macro (Expand)
 
 def named : Parser Tokens (String, Loc) = P.label "a name" (P.token (\t -> match t with | Word w at -> Just (w, at) | _ -> None) [])
 
@@ -189,6 +190,8 @@ fun codec pub db key value decls =
   let every = V.len written == V.len decls in
   let everyValue = V.len kept == V.len decls in
   "
+use Lingua.Query (Codec, Untag)
+
 -- How a `${db}` database is written down: its `persisted` queries, and the
 -- keys of the inputs they read.
 def lingua${db}_codec =

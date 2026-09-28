@@ -64,6 +64,12 @@ fun graft (g : Green k) (c : Green k) : Green k =
 
 fun shifted (by : Int) (xs : #[Int]) : #[Int] = V.toArray (V.map (\x -> x + by) (V.fromArray xs))
 
+-- The same tree, each kind as `f` says: what a pass from one language's trees
+-- to another's makes of what it keeps.
+@pub fun mapKinds (f : k -> j) (g : Green k) : Green j =
+  match g with
+  | Green t ks ss es zs ps -> Green t (V.toArray (V.map f (V.fromArray ks))) ss es zs ps
+
 -- --- a slot ------------------------------------------------------------------
 
 -- How many slots the tree has.

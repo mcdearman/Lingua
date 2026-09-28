@@ -308,6 +308,7 @@ use Std.String.Parse (Parser)
 data Declared = Declared String Loc String [(String, Loc, Kind, String)]
 
 use Declared.*
+use Std.Macro (Expand)
 
 def named : Parser Tokens (String, Loc) = P.label "a name" (P.token (\t -> match t with | Word w at -> Just (w, at) | _ -> None) [])
 

@@ -54,7 +54,29 @@ written beside it in the same declaration:
 
 - **What each token is.** `"ident"` and `"int_number"` are names for token
   kinds of the Scythe lexer; `"let"`, `"+"` are its fixed tokens. A `tokens`
-  table maps the quoted names to the lexer's constructors.
+  table maps the quoted names to the lexer's constructors -- its own token
+  type, with no second one between it and the parser. An entry that says a
+  token's text, `"self" as SelfWord = Ident "self"`, is a kind of its own,
+  tried before the constructor's.
+- **Where a token is.** Some kinds a token has only where it is: a word that
+  is a keyword before a capital and a name anywhere else, or the names on a
+  path `a.b.c!` that a `!` at its end makes a macro's -- which a parser
+  looking a fixed number of tokens ahead cannot see. A `context` section says
+  them, each a pattern and where the token has to be:
+
+  ```meadow
+  context {
+    "mac_lower" = LowerIdent _ ending Bang via Period,
+    "pattern" = LowerIdent "pattern" before UpperIdent _,
+    "rec" = LowerIdent "rec" after Let before LowerIdent _
+  }
+  ```
+
+  `before` and `after` test the neighbouring token that is not trivia;
+  `ending … via …` a path of segments, each of a kind some entry with the same
+  ending names, each pair joined by the separator. The first entry that holds
+  gives the kind, and the tokens are read whole before any is kinded.
+
 - **How left recursion reads.** `Bin = lhs:Expr op:(…) rhs:Expr` and
   `Call = callee:Expr ArgList` start with the enum they belong to. A
   `precedence` table gives each binary operator its binding power and side,
@@ -331,6 +353,29 @@ lang! {
 }
 ```
 
+A language that extends a grammar's -- or one that does -- is a **tree
+language**: a program of it is a lossless tree, as the parser makes, whose
+kinds are the language's own, and each production a pattern over it binding
+its fields off a node's children:
+
+```meadow
+lang! {
+  pub Grouped extends Surface
+  Ops - Ops
+  Ops + Infix { lhs : Ops, op : InfixOp, rhs : Ops }
+  Ops + Leaf { operand : Operand }
+}
+```
+
+`GroupedInfix l op r` matches an `Infix` node of a `Syntax Grouped`. A node's
+fields are its children in order, trivia passed over, and so is any child no
+field there or later could hold -- the brackets and commas a rule writes and
+nothing names. A production a tree language adds holds nodes of sorts, or
+tokens (`String`); no field is added to every production, since a node is
+its children. This is how an AST stays the tree the parser made while the
+passes after it change what it may hold: each language says what its trees
+are, and the types say which pass a tree has been through.
+
 A language may also be written out whole, from nothing -- `lang! { pub Core
 Expr + Lam { param : Int, body : Expr } … }` -- its sorts all known before any
 field's type is read, so a field may name a sort written further down. `Program`,
@@ -443,7 +488,10 @@ case: it is a function from a context to the translated child, for the case to
 call with the one the child is in -- under a binder, the environment with the
 binder in it; a `let`'s value, one level deeper. This is what makes type
 inference a pass rather than a function beside one. Without a context, a
-`later` field is a function of `()`.
+`later` field is a function of `()`. A field of several children taken `later`
+is a function each, and one that may be missing is a function if it is there:
+each child is translated in the context it is in, so a `let` of several
+bindings can give each the scope the ones before it made.
 
 A context flows _down_ the tree; what a pass learns _across_ it -- every
 binder it met, what each is called and where, every use of each -- is a
@@ -463,6 +511,20 @@ pass! {
   …
 }
 ```
+
+A pass may read a **tree** -- a grammar's, or a tree language's -- rather
+than tables: a case is a production, its fields bound by the production's
+pattern, a node child translated and a token its text. A field taken **`raw`**
+is the child as the tree has it, for a case that looks at what was written.
+Only the sorts the pass can come to from the root need a function: a concrete
+grammar has many rules no pass translates on their own. And a pass from a
+tree may write one, of the same language or another tree language: a node no
+case is for is kept, its kind the target's of the same name -- nothing is
+copied that nothing changed under -- and a case's `Infix { lhs, op, rhs }` is
+a node built of its fields, with the tokens the source had between them, so
+the tree written is as lossless as the one read (`Lingua.Rewrite`). A kind
+the target lacks needs a case. In such a case `out` is the tree being read,
+which `Lingua.Rewrite`'s functions take.
 
 `enter` records what is known about something and answers its id -- its
 place in the table, from 0 -- `entry` reads one back, and `amend` rewrites it

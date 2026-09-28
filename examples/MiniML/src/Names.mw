@@ -93,6 +93,7 @@ fun isLam out (e : ResolvedExpr) = kindResolvedExprIn out e == ResolvedExprKind.
 use Std.Test (assertEq)
 use Lingua.Table (tabled)
 use Lingua.Diagnostic (collect)
+use Lingua.Table (enter)
 
 fun binders src =
   match surfaceFromMini (fst (parseMini src)) with

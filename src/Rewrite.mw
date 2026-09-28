@@ -1,0 +1,211 @@
+-- A tree written from a tree: what a pass that goes from a grammar back to one
+-- (`pass!`) builds its answer of.
+--
+-- A pass that changes little should copy little. So a piece of the new tree
+-- is either a slot of the old one, kept as it was, or a subtree made anew; a
+-- node none of whose children changed is kept too, and only what a case
+-- rebuilt, and the nodes above it, are made. The text never moves: a pass
+-- regroups what was written -- `a + b * c` into the nodes its fixities say --
+-- and the pieces of a node it builds are what the source had, in its order.
+-- So a node built of its fields gets, between them, the tokens the source had
+-- there -- the whitespace between `a` and `+`, the `,` a rule writes -- each
+-- the kind it was: the new tree is as lossless as the old.
+--
+-- The new tree may be of another language, whose kinds are its own: what is
+-- kept is converted, a kind at a time, when a node built around it needs it.
+
+use Std.Collections.Vector as V
+use Std.Maybe as M
+use Lingua.Green (Green, kindAt, startAt, endAt, isTokenAt, childSlots, subtree, slots)
+use Lingua.Green as G
+use Lingua.Red (Syntax)
+use Lingua.Red.Syntax.*
+
+-- A piece of the new tree, and the bytes of the source it covers: a slot of
+-- the source, kept, or a subtree made anew.
+@pub data Part j = Kept Int Int Int | Made (Green j) Int Int
+
+use Part.*
+
+-- The tree a pass reads: the tree, its tokens' slots in order -- for the
+-- tokens between two pieces to be found without walking it -- and what each of
+-- its kinds is in the tree being written.
+@pub record Origin k j = { tree : Green k, toks : #[Int], conv : k -> j }
+
+-- A tree, read to write a tree of the same kinds.
+@pub fun source (g : Green k) : Origin k k = sourceWith (\x -> x) g
+
+-- A tree, read to write one whose kinds `conv` says.
+@pub fun sourceWith (conv : k -> j) (g : Green k) : Origin k j =
+  Origin { tree = g, toks = V.toArray (V.filter (\i -> isTokenAt g i) (V.range 0 (slots g))), conv = conv }
+
+-- The source a node of it is in.
+@pub fun sourceOf (s : Syntax k) : Origin k k = match s with | Syntax g _ -> source g
+
+@pub fun sourceOfWith (conv : k -> j) (s : Syntax k) : Origin k j = match s with | Syntax g _ -> sourceWith conv g
+
+-- A slot of the source, kept.
+@pub fun kept (s : Syntax k) : Part j = match s with | Syntax g i -> Kept i (startAt g i) (endAt g i)
+
+@pub fun from (p : Part j) : Int = match p with | Kept _ a _ -> a | Made _ a _ -> a
+
+@pub fun to (p : Part j) : Int = match p with | Kept _ _ b -> b | Made _ _ b -> b
+
+-- The piece as a tree of its own.
+@pub fun green (src : Origin k j) (p : Part j) : Green j =
+  match p with
+  | Kept i _ _ -> G.mapKinds src.conv (subtree src.tree i)
+  | Made g _ _ -> g
+
+-- What kind of node or token a piece is.
+@pub fun kindOf (src : Origin k j) (p : Part j) : j =
+  match p with
+  | Kept i _ _ -> src.conv (kindAt src.tree i)
+  | Made g _ _ -> G.kind g
+
+-- The text a piece covers.
+@pub fun textOf (src : Origin k j) (p : Part j) : String =
+  match p with
+  | Kept i _ _ -> G.textAt src.tree i
+  | Made g _ _ -> G.text g
+
+-- A piece's children, tokens and all, each where it is in the source.
+@pub fun childrenOf (src : Origin k j) (p : Part j) : [Part j] =
+  match p with
+  | Kept i _ _ -> V.map (\c -> Kept c (startAt src.tree c) (endAt src.tree c)) (childSlots src.tree i)
+  | Made g a _ -> V.map (\c -> Made (subtree g c) (a + startAt g c) (a + endAt g c)) (childSlots g 0)
+
+-- A field's pieces, as a node's children are listed: one, maybe one, or
+-- several.
+@pub fun one (p : Part j) : [Part j] = [p]
+
+@pub fun maybe (p : Maybe (Part j)) : [Part j] = match p with | Just x -> [x] | None -> []
+
+-- The source's tokens wholly between bytes `a` and `b`, kept.
+@pub fun tokensIn (src : Origin k j) (a : Int) (b : Int) : [Part j] =
+  if b <= a then []
+  else
+    let n = arrayLen src.toks in
+    let g = src.tree in
+    -- The first token starting at or after `a`.
+    let rec first lo hi = if lo >= hi then lo else (let mid = (lo + hi) / 2 in if startAt g (arrayGet src.toks mid) < a then first (mid + 1) hi else first lo mid) in
+    let rec take j acc =
+      if j >= n then acc
+      else
+        let i = arrayGet src.toks j in
+        if endAt g i > b then acc else take (j + 1) (V.pushBack acc (Kept i (startAt g i) (endAt g i))) in
+    take (first 0 n) []
+
+-- A node of kind `k` over `children`, in the order given, and between two of
+-- them the source's tokens there: a node a pass builds of its fields. A node
+-- of nothing -- `()`'s, whose fields are none -- covers nothing, and is
+-- nowhere: -1, until `cover` gives it the bytes of the node it stands for.
+@pub fun node (src : Origin k j) (kind : j) (children : [Part j]) : Part j =
+  let filled =
+    fst
+      (V.foldl
+        (\acc c ->
+          match acc with
+          | (done, last) ->
+              if isEmpty c then (V.pushBack done c, last)
+              else
+                (match last with
+                 | Just before -> (V.pushBack (V.append done (tokensIn src (to before) (from c))) c, Just c)
+                 | None -> (V.pushBack done c, Just c)))
+        ([], None)
+        children) in
+  let placed = V.filter (\c -> not (isEmpty c)) filled in
+  let a = M.unwrapOr (0 - 1) (M.map from (V.get placed 0)) in
+  let b = M.unwrapOr (0 - 1) (M.map to (V.get placed (V.len placed - 1))) in
+  Made (G.node kind (V.map (green src) filled)) a b
+
+-- Whether a piece covers nothing, and is nowhere.
+fun isEmpty (p : Part j) : Bool = from p < 0
+
+-- `p`, covering bytes `a` to `b`: the source's tokens before and after it
+-- there taken into its node, so that what a case answers for a node covers
+-- all the node did.
+@pub fun cover (src : Origin k j) (a : Int) (b : Int) (p : Part j) : Part j =
+  if not (isEmpty p) and from p <= a and to p >= b then p
+  else
+    let before = tokensIn src a (if isEmpty p then b else from p) in
+    let after = if isEmpty p then [] else tokensIn src (to p) b in
+    if V.isEmpty before and V.isEmpty after then p
+    else
+      let g = green src p in
+      if G.isToken g then p
+      else
+        let whole = V.concat [before, V.filter (\c -> not (isEmpty c)) [p], after] in
+        Made
+          (G.node (G.kind g) (V.concat [V.map (green src) before, G.children g, V.map (green src) after]))
+          (M.unwrapOr (0 - 1) (M.map from (V.get whole 0)))
+          (M.unwrapOr (0 - 1) (M.map to (V.get whole (V.len whole - 1))))
+
+-- Node `x` with each of its node children as `f` answers it, its tokens as
+-- they were: kept, if `f` kept every one.
+@pub fun rebuild (src : Origin k j) (f : Syntax k -> Part j ! e) (x : Syntax k) : Part j ! e =
+  match x with
+  | Syntax g i ->
+      let pieces = V.map (\c -> if isTokenAt g c then Kept c (startAt g c) (endAt g c) else f (Syntax g c)) (childSlots g i) in
+      let same = V.all (\j -> match (V.get pieces j, V.get (childSlots g i) j) with | (Just (Kept s _ _), Just c) -> s == c | _ -> False) (V.range 0 (V.len pieces)) in
+      if same then Kept i (startAt g i) (endAt g i)
+      else Made (G.node (src.conv (kindAt g i)) (V.map (green src) pieces)) (startAt g i) (endAt g i)
+
+-- --- tests -------------------------------------------------------------------
+
+use Std.Test (assertEq)
+use Lingua.Green (token)
+use Lingua.Red as R
+
+-- `1 + 2 * 3`, flat, as a parser that knows no fixities reads it.
+def flat : Green String =
+  G.node "Chain" [token "Num" "1", token "Space" " ", token "Op" "+", token "Space" " ", token "Num" "2", token "Space" " ", token "Op" "*", token "Space" " ", token "Num" "3"]
+
+@test fun aBuiltNodeKeepsWhatWasBetweenItsPieces () =
+  let src = source flat in
+  let at = \i -> Kept i (startAt flat i) (endAt flat i) in
+  let times = node src "Bin" [at 5, at 7, at 9] in
+  let plus = node src "Bin" [at 1, at 3, times] in
+  let g = green src plus in
+  let a = assertEq (G.text g) "1 + 2 * 3" "every byte, in order" in
+  assertEq (G.dump (\k -> k) g) "Bin\n  Num \"1\"\n  Space \" \"\n  Op \"+\"\n  Space \" \"\n  Bin\n    Num \"2\"\n    Space \" \"\n    Op \"*\"\n    Space \" \"\n    Num \"3\"" "the product inside the sum"
+
+@test fun aNodeNothingChangedUnderIsKept () =
+  let src = source flat in
+  match rebuild src (\c -> kept c) (R.root flat) with
+  | Kept i _ _ -> assertEq i 0 "the root itself"
+  | Made _ _ _ -> assertEq True False "nothing was made"
+
+@test fun aNodeOfNothingCoversTheNodeItStandsFor () =
+  let unit = G.node "Unit" [token "(" "(", token ")" ")"] in
+  let src = source (G.node "Params" [token "Name" "f", token "Space" " ", unit]) in
+  let empty = node src "Unit" [] in
+  let a = assertEq (from empty) (0 - 1) "nowhere, until it is given a place" in
+  assertEq (G.text (green src (cover src 2 4 empty))) "()" "the brackets it was written with, and nothing before"
+
+-- The fields of a node, read off its children: for each field, whether a
+-- child's kind is one it holds, and whether it holds several. Trivia are
+-- passed over, and so is a child no field -- this one or any after it -- could
+-- hold: the `(` and `,` a rule writes but nothing names, and the separators
+-- between the children a field holds several of. What a tree
+-- language's patterns read a node with.
+@pub fun slotsOf (trivia : k -> Bool) (wants : [(k -> Bool, Bool)]) (s : Syntax k) : [[Syntax k]] =
+  let cs = V.filter (\c -> not (trivia (R.kindOf c))) (R.children s) in
+  let n = V.len cs in
+  let later = \i c -> V.any (\j -> M.unwrapOr False (M.map (\w -> fst w (R.kindOf c)) (V.get wants j))) (V.range (i + 1) (V.len wants)) in
+  let rec field i at acc =
+    match V.get wants i with
+    | None -> acc
+    | Just (accepts, many) ->
+        let rec take j got =
+          match V.get cs j with
+          | None -> (got, j)
+          | Just c ->
+              if accepts (R.kindOf c) then (if many then take (j + 1) (V.pushBack got c) else (V.pushBack got c, j + 1))
+              else if later i c then (got, j)
+              else take (j + 1) got
+        in
+        (match take at [] with
+         | (got, next) -> field (i + 1) next (V.pushBack acc got))
+  in
+  if n == 0 then V.map (\w -> []) wants else field 0 0 []

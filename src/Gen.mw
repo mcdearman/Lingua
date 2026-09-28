@@ -4,7 +4,8 @@
 --     pub Calc
 --     lexer Token
 --     trivia { Whitespace, Comment }
---     tokens { "let" = Let, "ident" = Ident _, … }
+--     tokens { "let" = Let, "ident" = Ident _, "self" as SelfWord = Ident "self", … }
+--     context { "label" = Ident _ before Colon, … }
 --     precedence Expr { left "+" "-", left "*" "/", postfix Call }
 --     grammar {
 --       File = Stmt*
@@ -20,6 +21,23 @@
 --   the Scythe lexer `lexToken`, parses, and builds the lossless tree;
 -- * the typed AST: `CalcLet`, `asCalcLet`, `calcLetName`, … -- everything
 --   named after `Calc` (see "names" below).
+--
+-- A token's kind is its constructor's, `Ident _`'s `Ident` -- or, for an entry
+-- whose pattern says what the token's text is, `Ident "self"`, a kind of its
+-- own, tried first: named `as`, or after the quoted name. And some kinds a
+-- token has only where it is, which no fixed number of tokens ahead could
+-- tell the parser: `context` says them, each a pattern and where the token
+-- has to be -- `before` a token, `after` one, or on a path of tokens, `a.b.c`,
+-- `ending` in one, `via` the one between them:
+--
+--   context {
+--     "mac_lower" = LowerIdent _ ending Bang via Period,
+--     "pattern" = LowerIdent "pattern" before UpperIdent _
+--   }
+--
+-- The first that holds of a token gives it its kind, and a token none holds
+-- of keeps the table's. Neighbours are the tokens either side that are not
+-- trivia.
 --
 -- See docs/DESIGN.md for what each rule becomes. Every mistake is reported
 -- where it was written: in the tables, at the token; in the grammar, at the
@@ -43,7 +61,9 @@ use Std.Collections.List as L
 use Std.Sort (sortOn)
 use Std.Collections.HashMap as H
 use Std.Collections.HashMap (HashMap)
-use Lingua.Lang (Lang, Sort, Prod, Field, Ty, reservedSorts)
+use Lingua.Lang (Lang, Sort, Prod, Field, Ty, reservedSorts, Keeping, TokenField)
+use Lingua.Lang.Keeping.*
+use Lingua.Lang.TokenField.*
 use Lingua.Lang.Lang.*
 use Lingua.Lang.Sort.*
 use Lingua.Lang.Prod.*
@@ -57,7 +77,8 @@ use Std.Macro (defineAs, toDatum, fromDatum)
 data Section
   = Lexer String
   | Trivia [[TokenTree]]
-  | Table [(String, Loc, [TokenTree])]
+  | Table [(String, Loc, [TokenTree], Maybe String)]
+  | Context [(String, Loc, [TokenTree], Maybe String)]
   | Precedence String [(String, [String])]
   | Grammar String Loc Int
   | GrammarTrees [TokenTree] Int
@@ -93,6 +114,7 @@ def section : Parser Tokens Section =
     [ P.skipThen (keyword "lexer") (P.map Lexer ident),
       P.skipThen (keyword "trivia") (P.map Trivia (group Brace (P.many pattern))),
       P.skipThen (keyword "tokens") (P.map Table (group Brace (P.many tokenEntry))),
+      P.skipThen (keyword "context") (P.map Context (group Brace (P.many tokenEntry))),
       P.skipThen (keyword "precedence") (P.bind ident (\e -> P.map (\ls -> Precedence e ls) (group Brace (P.many level)))),
       P.skipThen (keyword "lookahead") (P.map Lookahead number),
       P.skipThen
@@ -107,8 +129,11 @@ fun lastEnd (ts : [TokenTree]) : Int =
   | Just t -> (match spanOf t with | At _ b -> b | Nowhere -> 0)
   | None -> 0
 
-def tokenEntry : Parser Tokens (String, Loc, [TokenTree]) =
-  P.bind literal (\l -> P.skipThen (punct "=") (P.map (\pat -> match l with | (s, at, _) -> (s, at, pat)) pattern))
+-- `"name" = Pattern`, or `"name" as Kind = Pattern`.
+def tokenEntry : Parser Tokens (String, Loc, [TokenTree], Maybe String) =
+  P.bind literal (\l ->
+    P.bind (P.optional (P.skipThen (keyword "as") ident)) (\n ->
+      P.skipThen (punct "=") (P.map (\pat -> match l with | (s, at, _) -> (s, at, pat, n)) pattern)))
 
 def level : Parser Tokens (String, [String]) =
   comma
@@ -140,12 +165,19 @@ fun written name sections =
       match parsed with
       | Err (off, why) -> [Fail why (inGrammar (if base > 0 then base else 0) off 1)]
       | Ok (defs, start) ->
+          let table = V.concatMap (\s -> match s with | Table es -> es | _ -> []) sections in
+          let contextual = V.concatMap (\s -> match s with | Context es -> es | _ -> []) sections in
+          match tokenNames table contextual with
+          | Err failed -> failed
+          | Ok names ->
           let spec = {
           name = name,
             lexer = lx,
             public = V.any (\s -> match s with | Public -> True | _ -> False) sections,
             trivia = V.concatMap (\s -> match s with | Trivia ps -> ps | _ -> []) sections,
-            tokens = V.concatMap (\s -> match s with | Table es -> es | _ -> []) sections,
+            tokens = V.map (\e -> match e with | (s, at, pat, _) -> (s, at, pat)) (V.append table (V.map (\e -> match e with | (s, at, ts, n) -> (s, at, basePattern ts, n)) contextual)),
+            names = names,
+            context = V.map (\e -> match e with | (s, at, ts, _) -> (s, basePattern ts, conditions ts)) contextual,
             prec = V.foldl (\acc s -> match s with | Precedence e ls -> Just (e, ls) | _ -> acc) None sections,
             lookahead = V.foldl (\acc s -> match s with | Lookahead k -> k | _ -> acc) lookaheadDefault sections,
             defs = defs,
@@ -350,11 +382,80 @@ fun whereDef spec n = match lookupDef spec n with | Just d -> inGrammar spec.sta
 
 fun tokName e = match e with | (t, _, _) -> t
 
--- The kind a quoted token is: the constructor its pattern starts with.
+-- The kind a quoted token is: the constructor its pattern starts with, or the
+-- name of a kind of its own.
 fun tokKind spec t =
   match V.find (\e -> tokName e == t) spec.tokens with
-  | Just (_, _, pat) -> ctorOf pat
+  | Just e -> entryKind spec e
   | None -> "Unknown"
+
+fun entryKind spec e =
+  match e with
+  | (t, _, pat) -> M.unwrapOr (ctorOf pat) (M.map snd (V.find (\n -> fst n == t) spec.names))
+
+-- Whether a pattern says what its token's text is: `Ident "self"`.
+fun literalPattern (pat : [TokenTree]) : Bool = V.any (\t -> match t with | Str _ _ -> True | _ -> False) (V.drop pat 1)
+
+-- Whether a token of the pattern has text of its own the pattern does not fix.
+fun payload (pat : [TokenTree]) : Bool = V.any (\t -> match t with | Str _ _ -> False | _ -> True) (V.drop pat 1)
+
+-- The entries whose kinds are their own, each with the kind's name: named
+-- `as`, or after the quoted name -- `line_lower` is `LineLower` -- when that
+-- is a word.
+fun tokenNames table contextual : Result [TokenTree] [(String, String)] =
+  let own = V.append (V.filter (\e -> match e with | (_, _, pat, n) -> M.isSome n or literalPattern pat) table) contextual in
+  V.foldl
+    (\acc e ->
+      match (acc, e) with
+      | (Err f, _) -> Err f
+      | (Ok ns, (s, at, _, n)) ->
+          (match (match n with | Just x -> Just x | None -> camel s) with
+           | Just k -> (if V.any (\x -> snd x == k) ns then Err [Fail "two kinds of token are called `${k}`" at] else Ok (V.pushBack ns (s, k)))
+           | None -> Err [Fail "`${s}` is a kind of its own: name it, `\"${s}\" as Name = …`" at]))
+    (Ok [])
+    own
+
+-- `line_lower` as `LineLower`; nothing, for what is not a word.
+fun camel (s : String) : Maybe String =
+  let parts = S.split "_" s in
+  if S.isEmpty s or not (V.all (\p -> not (S.isEmpty p) and V.all (\i -> let b = toInt (stringByteAt p i) in (b >= 97 and b <= 122) or (b >= 48 and b <= 57)) (V.range 0 (stringByteLength p))) parts) then None
+  else Just (S.join "" (V.map upperFirstWord parts))
+
+fun upperFirstWord (w : String) : String =
+  let b = toInt (stringByteAt w 0) in
+  stringSlice "ABCDEFGHIJKLMNOPQRSTUVWXYZ" (b - 97) (b - 96) ++ stringSlice w 1 (stringByteLength w)
+
+-- --- context -------------------------------------------------------------------------
+
+-- Where a token has to be for a context entry to hold of it.
+data Condition = Before [TokenTree] | After [TokenTree] | Ending [TokenTree] [TokenTree]
+
+use Condition.*
+
+fun isCondWord (t : TokenTree) : Bool = match t with | Word w _ -> V.elem w ["before", "after", "ending", "via"] | _ -> False
+
+-- The pattern of a context entry: what it says before its first condition.
+fun basePattern (ts : [TokenTree]) : [TokenTree] =
+  match V.find (\i -> M.unwrapOr False (M.map isCondWord (V.get ts i))) (V.range 0 (V.len ts)) with
+  | Just i -> V.take ts i
+  | None -> ts
+
+fun conditions (ts : [TokenTree]) : [Condition] =
+  let starts = V.filter (\i -> M.unwrapOr False (M.map (\t -> match t with | Word w _ -> V.elem w ["before", "after", "ending"] | _ -> False) (V.get ts i))) (V.range 0 (V.len ts)) in
+  V.concatMap
+    (\k ->
+      let at = V.getOr 0 starts k in
+      let stop = V.getOr (V.len ts) starts (k + 1) in
+      let body = V.drop (V.take ts stop) (at + 1) in
+      match V.get ts at with
+      | Just (Word "before" _) -> [Before body]
+      | Just (Word "after" _) -> [After body]
+      | Just (Word "ending" _) ->
+          (match V.find (\i -> match V.get body i with | Just (Word "via" _) -> True | _ -> False) (V.range 0 (V.len body)) with
+           | Just v -> [Ending (V.take body v) (V.drop body (v + 1))]
+           | None -> [Ending body []])
+      | _ -> [])
+    (V.range 0 (V.len starts))
 
 fun ctorOf (pat : [TokenTree]) : String =
   match V.get pat 0 with
@@ -394,7 +495,7 @@ fun kx spec c = "${spec.name}.${c}"
 -- The kind a quoted token is.
 fun kq spec t =
   match V.find (\e -> tokName e == t) spec.tokens with
-  | Just (_, _, pat) -> kt spec (ctorOf pat)
+  | Just e -> kt spec (entryKind spec e)
   | None -> kx spec "Unknown"
 
 -- The typed AST's type for rule `r`.
@@ -417,7 +518,7 @@ fun anyOf spec env ts =
 -- the table names and the trivia, and the three every tree may need.
 fun kinds spec : [(String, String)] =
   let nodes = V.map (\d -> ("Node${defName d}", defName d)) (V.filter (\d -> not (isEnum d)) spec.defs) in
-  let toks = V.map (\c -> ("Token${c}", c)) (union (V.map (\e -> match e with | (_, _, pat) -> ctorOf pat) spec.tokens) (V.map ctorOf spec.trivia)) in
+  let toks = V.map (\c -> ("Token${c}", c)) (union (V.map (entryKind spec) spec.tokens) (V.map ctorOf spec.trivia)) in
   V.concat [nodes, toks, V.map (\c -> (c, c)) ["ErrorNode", "Eof", "Unknown"]]
 
 -- The parser, or -- when some choice in the grammar cannot be made by
@@ -447,7 +548,7 @@ fun generate spec (env : Grammar) : [TokenTree] ! { Mut | e } =
   match parseGrammar text with
   | Err (at, why) -> (["${show at}: ${why}"], [])
   | Ok defs ->
-      let spec = { name = "G", lexer = "T", public = False, trivia = [], tokens = [], prec = None, lookahead = k, defs = defs, start = 0 - 1 } in
+      let spec = { name = "G", lexer = "T", public = False, trivia = [], tokens = [], names = [], context = [], prec = None, lookahead = k, defs = defs, start = 0 - 1 } in
       let root = (match V.get defs 0 with | Just d -> defName d | None -> "File") in
       let x = Deciding { g = lookGrammar spec root, problems = newRef [], k = k } in
       let env = x.g in
@@ -571,21 +672,60 @@ ${S.join "\n" (V.map (\c -> "    | ${kx spec (fst c)} -> \"${snd c}\"") (kinds s
 -- How a kind is named in a message: a token as it is written, a node by its rule.
 fun ${fn spec "name"} (x : ${kindType spec}) : String =
   match x with
-${S.join "\n" (V.map (\e -> match e with | (t, _, pat) -> "  | ${kt spec (ctorOf pat)} -> \"`${escape t}`\"") spec.tokens)}
+${S.join "\n" (V.map (\e -> "  | ${kt spec (entryKind spec e)} -> \"`${escape (tokName e)}`\"") spec.tokens)}
   | other -> display other
 "
 
 -- The lexer's tokens as kinds, each pattern where the table wrote it; and
 -- which of them are trivia.
 fun classify spec : [TokenTree] =
-  let arm = \pat -> V.concat [[Punct "|" Nowhere], qualify spec pat, [Code "-> ${kt spec (ctorOf pat)}"]] in
+  let arm = \pat k -> V.concat [[Punct "|" Nowhere], qualify spec pat, [Code "-> ${kt spec k}"]] in
+  let tabled = V.filter (\e -> not (V.any (\c -> match c with | (n, _, _) -> n == tokName e) spec.context)) spec.tokens in
+  let fixed = V.filter (\e -> match e with | (_, _, pat) -> literalPattern pat) tabled in
+  let open = V.filter (\e -> match e with | (_, _, pat) -> not (literalPattern pat)) tabled in
   V.concat
     [ [Code "fun ${fn spec "kindOf"} (t : ${spec.lexer}) : ${kindType spec} =\n  match t with"],
-      V.concatMap (\e -> match e with | (_, _, pat) -> arm pat) spec.tokens,
-      V.concatMap arm spec.trivia,
+      V.concatMap (\e -> match e with | (_, _, pat) -> arm pat (entryKind spec e)) (V.append fixed open),
+      V.concatMap (\pat -> arm pat (ctorOf pat)) spec.trivia,
       [Code "  | _ -> ${kx spec "Unknown"}\n\nfun ${fn spec "isTrivia"} (x : ${kindType spec}) : Bool =\n  match x with"],
       V.concatMap (\pat -> [Code "| ${kt spec (ctorOf pat)} -> True"]) spec.trivia,
-      [Code "| ${kx spec "Unknown"} -> True\n  | _ -> False\n"] ]
+      [Code "| ${kx spec "Unknown"} -> True\n  | _ -> False\n"],
+      contextCode spec ]
+
+-- A token's kind where it is: the first context entry that holds of it --
+-- its pattern, and each of its conditions -- or the table's kind, `base`.
+-- `ts` are the lexer's tokens, `real` the places of those that are not
+-- trivia, and `r` the token's place among them.
+fun contextCode spec : [TokenTree] =
+  if V.isEmpty spec.context then []
+  else
+    let pats = V.concatMap (\c -> match c with | (_, pat, cs) -> V.pushFront (V.concatMap condPatterns cs) pat) spec.context in
+    let preds = V.concatMap (\i -> V.concat [[Code "fun ${fn spec "is"}${show i} (t : ${spec.lexer}) : Bool =\n  match t with\n  "], [Punct "|" Nowhere], qualify spec (V.getOr [] pats i), [Code "-> True\n  | _ -> False\n"]]) (V.range 0 (V.len pats)) in
+    let index = \pat -> M.unwrapOr 0 (V.find (\i -> V.get pats i == Just pat) (V.range 0 (V.len pats))) in
+    let at = \off pat -> "(match lingua_tok (r + ${off}) with | Just q -> ${fn spec "is"}${show (index pat)} q | None -> False)" in
+    let segOf = \e v -> S.join " or " (V.concatMap (\c -> match c with | (_, p, cs) -> (if V.any (\x -> match x with | Ending e2 v2 -> treesText e2 == treesText e and treesText v2 == treesText v | _ -> False) cs then [at "j - r" p] else [])) spec.context) in
+    let cond = \c ->
+      match c with
+      | Before p -> at "1" p
+      | After p -> at "0 - 1" p
+      | Ending e v -> "LinguaB.onPath (\\j -> ${at "j - r" e}) (\\j -> ${at "j - r" v}) (\\j -> ${segOf e v}) r" in
+    let rules =
+      V.map
+        (\c ->
+          match c with
+          | (name, pat, cs) -> "if ${S.join " and " (V.pushFront (V.map cond cs) (at "0" pat))} then ${kt spec (tokKind spec name)} else ")
+        spec.context in
+    V.concat
+      [ preds,
+        [ Code
+            ("\nfun ${fn spec "contextKind"} (ts : [(${spec.lexer}, Int, Int)]) (real : [Int]) (r : Int) (base : ${kindType spec}) : ${kindType spec} =\n"
+              ++ "  let lingua_tok = \\j -> LinguaM.andThen (\\i -> LinguaM.map (\\x -> match x with | (t, _, _) -> t) (LinguaV.get ts i)) (LinguaV.get real j) in\n  "
+              ++ S.join "" rules
+              ++ "base\n") ] ]
+
+fun condPatterns c = match c with | Before p -> [p] | After p -> [p] | Ending e v -> [e, v]
+
+fun treesText (ts : [TokenTree]) : String = S.join " " (V.map text ts)
 
 -- `Ident _` as `Token.Ident _`, still where it was written.
 fun qualify spec pat =
@@ -721,7 +861,40 @@ fun elementAt spec env counter x e xs i rbp =
 fun isSeq x = match x with | Seq _ -> True | _ -> False
 
 -- `parseCalc`: lex, parse, build.
-fun entry spec pub root lx =
+fun entry spec pub root lx = (if V.isEmpty spec.context then streamed spec lx else gathered spec lx) ++ parseEntry spec pub root
+
+-- The lexer's tokens, a kind each by the tokens around it: gathered first,
+-- then kinded, then given to the builder as `streamed` gives them.
+fun gathered spec lx =
+  "-- The lexer's tokens, and the text between them it skipped, as trivia: every
+-- byte of `input`, in order -- each token's kind by where it is (`context`).
+fun ${fn spec "lexemes"} (input : String) =
+  match fold${lx} (\\acc t s e -> LinguaV.pushBack acc (t, s, e)) [] input with
+  | Err err -> Err err
+  | Ok ts ->
+      let base = LinguaV.map (\\x -> match x with | (t, _, _) -> ${fn spec "kindOf"} t) ts in
+      let real = LinguaV.filter (\\i -> not (${fn spec "isTrivia"} (LinguaV.getOr ${kx spec "Unknown"} base i))) (LinguaV.range 0 (LinguaV.len ts)) in
+      let kinds = LinguaV.foldl (\\ks r -> match LinguaV.get real r with | Just i -> LinguaV.set ks i (${fn spec "contextKind"} ts real r (LinguaV.getOr ${kx spec "Unknown"} ks i)) | None -> ks) base (LinguaV.range 0 (LinguaV.len real)) in
+      runSt (\\() ->
+        let l = LinguaB.lexing ${kx spec "Unknown"} in
+        let n = stringByteLength input in
+        let last =
+          LinguaV.foldl
+            (\\at i ->
+              match LinguaV.get ts i with
+              | Just (_, s, e) ->
+                  let _ = if s > at then LinguaB.lexed l ${kx spec "Unknown"} s True else () in
+                  let kd = LinguaV.getOr ${kx spec "Unknown"} kinds i in
+                  let _ = LinguaB.lexed l kd e (${fn spec "isTrivia"} kd) in
+                  e
+              | None -> at)
+            0
+            (LinguaV.range 0 (LinguaV.len ts)) in
+        let _ = if last < n then LinguaB.lexed l ${kx spec "Unknown"} n True else () in
+        Ok (LinguaB.lexemesFrom input l))
+"
+
+fun streamed spec lx =
   "-- The lexer's tokens, and the text between them it skipped, as trivia: every
 -- byte of `input`, in order -- as tables, a token at a time, keeping none.
 fun ${fn spec "lexemes"} (input : String) =
@@ -739,7 +912,10 @@ fun ${fn spec "lexemes"} (input : String) =
     | Ok at ->
         let _ = if at < n then LinguaB.lexed l ${kx spec "Unknown"} n True else () in
         Ok (LinguaB.lexemesFrom input l))
+"
 
+fun parseEntry spec pub root =
+  "
 -- `input` as a lossless tree, and every error with the byte it is at: a pure
 -- function of the text.
 ${pub}fun parse${spec.name} (input : String) =
@@ -768,6 +944,7 @@ ${pub}fun parse${spec.name} (input : String) =
 data Slot = NodeField String String Bool | TokField String [String] Bool
 
 use Slot.*
+use Std.Macro (Expand)
 
 fun fieldName f = match f with | NodeField n _ _ -> n | TokField n _ _ -> n
 
@@ -1070,7 +1247,18 @@ fun grammarLang spec : Lang =
   let enumSorts = V.map (\d -> Sort (defName d) (V.map (\a -> prodOf spec a) (alternatives d))) enums in
   let loners = V.map (\d -> Sort (defName d) [prodOf spec (defName d)]) (V.filter (\d -> not (isEnum d) and not (V.elem (defName d) alts)) spec.defs) in
   let root = (match V.get spec.defs 0 with | Just d -> defName d | None -> "File") in
-  Lang spec.name root (V.append enumSorts loners) spec.name []
+  let tokenKinds = V.map fst (V.filter (\c -> S.startsWith "Token" (fst c)) (kinds spec)) in
+  let trivia = V.map (\p -> "Token${ctorOf p}") spec.trivia in
+  let tokenFieldsOf =
+    V.concatMap
+      (\d ->
+        if isEnum d then []
+        else
+          V.concatMap
+            (\f -> match f with | TokField name ts _ -> (if kept spec name ts then [TokenField (defName d) (fieldBare name) (V.map (\t -> "Token${tokKind spec t}") ts)] else []) | _ -> [])
+            (fieldsOfDef spec d))
+      spec.defs in
+  Lang spec.name root (V.append enumSorts loners) spec.name [] (AsTrees tokenKinds trivia tokenFieldsOf)
 
 -- The production of rule `r`: an enum inside an enum is a production holding
 -- that enum's sort.
@@ -1097,7 +1285,7 @@ fun fieldOf spec r slot opt =
 fun kept spec name ts =
   V.len ts > 1
     or not (V.any (\t -> unnumbered name == lowerFirst (tokKind spec t) ++ "Token") ts)
-    or V.any (\t -> match V.find (\e -> tokName e == t) spec.tokens with | Just (_, _, pat) -> V.len pat > 1 | None -> False) ts
+    or V.any (\t -> match V.find (\e -> tokName e == t) spec.tokens with | Just (_, _, pat) -> payload pat | None -> False) ts
 
 -- A slot's name without the number `numbered` gave it.
 fun unnumbered (name : String) : String =

@@ -18,6 +18,7 @@ use Lingua.Red (Syntax, range)
 use Lingua.Buf as B
 use Lingua.Buf (Buf)
 use Ty.*
+use Keeping.*
 
 -- What a field holds: a node of a sort of the same language, several, maybe
 -- one, or an ordinary Meadow type, by name.
@@ -37,26 +38,51 @@ use Ty.*
 @derive(Reflect, PartialEq)
 @pub data Sort = Sort String [Prod]
 
--- A language: its name, the sort a whole program is, its sorts, -- when it
--- was read off a grammar -- which grammar, and the type parameters its types
--- take: `Inferring s`, whose nodes hold types made of cells of a `runSt`'s.
+-- A token field of a tree's node: its production, its name, and the kinds of
+-- token it holds -- any token, when there are none.
 @derive(Reflect, PartialEq)
-@pub data Lang = Lang String String [Sort] String [String]
+@pub data TokenField = TokenField String String [String]
+
+-- How a language's programs are kept: as tables -- a node a row -- or as
+-- trees, a node a node of a lossless tree whose kinds are the language's own.
+-- A tree language knows the kinds of token its trees hold, which of them are
+-- trivia, and which a token field reads.
+@derive(Reflect, PartialEq)
+@pub data Keeping = AsTables | AsTrees [String] [String] [TokenField]
+
+-- A language: its name, the sort a whole program is, its sorts, -- when it
+-- was read off a grammar -- which grammar, the type parameters its types take
+-- (`Inferring s`, whose nodes hold types made of cells of a `runSt`'s), and
+-- how its programs are kept.
+@derive(Reflect, PartialEq)
+@pub data Lang = Lang String String [Sort] String [String] Keeping
 
 -- What no sort may be called: a language's own types are its name and these
 -- -- `CoreProgram`, `CoreArena`, `CoreBuilder` -- and a sort's type is its
 -- name after the language's too.
 @pub def reservedSorts : [String] = ["Program", "Arena", "Builder"]
 
-@pub fun langName (l : Lang) : String = match l with | Lang n _ _ _ _ -> n
+@pub fun langName (l : Lang) : String = match l with | Lang n _ _ _ _ _ -> n
 
-@pub fun langRoot (l : Lang) : String = match l with | Lang _ r _ _ _ -> r
+@pub fun langRoot (l : Lang) : String = match l with | Lang _ r _ _ _ _ -> r
 
-@pub fun langSorts (l : Lang) : [Sort] = match l with | Lang _ _ ss _ _ -> ss
+@pub fun langSorts (l : Lang) : [Sort] = match l with | Lang _ _ ss _ _ _ -> ss
 
-@pub fun langGrammar (l : Lang) : String = match l with | Lang _ _ _ g _ -> g
+@pub fun langGrammar (l : Lang) : String = match l with | Lang _ _ _ g _ _ -> g
 
-@pub fun langParams (l : Lang) : [String] = match l with | Lang _ _ _ _ ps -> ps
+@pub fun langParams (l : Lang) : [String] = match l with | Lang _ _ _ _ ps _ -> ps
+
+@pub fun langKeeping (l : Lang) : Keeping = match l with | Lang _ _ _ _ _ k -> k
+
+-- Whether a language's programs are trees.
+@pub fun isTreeLang (l : Lang) : Bool = match langKeeping l with | AsTrees _ _ _ -> True | AsTables -> False
+
+-- A tree language's kinds of token, its trivia's, and its token fields'.
+@pub fun treeTokens (l : Lang) : [String] = match langKeeping l with | AsTrees ts _ _ -> ts | AsTables -> []
+
+@pub fun treeTrivia (l : Lang) : [String] = match langKeeping l with | AsTrees _ tv _ -> tv | AsTables -> []
+
+@pub fun tokenFields (l : Lang) : [TokenField] = match langKeeping l with | AsTrees _ _ fs -> fs | AsTables -> []
 
 @pub fun sortName (s : Sort) : String = match s with | Sort n _ -> n
 
@@ -126,7 +152,7 @@ use Ty.*
 use Std.Test (assertEq)
 
 @test fun aLanguageSurvivesItsTripThroughADatum () =
-  let l = Lang "Core" "File" [Sort "Expr" [Prod "Lit" [Field "value" (TPrim "String") "" False]]] "" ["s"] in
+  let l = Lang "Core" "File" [Sort "Expr" [Prod "Lit" [Field "value" (TPrim "String") "" False]]] "Core" ["s"] (AsTrees ["TokenInt"] ["TokenSpace"] [TokenField.TokenField "Lit" "value" ["TokenInt"]]) in
   assertEq (fromDatum (toDatum l)) (Ok l) "the same language back"
 
 @test fun allOfIsNoneIfAnyIs () =

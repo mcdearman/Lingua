@@ -238,3 +238,11 @@ fun said (script : [Int]) : Events String =
 @test fun aParseThatSaidNothingIsOneRoot () =
   match build "File" (said []) sample with
   | (g, errs) -> assertEq (dump (\k -> k) g) "File\n  ws \" \"\n  let \"let\"\n  ws \" \"\n  ident \"x\"\n  ws \"\\n\"" "every token in it"
+
+-- Whether the token at `r` is on a path that ends in a token `isEnd` holds of,
+-- a segment each side of each separator: `a.b.c!` -- each of `a`, `b` and `c`
+-- is. What `syntax!`'s `context` entries `ending … via …` ask.
+@pub fun onPath (isEnd : Int -> Bool) (isSep : Int -> Bool) (isSeg : Int -> Bool) (r : Int) : Bool =
+  if isEnd (r + 1) then True
+  else if isSep (r + 1) and isSeg (r + 2) then onPath isEnd isSep isSeg (r + 2)
+  else False

@@ -463,6 +463,8 @@ ${arm "hover" "textDocument/hover" "LinguaLsp.hoverReply t (${fn "hover"} db fil
 -- --- tests --------------------------------------------------------------------------
 
 use Std.Test (assertEq)
+use Std.Macro (Expand)
+use Std.Collections.HashMap (HashMap)
 
 @test fun aColumnIsCountedInUtf16 () =
   -- `é` is two bytes and one unit; `𝑥` four bytes and two units.

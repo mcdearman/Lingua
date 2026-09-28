@@ -7,6 +7,7 @@
 use Scythe (lexer!)
 use Lingua (syntax!, lang!, pass!)
 use Lingua.Green (Green, dump, text)
+use Lingua.Green as LinguaGreen
 use Std.Collections.Vector as V
 use Std.String as S
 
@@ -243,6 +244,48 @@ fun evalCore (a : CoreArena) env (e : CoreExpr) : Int =
              | Just (CoreStmtView.Let l) -> assertEq (metaCoreExpr a l.value) (Meta.Meta 8 13) "the bytes of `1 + 2`"
              | _ -> assertEq 0 1 "a let"))
   | None -> assertEq 0 1 "a program"
+
+-- The same, read straight off the tree: no `Surface` tables in between.
+pass! {
+  pub lowerTree : Calc -> Core
+    | Bin { lhs, op, rhs } -> Prim { op = op, args = [lhs, rhs] }
+}
+
+@test fun aPassReadsATreeAsItIs () =
+  match parseCalc "let x = 2 * (3 + 4);\nlet y = x - 10 - 1;" with
+  | (g, _) -> assertEq (bindingsOf (lowerTree (R.root g))) [("x", 14), ("y", 3)] "the same answers as from tables"
+
+-- A language of trees, as the parser's is, with a node of its own: two
+-- expressions side by side.
+lang! {
+  pub Paired extends Calc
+  Expr + Pair { left : Expr, right : Expr }
+}
+
+-- From the parser's trees to `Paired`'s: each sum made a pair of what it adds,
+-- and nothing else touched. The pair keeps what was between its sides -- here
+-- the `+` -- so the text is the text it was.
+pass! {
+  pub pairUp : Calc -> Paired
+    | Bin { lhs, raw op, rhs } -> (if R.text op == "+" then Pair { left = lhs, right = rhs } else Bin { lhs = lhs, op = LinguaW.kept op, rhs = rhs })
+}
+
+@test fun aPassWritesATreeKeepingEveryByte () =
+  let input = "let x = 1 + 2 * 3;\nlet y = x;" in
+  match parseCalc input with
+  | (g, _) ->
+      let h = pairUp (R.root g) in
+      let a = assertEq (text h) input "every byte, in order" in
+      assertEq
+        (V.map
+          (\s ->
+            match s with
+            | PairedLet n (PairedPair l (PairedBin x op y)) -> "${R.text n} = ${R.text l} and ${R.text x} ${R.text op} ${R.text y}"
+            | PairedLet n v -> "${R.text n} = ${R.text v}"
+            | _ -> "?")
+          (R.nodes (R.root h)))
+        ["x = 1 and 2 * 3", "y = x"]
+        "the sum a pair, the product as it was"
 
 @test fun aProgramWithSomethingMissingHasNoSurface () =
   match parseCalc "let x = ;" with

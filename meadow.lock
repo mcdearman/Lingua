@@ -12,8 +12,8 @@ tree = "efe45c638977f2ed42635f3a743269a0a31f55b2"
 [[package]]
 name = "Scythe"
 source = "git+https://github.com/mcdearman/Scythe.git?branch=master"
-rev = "ea75605dc43f3db611c62c0abd435a2d3637720f"
-tree = "f62c1bdef2b708fef826792c9821f863f63380b1"
+rev = "36e77e30fdccb145a988c292f90fd56dbf6a6bfa"
+tree = "543f9dae3b0683667cdfccf427416f8b8becdcc9"
 
 [[package]]
 name = "UnicodeWidth"

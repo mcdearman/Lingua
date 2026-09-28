@@ -536,6 +536,7 @@ use Untag.*
 -- --- tests -------------------------------------------------------------------
 
 use Std.Test (assertEq)
+use Std.Collections.HashMap (HashMap)
 
 -- A spreadsheet, by hand: two cells, each an input, their lengths, a total of
 -- the lengths, and a few ways to go wrong.

@@ -216,6 +216,7 @@ data Green k = Green String   -- the text it covers
   #[Int] #[Int]               -- where each starts and ends in that text
   #[Int]                      -- how many slots its subtree takes; 0 for a token
   #[Int]                      -- its parent's slot; -1 for the root
+  #[Int] #[Int]               -- where each stands, when not where it is
 ```
 
 A node's children follow it, each after the whole subtree of the one before,
@@ -240,13 +241,33 @@ Concatenating the tokens of a green tree gives back the source, byte for byte;
 a test says so for every example. A lexer error is kept too: the text Scythe
 stopped on becomes an error token, and the tree still covers every byte.
 
+**Parsing tokens.** Not every input is text. A macro writes tokens -- some
+the call passed in, which stand where they were written, and some its
+template wrote, which stand where the call is -- and they are to be parsed
+there. So `syntax!` writes a second entry point beside `parseCalc`:
+`parseCalcTokens`, given the lexer's tokens, each with the bytes it stands for
+and its text. The parser and the builder are the same; what differs is the
+tree. Its text is the tokens' texts, a space between each two, so that
+reading it still reads them apart -- and each slot has an **origin**, the two
+last tables: where a token stands, and a node from its first token's to its
+last's, as a parser's spans do. The spaces between are trivia that stand
+where they are. A tree parsed from text has no origin tables at all, and
+costs what it did; a slot without an origin (-1) stands where it is. The
+context rules (`context`) read the given tokens as they read lexed ones, and
+an error is said where the token it was said at stands. `subtree` and
+`Green.node` carry origins along, so a pass that rewrites a tree
+(`Lingua.Rewrite`) keeps them.
+
 The **red view** is where positions and parents live: a cursor over the green
 tree, made on demand and never stored. The tables already say where each slot
 starts and which is its parent, so a cursor is only a tree and a slot.
+`offset`, `range` and what is found at a byte are where a slot stands; its
+place in the tree's own text, which is what is spliced when a tree is
+rewritten, is `textRange`.
 
 ```meadow
 data Syntax k = Syntax (Green k) Int
-kind, text, range, children, parent, ancestors, tokenAt, nodeAt
+kind, text, range, textRange, children, parent, ancestors, tokenAt, nodeAt
 ```
 
 ## 4. Typed AST, from the labels
@@ -273,7 +294,7 @@ built-in type is -- and meet nothing of the program's, or of another grammar's:
 | a rule's type         | `CalcLet`, `CalcExpr`                                                                     |
 | its cast and way back | `asCalcLet`, `syntaxCalcLet`                                                              |
 | an accessor           | `calcLetName`                                                                             |
-| the entry points      | `parseCalc`, `astCalc`                                                                    |
+| the entry points      | `parseCalc`, `parseCalcTokens`, `astCalc`                                                 |
 | the parser's own      | `linguaCalc_<x>`, `x` lower case where a rule's is upper                                  |
 
 A node rule and a token of one name are two kinds, and none of them is one of
@@ -414,7 +435,10 @@ reference-counted language needs of its trees. For `Core` the code has:
 | `subCoreExpr a e`                             | a node and everything under it, as a program of its own      |
 
 and each reading function again, suffixed `In`, reading a builder while it is
-written. Asking a node's kind and reading its fields makes nothing; a view
+written. A field of one thing -- a node, a number, a truth, a text -- can be
+written again on a node already written, `setCoreLamParam b e v`: what a pass
+that fixes up what it wrote needs, such as taking the hygiene marks off the
+names a macro's expansion wrote once it is clear which names are locals. Asking a node's kind and reading its fields makes nothing; a view
 makes one value, to match on where that reads better. Each production is also
 a **pattern synonym** over a node and its tables, and a sort's productions
 together cover it, so the tables are matched as if they were a data type:

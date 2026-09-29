@@ -7,7 +7,7 @@
 -- is at this offset" live here.
 
 use Std.Collections.Vector as V
-use Lingua.Green (Green, kindAt, startAt, endAt, isTokenAt, parentAt, childSlots, textAt, subtree, firstChild, nextSibling)
+use Lingua.Green (Green, kindAt, startAt, endAt, fromAt, toAt, isTokenAt, parentAt, childSlots, textAt, subtree, firstChild, nextSibling)
 
 use Syntax.*
 
@@ -21,14 +21,19 @@ use Syntax.*
 
 @pub fun kindOf (s : Syntax k) : k = match s with | Syntax g i -> kindAt g i
 
--- Where it starts, in bytes from the start of the file.
-@pub fun offset (s : Syntax k) : Int = match s with | Syntax g i -> startAt g i
+-- Where it starts, in bytes from the start of the file: where it stands, for
+-- a tree parsed from tokens (`Lingua.Green`).
+@pub fun offset (s : Syntax k) : Int = match s with | Syntax g i -> fromAt g i
 
 -- Where it ends: the byte after its last.
-@pub fun endOffset (s : Syntax k) : Int = match s with | Syntax g i -> endAt g i
+@pub fun endOffset (s : Syntax k) : Int = match s with | Syntax g i -> toAt g i
 
 -- The bytes it covers: from its offset up to, not including, its end.
-@pub fun range (s : Syntax k) : (Int, Int) = match s with | Syntax g i -> (startAt g i, endAt g i)
+@pub fun range (s : Syntax k) : (Int, Int) = match s with | Syntax g i -> (fromAt g i, toAt g i)
+
+-- Where its text is in the tree's: its range, but for a tree parsed from
+-- tokens, whose tokens stand elsewhere.
+@pub fun textRange (s : Syntax k) : (Int, Int) = match s with | Syntax g i -> (startAt g i, endAt g i)
 
 @pub fun text (s : Syntax k) : String = match s with | Syntax g i -> textAt g i
 
@@ -95,7 +100,7 @@ use Syntax.*
         | Just c -> nodeAt at c
         | None -> Just s
 
-fun inside (g : Green k) (at : Int) (i : Int) : Bool = at >= startAt g i and at < endAt g i
+fun inside (g : Green k) (at : Int) (i : Int) : Bool = at >= fromAt g i and at < toAt g i
 
 -- --- tests -------------------------------------------------------------------
 

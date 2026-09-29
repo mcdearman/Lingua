@@ -112,6 +112,23 @@ fun lines (s : String) : [String] = S.split "\n" s
       let a = assertEq (text g) "let x = ;\nlet y = 2;" "still every byte" in
       assertEq errs [(8, "expected Expr")] "at the `;`, and the next statement still parses"
 
+-- `x + 1;` as a macro might write it: the `x` and the `1` from its call, the
+-- rest from its template, standing where the call is.
+def given : [(Token, Int, Int, String)] =
+  [(Token.Ident "x", 3, 4, "x"), (Token.Plus, 0, 20, "+"), (Token.Number "1", 9, 10, "1"), (Token.Semi, 0, 20, ";")]
+
+@test fun givenTokensAreParsedWhereTheyStand () =
+  match parseCalcTokens given with
+  | (g, errs) ->
+      let a = assertEq errs [] "no errors" in
+      let b = assertEq (text g) "x + 1 ;" "their texts, a space apart" in
+      let bin = V.getOr (R.root g) (V.filter (\s -> R.kindOf s == Calc.NodeBin) (R.nodes (V.getOr (R.root g) (R.nodes (R.root g)) 0))) 0 in
+      assertEq (R.range bin, V.map R.range (R.tokens bin)) ((3, 10), [(1, 2), (0, 20), (3, 4)]) "the sum from the `x` to the `1`; its `+` where the call is, the spaces where they are"
+
+@test fun anErrorInGivenTokensIsWhereTheyStand () =
+  match parseCalcTokens [(Token.Let, 0, 20, "let"), (Token.Equals, 0, 20, "="), (Token.Semi, 30, 31, ";")] with
+  | (g, errs) -> assertEq errs [(0, "expected `ident`"), (30, "expected Expr")] "at the `=`, which stands where the call is, and at the `;`"
+
 @test fun aStrayTokenIsAnErrorAndTheRestParses () =
   match parseCalc ") 1;" with
   | (g, errs) ->

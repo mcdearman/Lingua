@@ -678,6 +678,18 @@ fun accessor pub l p i =
 ${pub}fun ${name} (a : ${arenaTy l}) (e : Int) : ${valueTy l (fieldTy f)} = match a with | ${tables l "${n}Arena"} -> ${decode l False (fieldTy f) (slotGet False "arrayGet lingua_firsts e + ${show i}") 0}
 
 ${pub}fun ${name}In (b : ${builderTy l}) (e : Int) = match b with | ${tables l "${n}Builder"} -> ${decode l True (fieldTy f) (slotGet True "LinguaBuf.at lingua_firsts e + ${show i}") 0}
+${setter pub l p i f}"
+
+-- A field of one thing -- a node, a number, a truth, a text -- written again
+-- on a node already written: what a pass that fixes up what it wrote uses.
+fun setter pub l p i f =
+  match fieldTy f with
+  | TMany _ -> ""
+  | TOpt _ -> ""
+  | t ->
+      let n = langName l in
+      "
+${pub}fun set${n}${prodName p}${upperFirst (fieldName f)} (b : ${builderTy l}) (e : Int) (lingua_v : ${valueTy l t}) = match b with | ${tables l "${n}Builder"} -> LinguaBuf.put lingua_slots (LinguaBuf.at lingua_firsts e + ${show i}) (${encode l t "lingua_v" 0})
 "
 
 -- The conversion from the typed AST of the grammar the language was read off:
@@ -1155,7 +1167,7 @@ fun treeArm pass ctx from to cases p fallback : [TokenTree] =
         let here = if mentions "here" body then "let here = LinguaL.spanMeta lingua_ms lingua_me in " else "" in
         let out = if mentions "out" body then "let out = lingua_out in " else "" in
         let binds = S.join "" (V.map (\f -> treeBind pass ctx from to p lates raws (fst f)) fs) in
-        let answer = if isTree to then [Code "LinguaW.cover lingua_src lingua_ms lingua_me ", Group Paren (rewrite to body) Nowhere] else [Group Paren (rewrite to body) Nowhere] in
+        let answer = if isTree to then [Code "LinguaW.cover lingua_src (fst (LinguaR.textRange lingua_x)) (snd (LinguaR.textRange lingua_x)) ", Group Paren (rewrite to body) Nowhere] else [Group Paren (rewrite to body) Nowhere] in
         [Group Paren (V.concat [[Code (open ++ span ++ here ++ out ++ binds)], answer, [Code close]]) Nowhere]
     | None ->
         if inner then [Code "${pass}${prodName p} lingua_src lingua_out ${c}lingua_x"]

@@ -860,8 +860,9 @@ fun elementAt spec env counter x e xs i rbp =
 
 fun isSeq x = match x with | Seq _ -> True | _ -> False
 
--- `parseCalc`: lex, parse, build.
-fun entry spec pub root lx = (if V.isEmpty spec.context then streamed spec lx else gathered spec lx) ++ parseEntry spec pub root
+-- `parseCalc`: lex, parse, build; and `parseCalcTokens`, the same from
+-- tokens given rather than lexed.
+fun entry spec pub root lx = (if V.isEmpty spec.context then streamed spec lx else gathered spec lx) ++ tokensEntry spec pub lx ++ parseEntry spec pub root
 
 -- The lexer's tokens, a kind each by the tokens around it: gathered first,
 -- then kinded, then given to the builder as `streamed` gives them.
@@ -914,6 +915,28 @@ fun ${fn spec "lexemes"} (input : String) =
         Ok (LinguaB.lexemesFrom input l))
 "
 
+-- Each given token's kind: by the table, and then -- with `context` -- by
+-- the tokens around it, as a lexed one's is.
+fun tokensEntry spec pub lx =
+  let base = "(LinguaV.map (\\x -> match x with | (t, _, _, _) -> ${fn spec "kindOf"} t) tokens)" in
+  let kinds =
+    if V.isEmpty spec.context then base
+    else
+      "(let ts = LinguaV.map (\\x -> match x with | (t, s, e, _) -> (t, s, e)) tokens in
+        let base = ${base} in
+        let real = LinguaV.filter (\\i -> not (${fn spec "isTrivia"} (LinguaV.getOr ${kx spec "Unknown"} base i))) (LinguaV.range 0 (LinguaV.len ts)) in
+        LinguaV.foldl (\\ks r -> match LinguaV.get real r with | Just i -> LinguaV.set ks i (${fn spec "contextKind"} ts real r (LinguaV.getOr ${kx spec "Unknown"} ks i)) | None -> ks) base (LinguaV.range 0 (LinguaV.len real)))" in
+  "
+-- `tokens` -- each the lexer's token, the bytes it stands for, and its text,
+-- as a macro writes them -- as a tree, and every error with the byte it is
+-- at: where the token it was said at stands. The tree's text is the tokens',
+-- a space between each two, and each token stands where it came from, each
+-- node where its tokens do (`Lingua.Green`).
+${pub}fun parse${spec.name}Tokens (tokens : [(${lx}, Int, Int, String)]) =
+  let lexemes = LinguaB.tokenLexemes ${kx spec "Unknown"} ${fn spec "isTrivia"} ${kinds} (LinguaV.map (\\x -> match x with | (_, s, e, t) -> (s, e, t)) tokens) in
+  ${fn spec "parsed"} lexemes
+"
+
 fun parseEntry spec pub root =
   "
 -- `input` as a lossless tree, and every error with the byte it is at: a pure
@@ -922,14 +945,17 @@ ${pub}fun parse${spec.name} (input : String) =
   match ${fn spec "lexemes"} input with
   | Err err ->
       (LinguaG.node ${kn spec root} [LinguaG.token ${kx spec "Unknown"} input], [(LinguaScythe.errorAt err, \"the lexer stopped here\")])
-  | Ok lexemes ->
-      let kinds = LinguaB.parsedKinds lexemes in
-      let events =
-        runSt (\\() ->
-          let p = LinguaP.parser kinds ${kx spec "Eof"} ${kx spec "ErrorNode"} ${fn spec "name"} in
-          let _ = ${fn spec root} p in
-          LinguaP.events p) in
-      LinguaB.build ${kn spec root} events lexemes
+  | Ok lexemes -> ${fn spec "parsed"} lexemes
+
+-- Lexemes parsed, and built into a tree.
+fun ${fn spec "parsed"} lexemes =
+  let kinds = LinguaB.parsedKinds lexemes in
+  let events =
+    runSt (\\() ->
+      let p = LinguaP.parser kinds ${kx spec "Eof"} ${kx spec "ErrorNode"} ${fn spec "name"} in
+      let _ = ${fn spec root} p in
+      LinguaP.events p) in
+  LinguaB.build ${kn spec root} events lexemes
 "
 
 -- --- the typed AST -----------------------------------------------------------------

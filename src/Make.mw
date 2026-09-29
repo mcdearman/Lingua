@@ -52,7 +52,8 @@ use Std.Path as Path
 use Std.Json as J
 use Std.Json (Json)
 use Std.Thread as Thread
-use Std.Fs (Fs, readToString, readBytes, writeString, writeBytes, appendString, removeFile, removeDirAll, createDirAll, readDir, isDir, exists)
+use Std.Fs (Fs, FileMeta, readToString, readBytes, writeString, writeBytes, appendString, removeFile, removeDirAll, createDirAll, readDir, isDir, exists, metadata)
+use Std.Process (Process, argv)
 use Std.Console (Console, writeOutput)
 use Std.Macro (Datum, Reflect, toDatum, fromDatum)
 use Std.Sort (sort)
@@ -135,13 +136,29 @@ use Built.*
 
 fun statePath root = Path.joinAll [root, "target", "lingua-build.json"]
 
-fun loadState (root : String) : HashMap String Built ! { Fs | e } =
+fun loadState (root : String) : HashMap String Built ! { Fs, Process | e } =
   match readToString (statePath root) with
   | Err _ -> HashMap.empty
   | Ok text ->
-      (match M.andThen J.asObject (M.andThen (J.get "units") (okOf (J.parse text))) with
-       | None -> HashMap.empty
-       | Just us -> V.foldl (\m u -> match builtOf (snd u) with | Just b -> HashMap.insert (fst u) b m | None -> m) HashMap.empty us)
+      let state = okOf (J.parse text) in
+      -- What another compiler built says nothing about what this one would:
+      -- an interface is the compiler's as much as the sources'.
+      if M.andThen (\j -> M.andThen J.asString (J.get "compiler" j)) state != Just (compilerId ()) then HashMap.empty
+      else
+        (match M.andThen J.asObject (M.andThen (J.get "units") state) with
+         | None -> HashMap.empty
+         | Just us -> V.foldl (\m u -> match builtOf (snd u) with | Just b -> HashMap.insert (fst u) b m | None -> m) HashMap.empty us)
+
+-- The compiler running this build, as far as it can tell: the program it is,
+-- and how long that is -- which a rebuilt compiler all but always changes.
+fun compilerId () : String ! { Fs, Process | e } =
+  match V.get (argv ()) 0 with
+  | None -> ""
+  | Just exe ->
+      let found = V.find (\p -> exists p) [exe, exe ++ ".exe"] in
+      match M.andThen (\p -> okOf (metadata p)) found with
+      | Just (m : FileMeta) -> "${Path.normalize (M.unwrapOr exe found)}#${show m.len}"
+      | None -> exe
 
 fun builtOf (j : Json) : Maybe Built =
   let int = \k -> M.andThen J.asInt (J.get k j) in
@@ -167,7 +184,7 @@ fun saveState (root : String) (state : HashMap String Built) =
                  (fst p, J.jObject [("sources", J.jInt s), ("against", J.jArray (V.map (\d -> J.jArray [J.jString (fst d), J.jInt (snd d)]) ds)), ("interface", datumJson i), ("fingerprint", J.jInt f)]))
       (HashMap.toVec state) in
     let u = createDirAll (Path.joinAll [root, "target"]) in
-    writeString (statePath root, J.renderIndented (J.jObject [("lingua", J.jInt 1), ("units", J.jObject units)]))
+    writeString (statePath root, J.renderIndented (J.jObject [("lingua", J.jInt 1), ("compiler", J.jString (compilerId ())), ("units", J.jObject units)]))
 
 -- --- building -------------------------------------------------------------------------
 

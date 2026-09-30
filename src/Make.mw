@@ -53,7 +53,7 @@ use Std.Json as J
 use Std.Json (Json)
 use Std.Thread as Thread
 use Std.Fs (Fs, FileMeta, readToString, readBytes, writeString, writeBytes, appendString, removeFile, removeDirAll, createDirAll, readDir, isDir, exists, metadata)
-use Std.Process (Process, argv)
+use Std.Process (Process, currentExe)
 use Std.Console (Console, writeOutput)
 use Std.Macro (Datum, Reflect, toDatum, fromDatum)
 use Std.Sort (sort)
@@ -149,15 +149,18 @@ fun loadState (root : String) : HashMap String Built ! { Fs, Process | e } =
          | None -> HashMap.empty
          | Just us -> V.foldl (\m u -> match builtOf (snd u) with | Just b -> HashMap.insert (fst u) b m | None -> m) HashMap.empty us)
 
--- The compiler running this build, as far as it can tell: the program it is,
--- and how long that is -- which a rebuilt compiler all but always changes.
+-- The compiler running this build, as far as it can tell: the program it is
+-- (`currentExe` -- the process's arguments do not say), how long it is, and
+-- when it was written, which a rebuilt compiler always changes. Its length
+-- alone let a rebuild that came out the same size pass for the old one, and
+-- the old one's interfaces be taken for its own.
 fun compilerId () : String ! { Fs, Process | e } =
-  match V.get (argv ()) 0 with
+  match (let exe = currentExe () in if S.isEmpty exe then None else Just exe) with
   | None -> ""
   | Just exe ->
       let found = V.find (\p -> exists p) [exe, exe ++ ".exe"] in
       match M.andThen (\p -> okOf (metadata p)) found with
-      | Just (m : FileMeta) -> "${Path.normalize (M.unwrapOr exe found)}#${show m.len}"
+      | Just (m : FileMeta) -> "${Path.normalize (M.unwrapOr exe found)}#${show m.len}#${show m.modified}"
       | None -> exe
 
 fun builtOf (j : Json) : Maybe Built =

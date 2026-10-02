@@ -52,8 +52,8 @@ use Std.Path as Path
 use Std.Json as J
 use Std.Json (Json)
 use Std.Thread as Thread
-use Std.Fs (Fs, FileMeta, readToString, readBytes, writeString, writeBytes, appendString, removeFile, removeDirAll, createDirAll, readDir, isDir, exists, metadata)
-use Std.Process (Process, currentExe)
+use Std.Fs (Fs, FileMeta, readToString, readBytes, writeString, writeBytes, appendString, removeFile, removeDirAll, createDirAll, readDir, isDir, exists, metadata, rename)
+use Std.Process (Process, currentExe, currentPid)
 use Std.Console (Console, writeOutput)
 use Std.Macro (Datum, Reflect, toDatum, fromDatum)
 use Std.Sort (sort)
@@ -187,7 +187,13 @@ fun saveState (root : String) (state : HashMap String Built) =
                  (fst p, J.jObject [("sources", J.jInt s), ("against", J.jArray (V.map (\d -> J.jArray [J.jString (fst d), J.jInt (snd d)]) ds)), ("interface", datumJson i), ("fingerprint", J.jInt f)]))
       (HashMap.toVec state) in
     let u = createDirAll (Path.joinAll [root, "target"]) in
-    writeString (statePath root, J.renderIndented (J.jObject [("lingua", J.jInt 1), ("compiler", J.jString (compilerId ())), ("units", J.jObject units)]))
+    -- Written aside and moved into place, so that a build running beside this
+    -- one never reads half of it.
+    let aside = "${statePath root}.${show (currentPid ())}" in
+    -- Unindented: every build reads all of it, and indenting made it seven
+    -- times as long.
+    let w = writeString (aside, J.render (J.jObject [("lingua", J.jInt 1), ("compiler", J.jString (compilerId ())), ("units", J.jObject units)])) in
+    rename (aside, statePath root)
 
 -- --- building -------------------------------------------------------------------------
 

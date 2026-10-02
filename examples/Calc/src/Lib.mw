@@ -64,7 +64,7 @@ syntax! {
   match parseCalc input with
   | (g, errs) -> dump display g
 
-def main =
+fun main () =
   let input = "let rate = 2 * (x + 40); // how much\nf(rate, 1);\n" in
   println (drawn input)
 
@@ -260,6 +260,26 @@ fun evalCore (a : CoreArena) env (e : CoreExpr) : Int =
             (match M.map (viewCoreStmt a) (V.get r.stmts 0) with
              | Just (CoreStmtView.Let l) -> assertEq (metaCoreExpr a l.value) (Meta.Meta 8 13) "the bytes of `1 + 2`"
              | _ -> assertEq 0 1 "a let"))
+  | None -> assertEq 0 1 "a program"
+
+-- A case that looks at a child before translating it: `0 + e` is `e`, and
+-- anything else a `Prim` of both sides -- its left one translated by the
+-- case itself, when it is kept.
+pass! {
+  pub lowerFolding : Surface -> Core
+    | Bin { raw lhs, op, rhs } ->
+        (if kindSurfaceExpr src lhs == SurfaceExprKind.Literal and surfaceLiteralNumber src lhs == "0" and op == "+" then rhs
+          else Prim { op = op, args = [lowerFoldingExpr src out lhs, rhs] })
+}
+
+@test fun aTablePassCaseMayTakeAChildRaw () =
+  match M.map lowerFolding (surfaceFromCalc (fst (parseCalc "let x = 0 + 2 * 3;\nlet y = 1 + x;"))) with
+  | Just p ->
+      let a = coreArena p in
+      let top = (match viewCoreFile a (coreRoot p) with | CoreFileView.File r -> M.map (viewCoreStmt a) (V.get r.stmts 0)) in
+      let folded = (match top with | Just (CoreStmtView.Let l) -> corePrimOp a l.value | _ -> "") in
+      let u = assertEq folded "*" "`0 +` is gone" in
+      assertEq (bindingsOf p) [("x", 6), ("y", 7)] "and the rest lowered as before"
   | None -> assertEq 0 1 "a program"
 
 -- The same, read straight off the tree: no `Surface` tables in between.

@@ -517,6 +517,24 @@ is a function each, and one that may be missing is a function if it is there:
 each child is translated in the context it is in, so a `let` of several
 bindings can give each the scope the ones before it made.
 
+A case may also take a child **`raw`**: the row the source has for it, not
+translated at all, for a case that has to look at what a child is before it
+can say how to translate it -- `runSt`'s argument, say, whose body an
+elaboration types in a state of its own, or a handler's clauses, whose
+operations say what the body may perform before any clause is typed. In a
+case `src` is the source's tables, to read such a row with, and the pass's
+own functions -- `elaborateExpr src out env child` -- translate it when the
+case is ready:
+
+```meadow
+pass! {
+  pub lowerFolding : Surface -> Core
+  | Bin { raw lhs, op, rhs } ->
+      (if kindSurfaceExpr src lhs == SurfaceExprKind.Literal and surfaceLiteralNumber src lhs == "0" and op == "+" then rhs
+        else Prim { op = op, args = [lowerFoldingExpr src out lhs, rhs] })
+}
+```
+
 A context flows _down_ the tree; what a pass learns _across_ it -- every
 binder it met, what each is called and where, every use of each -- is a
 **side table** (`Lingua.Table`), and that is an effect rather than a

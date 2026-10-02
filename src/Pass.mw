@@ -66,6 +66,12 @@
 -- under a binder, the one with the binder in it. Without a context, a
 -- `later` field is a function of `()`.
 --
+-- A case may also take a field **`raw`**: the child as the source has it, a
+-- row of the source's tables, not translated at all -- for a case that has to
+-- look at what a child is before it can say how to translate it. `src` is the
+-- source's tables, to read it with; and each function the pass is made of,
+-- `elaborateExpr src out env child`, translates it when the case is ready.
+--
 -- What a pass learns across the tree, rather than down it -- the binders it
 -- met, say -- is a side table, `Lingua.Table`: an effect a case performs and
 -- whoever runs the pass handles once, not a parameter every case passes on.
@@ -918,9 +924,6 @@ fun passProblems name from to cases =
   let direction =
     if isTree to and not (isTree from) then [Fail "`${fst name}` would write a tree of `${langName to}` from `${langName from}`'s tables: a pass writes a tree from a tree" (snd name)]
     else [] in
-    let raws =
-      if isTree from then []
-      else V.concatMap (\c -> match c with | Case _ at _ _ rs _ -> (if V.isEmpty rs then [] else [Fail "`raw` takes a field as the tree has it, and `${langName from}` is tables, not a tree" at])) cases in
       let unknown =
         V.concatMap
         (\c -> match c with
@@ -949,7 +952,7 @@ fun passProblems name from to cases =
               V.concatMap
               (\n -> if V.any (\c -> caseName c == n) cases or V.elem n targets then [] else [Fail "`${langName to}` has no `${n}` as `${langName from}` has it: `${fst name}` needs a case for it" (snd name)])
               (treeNodes from) in
-              match V.get (V.concat [direction, raws, unknown, uncovered, unkept]) 0 with
+              match V.get (V.concat [direction, unknown, uncovered, unkept]) 0 with
               | Just f -> Just [f]
               | None -> None
 
@@ -1056,21 +1059,24 @@ fun arm pass ctx from to cases s p =
   let fl = lowerFirst (langName from) in
   let read = \f -> "${fl}${prodName p}${upperFirst f} lingua_src lingua_x" in
   match V.find (\k -> caseName k == prodName p) cases with
-  | Just (Case _ _ fs lates _ body) ->
+  | Just (Case _ _ fs lates raws body) ->
       let span = "let lingua_ms = ${fl}Start lingua_src lingua_x in let lingua_me = ${fl}End lingua_src lingua_x in " in
       let here = if mentions "here" body then "let here = LinguaL.spanMeta lingua_ms lingua_me in " else "" in
       let out = if mentions "out" body then "let out = lingua_out in " else "" in
-      let binds = S.join "" (V.map (bindField pass ctx p lates read) fs) in
-      [Code "\n  | ${st}Kind.${prodName p} -> ${span}${here}${out}${binds}", Group Paren (rewrite to body) Nowhere]
+      let src = if mentions "src" body then "let src = lingua_src in " else "" in
+      let binds = S.join "" (V.map (bindField pass ctx p lates raws read) fs) in
+      [Code "\n  | ${st}Kind.${prodName p} -> ${span}${here}${out}${src}${binds}", Group Paren (rewrite to body) Nowhere]
   | None ->
       let fields = V.map (\f -> " (${translate pass c (fieldTy f) (read (fieldName f))})") (prodFields p) in
       [Code "\n  | ${st}Kind.${prodName p} -> new${langName to}${prodName p}Span lingua_out (${fl}Start lingua_src lingua_x) (${fl}End lingua_src lingua_x)${S.join "" fields}"]
 
--- A field a case names, bound: translated already, or -- taken `later` -- a
--- function from a context to the child translated in it.
-fun bindField pass ctx p lates read f =
+-- A field a case names, bound: translated already; taken `later`, a
+-- function from a context to the child translated in it; or taken `raw`, the
+-- child as the source has it.
+fun bindField pass ctx p lates raws read f =
   let t = fieldTyOf p (fst f) in
   if V.elem (fst f) lates then "let ${fst f} = ${laterOf ctx (\c x w -> translate pass c x w) t (read (fst f))} in "
+  else if V.elem (fst f) raws then "let ${fst f} = ${read (fst f)} in "
   else "let ${fst f} = ${translate pass (given ctx) t (read (fst f))} in "
 
 -- A field taken `later`: a function from a context to the child translated in
@@ -1140,11 +1146,14 @@ fun treeSortPass pub pass ctx from to cases s : [TokenTree] =
   let arms =
     if V.len prods == 1 then V.concatMap (\p -> treeArm pass ctx from to cases p fallback) prods
     else
+      -- An arm of a `match` on the kind for each kind a production can be:
+      -- one switch, where a chain of `==` tested them one by one.
       V.concat
-        [ V.concatMap
-            (\p -> V.concat [[Code "if ${S.join " or " (V.map (\k -> "lingua_k == ${k}") (kindsOfProd from p))} then "], treeArm pass ctx from to cases p fallback, [Code " else "]])
+        [ [Code "match lingua_k with"],
+          V.concatMap
+            (\p -> V.concatMap (\k -> V.concat [[Code " | ${k} -> "], treeArm pass ctx from to cases p fallback]) (kindsOfProd from p))
             prods,
-          [Code fallback] ] in
+          [Code " | _ -> ", Code fallback] ] in
       V.concat
       [ [Code "\n${pub}fun ${pass}${sortName s} lingua_src lingua_out ${given ctx}lingua_x =\n  let lingua_k = LinguaR.kindOf lingua_x in\n  "],
         arms,
@@ -1203,8 +1212,11 @@ fun anyCode pub pass ctx from : String =
       (\acc pr -> if V.any (\q -> fst q == fst pr) acc then acc else V.pushBack acc pr)
       []
       (V.concatMap (\s -> V.concatMap (\p -> if innerEnum from p then [] else [("${langName from}.Node${prodName p}", sortName s)]) (sortProds s)) (langSorts from)) in
-    "\n${pub}fun ${pass}Any lingua_src lingua_out ${given ctx}lingua_x =\n  let lingua_k = LinguaR.kindOf lingua_x in\n  "
-    ++ S.join "" (V.map (\pr -> "if lingua_k == ${fst pr} then ${pass}${snd pr} lingua_src lingua_out ${given ctx}lingua_x else ") pairs)
+    -- One `match` on the kind, which compiles to one switch: a chain of `==`
+    -- tested the kinds one by one, for every node of the tree.
+    "\n${pub}fun ${pass}Any lingua_src lingua_out ${given ctx}lingua_x =\n  match LinguaR.kindOf lingua_x with\n"
+    ++ S.join "" (V.map (\pr -> "  | ${fst pr} -> ${pass}${snd pr} lingua_src lingua_out ${given ctx}lingua_x\n") pairs)
+    ++ "  | _ -> "
     ++ rebuildCode pass ctx
     ++ "\n"
 

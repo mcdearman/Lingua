@@ -65,7 +65,8 @@ use Std.Fs (Fs, readToString)
 use Std.Process (Process, exit, isTerminal)
 use Std.Console (Console, readLine, writeOutput)
 use Std.Result.Result.*
-use Std.Exn (toResult)
+use Std.Exn (toResult, catch)
+use Lingua.Query (QueryError)
 
 cli! {
   pub Cli "miniml" "MiniML, typed and run by a compiler written with Lingua"
@@ -78,8 +79,19 @@ cli! {
     | bench "Time each phase of the compiler on a generated program" { lines : Maybe String "how many lets; 2000 if none is given" }
 }
 
-def main =
-  match argsCli () with
+fun main () = catch failed (\() -> command (argsCli ()))
+
+-- A query read before it was set, or one that needs itself: a mistake of the
+-- compiler's, not of the program it read. It is said, and the run fails.
+fun failed (e : QueryError k) = let u = writeOutput (failure e) in exit 1
+
+fun failure (e : QueryError k) : String =
+  match e with
+  | QueryError.Unset _ -> "miniml: a query was read before it was set\n"
+  | QueryError.Cycle ks -> "miniml: ${show (V.len ks)} queries need each other\n"
+
+fun command (cli : Cli) =
+  match cli with
   | Cli.Check r -> finish (checkFiles r.files)
   | Cli.Run r -> finish (runFile r.file)
   | Cli.Repl -> repl ()

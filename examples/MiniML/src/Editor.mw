@@ -128,9 +128,9 @@ fun spelled src (ps : [(Int, Meta)]) = V.map (\p -> match snd p with | Meta a b 
 @test fun aFileIsFormattedAsOneEdit () =
   let src = "let x =\n1\nin x" in
   let db = editing src in
-  let a = assertEq (formattedOf db 1) "let x =\n  1\nin x" "the value a level in" in
+  let a = assertEq (formattedOf db 1) "let x = 1 in\nx" "the value after its `=`, and the body on its own line" in
   let b = assertEq
     (J.render (formatReply src (formattedOf db 1)))
-    "[{\"range\":{\"start\":{\"line\":0,\"character\":0},\"end\":{\"line\":2,\"character\":4}},\"newText\":\"let x =\\n  1\\nin x\"}]"
+    "[{\"range\":{\"start\":{\"line\":0,\"character\":0},\"end\":{\"line\":2,\"character\":4}},\"newText\":\"let x = 1 in\\nx\"}]"
     "the whole file, replaced" in
   assertEq (J.render (formatReply "1" "1")) "[]" "and nothing to do for one already set out"

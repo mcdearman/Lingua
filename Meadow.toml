@@ -5,3 +5,4 @@ version = "0.1.0"
 [dependencies]
 Scythe = { git = "https://github.com/mcdearman/Scythe.git", branch = "master" }
 Nettle = { git = "https://github.com/mcdearman/Nettle.git", branch = "master" }
+Pretty = { git = "https://github.com/mcdearman/MeadowPretty.git", version = "0.2.0" }

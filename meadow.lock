@@ -10,6 +10,13 @@ rev = "b59e370aea76f2fb5b2072c28f02564f047284fe"
 tree = "efe45c638977f2ed42635f3a743269a0a31f55b2"
 
 [[package]]
+name = "Pretty"
+source = "git+https://github.com/mcdearman/MeadowPretty.git?version=0.2.0"
+version = "0.2.1"
+rev = "0b60a413b84354c3734238f9cbd9f1ae89720ec0"
+tree = "b2b3b30b04a9fd3e5068770ce4546c03fb5b0667"
+
+[[package]]
 name = "Scythe"
 source = "git+https://github.com/mcdearman/Scythe.git?branch=master"
 rev = "36e77e30fdccb145a988c292f90fd56dbf6a6bfa"

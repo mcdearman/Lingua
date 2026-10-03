@@ -79,16 +79,20 @@ use Lingua.Green (dump)
 @pub(pkg) lang! { pub Surface from Mini }
 
 -- How MiniML is set out (`format!`): what each rule holds, in the grammar's
--- order, and which of it is a level in. `formatStyle` sets every line of a
--- program in by it, and `indentStyle` says where the line after an
--- unfinished one starts.
+-- order, which of it is a level in, and where it breaks when it does not fit
+-- in the width. A `let`'s value goes after its `=` if it fits and under it
+-- if not, and its body always starts a line; a function's body and an `if`'s
+-- branches go on the line they follow, or under it, a level in.
+-- `formatStyle` lays a program out by it, and `indentStyle` says where the
+-- line after an unfinished one starts.
 @pub(pkg) format! {
   pub Style for Mini
   indent 2
-  | Let   = "let" recursive name params "=" indent(value) "in" body
-  | Lam   = "fun" params "->" indent(body)
-  | If    = "if" cond indent("then" yes) indent("else" no)
-  | Paren = "(" indent(expr) ")"
+  width 80
+  | Let   = "let" recursive name params "=" group(indent(line value) line "in") newline body
+  | Lam   = "fun" params "->" indent(line body)
+  | If    = "if" cond indent(line "then" yes) indent(line "else" no)
+  | Paren = "(" indent(cut expr) cut ")"
 }
 
 -- The tree of `input`, drawn.
@@ -126,9 +130,67 @@ use Std.Result.Result.*
 
 -- The formatter.
 
-fun formatted (src : String) : String = formatStyle (fst (parseMini src))
+-- The same rules in twenty columns, to see them break; and with no width at
+-- all, which only sets lines in and leaves them broken where they were.
+format! {
+  Narrow for Mini
+  indent 2
+  width 20
+  | Let   = "let" recursive name params "=" group(indent(line value) line "in") newline body
+  | Lam   = "fun" params "->" indent(line body)
+  | If    = "if" cond indent(line "then" yes) indent(line "else" no)
+  | Paren = "(" indent(cut expr) cut ")"
+}
+
+format! {
+  Indents for Mini
+  indent 2
+  | Let   = "let" recursive name params "=" indent(value) "in" body
+  | Lam   = "fun" params "->" indent(body)
+  | If    = "if" cond indent("then" yes) indent("else" no)
+  | Paren = "(" indent(expr) ")"
+}
+
+fun laidOut (src : String) : String = formatStyle (fst (parseMini src))
+
+fun narrow (src : String) : String = formatNarrow (fst (parseMini src))
+
+fun formatted (src : String) : String = formatIndents (fst (parseMini src))
 
 fun opens (src : String) : String = indentStyle (fst (parseMini src))
+
+-- What was written, without the space between: what laying out must not change.
+fun written (src : String) : String =
+  S.join "" (V.concatMap (\i -> let c = stringSlice src i (i + 1) in if c == " " or c == "\n" or c == "\t" then [] else [c]) (V.range 0 (stringByteLength src)))
+
+@test fun whatFitsGoesOnOneLine () =
+  assertEq
+    (laidOut "let x =\n1 + 2\nin\n      if x < 3\nthen (\nx\n)\nelse fun y ->\ny\n")
+    "let x = 1 + 2 in\nif x < 3 then (x) else fun y -> y\n"
+    "the value after its `=`, the body on a line of its own, and each of them whole"
+
+@test fun whatDoesNotFitBreaksWhereItsRuleSays () =
+  let a = assertEq
+    (narrow "let x = 1 + 2 in if x < 3 then (x) else fun y -> y")
+    "let x = 1 + 2 in\nif x < 3\n  then (x)\n  else fun y -> y"
+    "the `if` breaks before each branch, and each branch still fits" in
+  assertEq
+    (narrow "let total = (first + second + third) in total")
+    "let total =\n  (\n    first + second + third\n  )\nin\ntotal"
+    "the value under its `=`, and the parentheses around what they hold"
+
+@test fun aNodeBreaksOnlyWhenItDoesNotFit () =
+  -- The inner `let` has a body, which starts a line: so the outer value
+  -- cannot go on one, and is under its `=`.
+  assertEq (laidOut "let x = let y = 1 in y in x") "let x =\n  let y = 1 in\n  y\nin\nx" "a level in, and the `in` back out"
+
+@test fun aCommentKeepsItsLineAndBreaksWhatHoldsIt () =
+  assertEq (laidOut "let x = -- note\n1 in x") "let x =\n  -- note\n  1\nin\nx" "the comment before the value, where it was"
+
+@test fun layingOutChangesOnlyTheSpace () =
+  let srcs = ["let x =\n(1 +\nin x", "let rec f n = if n < 2 then 1 else n * f (n - 1) in f 5 -- five\n", "fun x -> fun y ->\n\n  x  +  y", "if a then", ")(", ""] in
+  let a = assertEq (V.map (\s -> written (narrow s)) srcs) (V.map written srcs) "every token still there, in order, broken program or not" in
+  assertEq (V.map (\s -> narrow (narrow s)) srcs) (V.map narrow srcs) "and laid out twice is laid out once"
 
 @test fun everyLineIsSetInAsTheRulesSay () =
   assertEq

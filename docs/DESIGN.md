@@ -752,30 +752,39 @@ documents open -- and the server says it can do exactly what it was given.
 **`format!`** declares a formatter against a grammar's rules. A rule of the
 formatter is a rule of the grammar written again as what a node of it holds,
 in the grammar's order -- a token as it is written, a child by its label --
-and `indent(…)` around what is a level in from where the node began:
+with how it is set out around and between them:
 
 ```meadow
 format! {
   pub Style for Mini
   indent 2
-  | Let   = "let" recursive name params "=" indent(value) "in" body
-  | Lam   = "fun" params "->" indent(body)
-  | If    = "if" cond indent("then" yes) indent("else" no)
-  | Paren = "(" indent(expr) ")"
+  width 80
+  | Let   = "let" recursive name params "=" group(indent(line value) line "in") newline body
+  | Lam   = "fun" params "->" indent(line body)
+  | If    = "if" cond indent(line "then" yes) indent(line "else" no)
+  | Paren = "(" indent(cut expr) cut ")"
 }
 ```
 
-A rule it does not mention is left as written, so a formatter is adopted a
-rule at a time; a rule or a child the grammar does not have is an error where
-it was named. The rules are matched against the lossless tree's children as
-they are met, so a program with something missing or wrong in it is set out
-as far as it reads. What is written is two functions of a tree:
+`indent(…)` is a level in from where the node began. `group(…)` goes on one
+line if it fits and breaks together if not, and a rule is a group as a
+whole. Between two things, `line` is a space or -- where its group breaks --
+a line's end, `cut` nothing or a line's end, `newline` a line's end always,
+and `tight` nothing; with none of them, a space. A rule or a child the
+grammar does not have is an error where it was named. What is written is two
+functions of a tree:
 
-- `formatStyle`, its text with every line set in: one level for each *line*
-  on which a node began whose indented part the line starts in -- `let f =
-  fun y ->` opens two nodes on one line, and what follows is in by one level.
-  A line that starts inside a token, a comment over several lines, is left
-  alone. Given to `lsp!` as `format`, it is the editor's formatting.
+- `formatStyle`, its text laid out in the width: each node with a rule on
+  one line if it fits and broken where the rule says if not, each child by
+  its own rule in turn. A node no rule is for is written as it was, its
+  breaks where they were, so a formatter is adopted a rule at a time. A
+  comment keeps a line of its own before what it was written before. Only
+  the space between tokens changes: the rules are matched against the
+  lossless tree's children as they are met, and a child a rule did not name
+  -- something the parser could not place -- is written where it was, so a
+  broken program loses nothing. Given to `lsp!` as `format`, it is the
+  editor's formatting. Lines are broken by
+  [Pretty](https://github.com/mcdearman/MeadowPretty), Wadler's printer.
 - `indentStyle`, what the line after an *unfinished* text opens with: a
   level for each line on which a node began that is still open at the end,
   in its indented part -- there and running to the end, `let x = 1 +`, or
@@ -783,10 +792,10 @@ as far as it reads. What is written is two functions of a tree:
   when Enter does not finish an entry, and it is the formatter's answer, so
   what is typed is indented as it would be formatted.
 
-This is the first of two steps: indentation, with lines broken where the
-program broke them. Laying a node out again within a width is the step
-after, which is why a rule is written whole rather than as a list of what to
-indent.
+A formatter with no `width` only indents: lines stay broken where the
+program broke them, and each is set in one level for each *line* on which a
+node began whose indented part it starts in -- `let f = fun y ->` opens two
+nodes on one line, and what follows is in by one level.
 
 **Names** are resolved as a pass, the first after the grammar's: which `x` a
 use means depends on what is around it, which the pass's **context** (§5)
@@ -851,10 +860,10 @@ unit may want threads and a cache of its own.
 6. **Tooling** (§8), on MiniML: `cli!`, `lsp!`, name resolution as a pass
    with a context, and `make!` over compilation units. Done, on every Meadow
    runtime; the next language to get them is Meadow itself.
-7. **Formatting and the prompt** (§8). `format!`: indentation from rules
-   written against the grammar, the editor's formatting and the indent a
-   continuation line opens with -- done, on MiniML. To come: layout within a
-   width; and `repl!`, a prompt over a session with the server's features --
+7. **Formatting and the prompt** (§8). `format!`: rules written against
+   the grammar, laid out within a width or only indented, the editor's
+   formatting and the indent a continuation line opens with -- done, on
+   MiniML. To come: `repl!`, a prompt over a session with the server's features --
    an entry unfinished while the parser's only errors are at its end,
    indented by the formatter, with a finder over the session's declarations
    -- which waits on a terminal Meadow's `Std` can drive.

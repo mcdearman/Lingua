@@ -112,9 +112,10 @@ syntax! {
   and formatting from the language's own queries, and semantic tokens, folds and
   selection ranges from the lossless tree.
 - **`format!`** declares a formatter against a grammar's rules -- what each
-  node holds, and which of it is a level in -- and writes the function that
-  sets every line of a program in by them, which is the editor's formatting,
-  and the one that says where the line after an unfinished entry starts.
+  node holds, which of it is a level in, and where it breaks when it does
+  not fit -- and writes the function that lays a program out within a width,
+  which is the editor's formatting, and the one that says where the line
+  after an unfinished entry starts.
 - **`make!`** declares a build over compilation units: each compiled in
   dependency order, those that can be at once, and again only when its files
   or an interface it read changed -- what happens inside a unit being the

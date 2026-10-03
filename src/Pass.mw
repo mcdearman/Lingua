@@ -569,13 +569,13 @@ fun kindCode pub l s =
   let prods = sortProds s in
   let decide = "${lowerOf l}${sortName s}Kind" in
   let last = V.getOr (Prod "" []) prods (V.len prods - 1) in
-  let tests = V.map (\p -> "if tag == ${show (tagOf l (prodName p))} then ${t}Kind.${prodName p} else ") (V.take prods (V.len prods - 1)) in
+  let tests = V.map (\p -> " | ${show (tagOf l (prodName p))} -> ${t}Kind.${prodName p}") (V.take prods (V.len prods - 1)) in
   "
 -- Which production a `${t}` is.
 @derive(Debug, PartialEq)
 ${pub}data ${t}Kind = ${S.join " | " (V.map prodName prods)}
 
-fun ${decide} (tag : Int) : ${t}Kind = ${S.join "" tests}${t}Kind.${prodName last}
+fun ${decide} (tag : Int) : ${t}Kind = match tag with${S.join "" tests} | _ -> ${t}Kind.${prodName last}
 
 ${pub}fun kind${t} (a : ${arenaTy l}) (e : Int) : ${t}Kind = ${decide} (LinguaL.tag ${rows l False} e)
 
@@ -680,8 +680,8 @@ ${pub}fun ${name}${t}In (b : ${builderTy l}) (e : Int) = ${read True}
 
 -- A shared field read off node `e`, where its production keeps it.
 fun sharedReader l f prods (builder : Bool) =
-  let place = S.join "" (V.map (\p -> "if lingua_t == ${show (tagOf l (prodName p))} then ${show (fieldIndex p (fieldName f))} else ") prods) in
-  "(let lingua_t = ${reader builder "tag"} ${rows l builder} e in let lingua_j = ${place}0 in ${fieldRead l builder (fieldTy f) "lingua_j"})"
+  let place = S.join "" (V.map (\p -> " | ${show (tagOf l (prodName p))} -> ${show (fieldIndex p (fieldName f))}") prods) in
+  "(let lingua_j = (match ${reader builder "tag"} ${rows l builder} e with${place} | _ -> 0) in ${fieldRead l builder (fieldTy f) "lingua_j"})"
 
 def noField : Field = Field "" (TPrim "Int") "" False
 

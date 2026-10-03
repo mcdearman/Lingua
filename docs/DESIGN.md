@@ -197,6 +197,17 @@ From the grammar:
   `==` where that type is known, rather than calling `at` and `expect`, which
   are generic in it and would look its equality up at run time.
 
+What a rule's function is made of is written once, beside it, and shared: a
+choice is a function of its own -- a `match` on the token it looks at, an arm
+a token, and where one token does not say, the choice the next one makes --
+a `*` is a function that calls itself, and reading a token is one function
+of the grammar's. Two rules that make the same choice, or read the same thing
+any number of times, call the same one. So a rule's own function is a call
+for each thing it reads, in turn. That is a third less written for a large
+grammar, and it is the shape a back end wants that makes a function of every
+point a call returns to and of every place two branches meet: a choice whose
+every arm is an answer has no such place.
+
 **Recovery** is by recovery sets, computed rather than written: a loop over
 `X*` inside rule `R` gives up — breaking out without consuming — on a token in
 FOLLOW(`R`) or in any enclosing loop's set, and skips anything else as an

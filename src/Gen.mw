@@ -524,7 +524,7 @@ fun kinds spec : [(String, String)] =
 -- The parser, or -- when some choice in the grammar cannot be made by
 -- looking `lookahead` tokens ahead -- what that choice is and where.
 fun generate spec (env : Grammar) : [TokenTree] ! { Mut | e } =
-  let counter = newRef 0 in
+  let counter = newRef [] in
   let root = rootOf spec in
   let x = Deciding { g = env, problems = newRef [], k = spec.lookahead } in
   let pub = if spec.public then "@pub " else "" in
@@ -534,6 +534,7 @@ fun generate spec (env : Grammar) : [TokenTree] ! { Mut | e } =
       [ [Code (header spec pub)],
         classify spec,
         [Code (V.foldl (\acc d -> acc ++ "\n" ++ ruleFun spec env counter x root d) "" spec.defs),
+          Code (shared spec counter),
           Code (entry spec pub root lx)],
         typed spec pub root ] in
     match V.get (getRef x.problems) 0 with
@@ -552,7 +553,7 @@ fun generate spec (env : Grammar) : [TokenTree] ! { Mut | e } =
       let root = (match V.get defs 0 with | Just d -> defName d | None -> "File") in
       let x = Deciding { g = lookGrammar spec root, problems = newRef [], k = k } in
       let env = x.g in
-      let counter = newRef 0 in
+      let counter = newRef [] in
       let costs =
         V.map
           (\d ->
@@ -641,10 +642,10 @@ fun clashMessage (owner : String) (what : Choosing) (ts : [String]) (alts : [Int
 fun kindCode spec (t : String) : String = if t == endOfInput then kx spec "Eof" else kq spec t
 
 -- A choice made: the tree's answer bound, and each way it can go.
-fun chosen spec (t : Tree) (ways : [String]) (otherwise : String) : String =
-  "(let lingua_c = ${treeCode (kindCode spec) t "(0 - 1)"} in "
-    ++ V.foldr (\i acc -> "if lingua_c == ${show i} then ${V.getOr "()" ways i} else ${acc}") otherwise (V.range 0 (V.len ways))
-    ++ ")"
+fun chosen spec counter (t : Tree) (ways : [String]) (otherwise : String) : String ! { Mut | e } =
+  "(match ${wayOf spec counter t "(0 - 1)"} with"
+    ++ S.join "" (V.map (\i -> " | ${show i} -> ${V.getOr "()" ways i}") (V.range 0 (V.len ways)))
+    ++ " | _ -> ${otherwise})"
 
 -- What is left to read after element `i` of `xs`, then `after`.
 fun afterElement (xs : [Rule]) (i : Int) (after : List Rule) : List Rule = L.append (V.toList (V.drop xs (i + 1))) after
@@ -743,7 +744,54 @@ fun escape (s : String) : String =
         if c == "\"" then "\\\"" else if c == "\\" then "\\\\" else if c == "$" then "\\$" else c)
       (V.range 0 (stringByteLength s)))
 
-fun fresh counter = let n = getRef counter in let u = setRef counter (n + 1) in n
+-- What the rules' functions share, written once: `counter` holds each piece
+-- by the code it is -- a choice, a loop -- with the name it was given, so
+-- that two rules which make the same choice, or read the same thing any
+-- number of times, call one function. A rule's own function is then a call
+-- for each thing it reads, in turn, and no more: the choices are functions
+-- whose every branch is an answer, and a loop is a function that calls
+-- itself -- which is also what a back end that makes a function of every
+-- point a call returns to, and of every place two branches meet, is kindest
+-- to.
+fun hoisted spec counter (kind : String) (key : String) (define : String -> String) : String ! { Mut | e } =
+  let known = getRef counter in
+  match V.find (\k -> match k with | (code, _, _) -> code == key) known with
+  | Just (_, name, _) -> name
+  | None ->
+      let name = fn spec "${kind}${show (V.len known)}" in
+      let u = setRef counter (V.pushBack known (key, name, define name)) in
+      name
+
+-- A choice, as a call: which way to go, by the tokens ahead. One that needs
+-- no look is its answer.
+fun wayOf spec counter (t : Tree) (otherwise : String) : String ! { Mut | e } =
+  match t with
+  | Tree.Branch _ _ ->
+      let code = wayCode spec counter t otherwise in
+      "(${hoisted spec counter "way" code (\name -> "fun ${name} p = ${code}\n")} p)"
+  | Tree.Leaf a -> show a
+  | Tree.Clash _ alts -> show (V.getOr 0 alts 0)
+
+-- A choice's tree as a `match` on the token it looks at, an arm a token:
+-- its answer, or -- where one token does not say -- the choice the next one
+-- makes, which is a function of its own.
+fun wayCode spec counter (t : Tree) (otherwise : String) : String ! { Mut | e } =
+  match t with
+  | Tree.Branch d arms ->
+      let written =
+        V.map
+          (\arm ->
+            let answer = wayOf spec counter (snd arm) otherwise in
+            S.join "" (V.map (\tk -> " | ${kindCode spec tk} -> ${answer}") (fst arm)))
+          arms in
+        "(match LinguaP.nth p ${show d} with${S.join "" written} | _ -> ${otherwise})"
+  | other -> wayOf spec counter other otherwise
+
+-- The pieces the rules share, and the one that reads a token: the token if
+-- it is next, and an error where it would be if it is not.
+fun shared spec counter : String ! { Mut | e } =
+  "\nfun ${fn spec "tok"} p (k : ${kindType spec}) (missing : String) = if LinguaP.nth p 0 == k then LinguaP.advance p else LinguaP.error p missing\n\n"
+    ++ S.join "\n" (V.map (\k -> match k with | (_, _, written) -> written) (getRef counter))
 
 -- A rule's parse function: a node opens, reads its body, and closes; an enum
 -- chooses an alternative, then -- if it has left-recursive ones -- reads them
@@ -774,20 +822,21 @@ fun ruleFun spec env counter x root d =
 fun body spec env counter x self (after : List Rule) (owner : String) (r : Rule) : String ! { Mut | e } =
   let sub = \left y -> body spec env counter x self left owner y in
   match r with
-  | Tok t _ -> "(if LinguaP.nth p 0 == ${kq spec t} then LinguaP.advance p else LinguaP.error p \"expected `${escape t}`\")"
+  | Tok t _ -> "(${fn spec "tok"} p ${kq spec t} \"expected `${escape t}`\")"
   | Ref n _ -> "(let _ = ${fn spec n} p in ())"
   | Label _ _ y -> sub after y
   | Seq xs -> "(" ++ V.foldl (\acc i -> acc ++ "let _ = ${sub (afterElement xs i after) (V.getOr (Seq []) xs i)} in ") "" (V.range 0 (V.len xs)) ++ "())"
   | Opt y ->
       let t = choose spec x owner Optional [Config 0 (y :: whole :: after) owner, Config 1 after owner] in
-      "(if ${treeCode (kindCode spec) t "1"} == 0 then ${sub after y} else ())"
+      "(if ${wayOf spec counter t "1"} == 0 then ${sub after y} else ())"
   | Rep y ->
-      let n = fresh counter in
       let t = choose spec x owner Repeated [Config 0 (y :: whole :: Rep y :: after) owner, Config 1 after owner] in
-      "(let rec loop${show n} u = if ${treeCode (kindCode spec) t "1"} == 0 then (let _ = ${sub (Rep y :: after) y} in loop${show n} ()) else () in loop${show n} ())"
+      let again = wayOf spec counter t "1" in
+      let once = sub (Rep y :: after) y in
+      "(${hoisted spec counter "loop" "${again} ${once}" (\name -> "fun ${name} p = if ${again} == 0 then (let _ = ${once} in ${name} p) else ()\n")} p)"
   | Alt xs ->
       let t = choose spec x owner Either (V.map (\i -> Config i (V.getOr (Seq []) xs i :: after) owner) (V.range 0 (V.len xs))) in
-      chosen spec t
+      chosen spec counter t
         (V.map (\y -> sub after y) xs)
         "LinguaP.error p \"expected one of ${escape (S.join ", " (V.map (\y -> S.join " " (fst (firstOf env y))) xs))}\""
 
@@ -796,7 +845,7 @@ fun enumFun spec env counter x d =
   let alts = prefixAlts spec e in
   let after = if V.isEmpty (ledAlts spec e) then [;] else ledLoop spec e :: [;] in
   let t = choose spec x e (Enum alts) (V.map (\i -> Config i (Ref (V.getOr "" alts i) 0 :: after) e) (V.range 0 (V.len alts))) in
-  let dispatch = chosen spec t (V.map (\a -> "${fn spec a} p") alts) "(let _ = LinguaP.error p \"expected ${e}\" in 0 - 1)" in
+  let dispatch = chosen spec counter t (V.map (\a -> "${fn spec a} p") alts) "(let _ = LinguaP.error p \"expected ${e}\" in 0 - 1)" in
     if V.isEmpty (ledAlts spec e) then
       "fun ${fn spec e} p = ${dispatch}
 "

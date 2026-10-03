@@ -14,9 +14,10 @@
 -- the graph of units from the one it is asked to build, and gives each to the
 -- compiler -- `compile`, a function of a `Given`: its sources, the interfaces
 -- of the units it depends on, and a directory of its own to write into -- in
--- dependency order, the units nothing orders on threads of their own. A
--- build is parallel unless it says otherwise: `| parallel = false` compiles
--- one unit after another, and is a build with no thread in it.
+-- dependency order, each on a thread of its own as soon as the units it
+-- depends on are done: it waits for those, and for no other. A build is
+-- parallel unless it says otherwise: `| parallel = false` compiles one unit
+-- after another, and is a build with no thread in it.
 --
 -- What happens between units is the build system's: a unit is compiled again
 -- only if its sources, or an interface it was compiled against, are not what
@@ -119,6 +120,7 @@ fun visit us root (path : [String]) (done : [(String, [String])]) (dir : String)
                                   | Ok ds -> Ok (V.pushBack ds (dir, deps)))
 
 -- The units in rounds: each round's units depend only on earlier rounds'.
+-- The order a build in turn takes them in.
 fun rounds (units : [(String, [String])]) : [[String]] = roundsFrom units []
 
 fun roundsFrom units (placed : [String]) =
@@ -206,17 +208,18 @@ use Outcome.*
 
 -- The unit at `root`, and every unit it depends on, brought up to date: each
 -- said as it goes, and whether all of them are.
--- `each` is how the units of a round are compiled: `onThreads`, or `inTurn`.
-@pub fun makeUnits each lang us root compile encode decode =
+-- `schedule` is when each is compiled: `onThreads`, or `inTurn`.
+@pub fun makeUnits schedule lang us root compile encode decode =
   match graph us root with
   | Err why -> (let u = writeOutput "error: ${why}\n" in False)
   | Ok units ->
       let before = loadState root in
       let done =
-        V.foldl
-          (\acc round -> V.append acc (buildRound each lang us root compile encode decode before acc units round))
-          []
-          (rounds units) in
+        schedule
+          (\done dir -> plan us root before done dir (M.unwrapOr [] (M.map snd (V.find (\u -> fst u == dir) units))))
+          (\p -> carryOut compile encode decode p)
+          (\r -> match r with | (dir, outcome, b, i) -> (let u = writeOutput (said lang root dir outcome) in (dir, outcome, b, i)))
+          units in
         let dirs = V.map fst units in
         let kept = V.foldl (\m kv -> if V.elem (fst kv) dirs then HashMap.insert (fst kv) (snd kv) m else m) HashMap.empty (HashMap.toVec before) in
         let state = V.foldl (\m d -> match d with | (dir, _, Just b, _) -> HashMap.insert dir b m | _ -> m) kept done in
@@ -229,24 +232,35 @@ use Outcome.*
         let w = writeOutput "${lang}: ${show compiled} compiled, ${show fresh} up to date${if failed > 0 then ", ${show failed} failed" else ""}\n" in
         failed == 0
 
--- One round: the units in it that need compiling -- `each` on a thread of
--- its own, or one after another -- and the rest read back from what was
--- built before.
-fun buildRound each lang us root compile encode decode before (done : [(String, Outcome, Maybe Built, Maybe i)]) units round =
-  let plans = V.map (\dir -> plan us root before done dir (M.unwrapOr [] (M.map snd (V.find (\u -> fst u == dir) units)))) round in
-  let results = each (\p -> carryOut compile encode decode p) plans in
-  V.map
-    (\r -> match r with
-           | (dir, outcome, b, i) ->
-               (let u = writeOutput (said lang root dir outcome) in (dir, outcome, b, i)))
-    results
+-- A scheduler is given how a unit is planned from what is done so far --
+-- which reads the interfaces of the units it depends on -- how a plan is
+-- carried out, how what came of it is said, and the units, each with the
+-- units it depends on; and answers what came of each.
 
--- A round's units at once, each on a thread of its own: what a build does
--- unless it is told not to.
-@pub fun onThreads f ps = Thread.awaitAll (V.map (\p -> Thread.spawn (\() -> f p)) ps)
+-- Each unit on a thread of its own, started as soon as every unit it depends
+-- on is done -- not when every unit that could have started with those is.
+-- A thread says what came of its unit on a channel, and each answer starts
+-- whatever it was the last thing in the way of. What a build does unless it
+-- is told not to.
+@pub fun onThreads planOf work report units =
+  let ch = Thread.newChannel () in
+  running ch planOf work report units [] [] []
 
--- A round's units one after another: `| parallel = false`.
-@pub fun inTurn f ps = V.map f ps
+fun running ch planOf work report units started tasks done =
+  let finished = \d -> V.any (\x -> match x with | (n, _, _, _) -> n == d) done in
+  let ready = V.filter (\u -> not (V.elem (fst u) started) and V.all finished (snd u)) units in
+  let begun = V.map (\u -> let p = planOf done (fst u) in Thread.spawn (\() -> Thread.send ch (work p))) ready in
+  let started2 = V.append started (V.map fst ready) in
+  let tasks2 = V.append tasks begun in
+  -- Nothing running and nothing to start: every unit is done -- or what is
+  -- left waits for itself, which `graph` has already refused.
+  if V.len started2 == V.len done then (let u = Thread.awaitAll tasks2 in done)
+  else running ch planOf work report units started2 tasks2 (V.pushBack done (report (Thread.receive ch)))
+
+-- The units one after another, in an order that has each after the units it
+-- depends on: `| parallel = false`.
+@pub fun inTurn planOf work report units =
+  V.foldl (\done dir -> V.pushBack done (report (work (planOf done dir)))) [] (V.concat (rounds units))
 
 fun said lang root dir outcome =
   let name = relative root dir in

@@ -159,3 +159,24 @@ make! {
     [ (True, ["   Compiled one", "   Compiled two", "   Compiled app"]),
       (True, ["   Fresh one", "   Fresh two", "   Fresh app"]) ]
     "each unit, one after another"
+
+@test fun aUnitStartsWhenWhatItDependsOnIsDone () =
+  -- `near` depends on `quick` alone, and `far` on `slow` alone. Whichever of
+  -- them finishes first, each is compiled after its own and all four are.
+  let root = "target/build-as-ready" in
+  let a = write (Path.join root "quick") "Unit" "" in
+  let b = write (Path.join root "quick") "id.ml" "fun x -> x" in
+  let c = write (Path.join root "slow") "Unit" "" in
+  let d = write (Path.join root "slow") "double.ml" "fun x -> x + x" in
+  let e = write (Path.join root "near") "Unit" "../quick\n" in
+  let f = write (Path.join root "near") "one.ml" "id 1" in
+  let g = write (Path.join root "far") "Unit" "../slow\n" in
+  let h = write (Path.join root "far") "two.ml" "double 1" in
+  let i = write (Path.join root "app") "Unit" "../near\n../far\n" in
+  let j = write (Path.join root "app") "main.ml" "one + two" in
+  match built (Path.join root "app") with
+  | (ok, lines) ->
+      let at = \l -> V.foldl (\found i -> if V.getOr "" lines i == l then i else found) (0 - 1) (V.range 0 (V.len lines)) in
+      let k = assertEq (ok, V.len lines) (True, 5) "all five compiled" in
+      let l = assertEq (at "   Compiled quick" < at "   Compiled near", at "   Compiled slow" < at "   Compiled far") (True, True) "each after its own" in
+      assertEq (V.getOr "" lines 4) "   Compiled app" "and the one that needs them all, last"

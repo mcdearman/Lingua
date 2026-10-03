@@ -760,7 +760,9 @@ at a unit, and they belong to different owners:
   its sources, or an interface it was compiled against, are not what they
   were; a change that leaves a unit's interface as it was compiles that unit
   and nothing that depends on it. Units that do not depend on each other are
-  compiled at once, on threads of their own: a build is parallel unless it
+  compiled at once, on threads of their own, each started as soon as the
+  units it depends on are done -- it waits for those and for no other, so a
+  slow unit holds up only what needs it. A build is parallel unless it
   says otherwise, `| parallel = false`, which compiles them one after another
   and leaves no thread in it. That is the other way round from a compiler
   (§6), which is sequential until it asks: a compiler may be used with no

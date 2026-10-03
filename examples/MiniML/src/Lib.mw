@@ -58,7 +58,7 @@ use Lingua.Diagnostic (renderToOutput)
 use MiniML.Compiler
 use MiniML.Editor
 use MiniML.Units
-use MiniML.Bench (benchmark)
+use MiniML.Bench (benchmark, drivers)
 use Std.Collections.Vector as V
 use Std.Maybe as M
 use Std.Fs (Fs, readToString)
@@ -98,7 +98,10 @@ fun command (cli : Cli) =
   | Cli.Demo -> demo ()
   | Cli.Build r -> finish (buildBuild (M.unwrapOr "." r.root))
   | Cli.Lsp -> serveServer ()
-  | Cli.Bench r -> benchmark (M.unwrapOr 2000 (M.andThen S.toInt r.lines))
+  | Cli.Bench r ->
+      (let n = M.unwrapOr 2000 (M.andThen S.toInt r.lines) in
+        let u = benchmark n in
+        drivers 8 (n / 8))
 
 -- End with status 1 when something went wrong.
 fun finish (ok : Bool) = if ok then () else exit 1

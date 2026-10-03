@@ -768,7 +768,9 @@ fun wayOf spec counter (t : Tree) (otherwise : String) : String ! { Mut | e } =
   match t with
   | Tree.Branch _ _ ->
       let code = wayCode spec counter t otherwise in
-      "(${hoisted spec counter "way" code (\name -> "fun ${name} p = ${code}\n")} p)"
+      -- A choice every token answers alike is that answer.
+      if code == otherwise then code
+      else "(${hoisted spec counter "way" code (\name -> "fun ${name} p = ${code}\n")} p)"
   | Tree.Leaf a -> show a
   | Tree.Clash _ alts -> show (V.getOr 0 alts 0)
 
@@ -778,13 +780,16 @@ fun wayOf spec counter (t : Tree) (otherwise : String) : String ! { Mut | e } =
 fun wayCode spec counter (t : Tree) (otherwise : String) : String ! { Mut | e } =
   match t with
   | Tree.Branch d arms ->
+      -- An arm that answers what no arm would is not written: a `*` or a
+      -- `?` asks only whether to go on, and most tokens say no.
       let written =
-        V.map
+        V.concatMap
           (\arm ->
             let answer = wayOf spec counter (snd arm) otherwise in
-            S.join "" (V.map (\tk -> " | ${kindCode spec tk} -> ${answer}") (fst arm)))
+            if answer == otherwise then [] else V.map (\tk -> " | ${kindCode spec tk} -> ${answer}") (fst arm))
           arms in
-        "(match LinguaP.nth p ${show d} with${S.join "" written} | _ -> ${otherwise})"
+        if V.isEmpty written then otherwise
+        else "(match LinguaP.nth p ${show d} with${S.join "" written} | _ -> ${otherwise})"
   | other -> wayOf spec counter other otherwise
 
 -- The pieces the rules share, and the one that reads a token: the token if

@@ -579,7 +579,7 @@ def formatCall : Parser Tokens (Bool, String, (String, Loc), Maybe Int, Maybe In
       | Err _ -> [Fail "no grammar is called ${fst grammar}: `format!` is of a grammar `syntax!` declared" (snd grammar)]
       | Ok l ->
           match l with
-          | Lang _ _ sorts _ _ keeping ->
+          | Lang _ _ sorts _ _ keeping _ ->
               (match keeping with
                | AsTables -> [Fail "${fst grammar} is kept as tables: a formatter is of a tree" (snd grammar)]
                | AsTrees _ trivia tokenFields ->

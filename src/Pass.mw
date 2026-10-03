@@ -111,7 +111,7 @@ use Std.Macro.Delim.*
 use Std.Macro.Parse (Tokens, parseTokens, ident, keyword, punct, group, treesUntil)
 use Std.String.Parse as P
 use Std.String.Parse (Parser)
-use Lingua.Lang (Lang, Sort, Prod, Field, Ty, Keeping, TokenField, reservedSorts, langName, langRoot, langSorts, langGrammar, langParams, langKeeping, isTreeLang, treeTokens, treeTrivia, tokenFields, sortName, sortProds, prodName, prodFields, fieldName, fieldTy, fieldAccessor, fieldIsToken, sortOfProd, findSort)
+use Lingua.Lang (Lang, Sort, Prod, Field, Ty, Keeping, TokenField, reservedSorts, langName, langRoot, langSorts, langGrammar, langParams, langKeeping, langWith, isTreeLang, treeTokens, treeTrivia, tokenFields, sortName, sortProds, prodName, prodFields, fieldName, fieldTy, fieldAccessor, fieldIsToken, sortOfProd, findSort)
 use Lingua.Lang.Keeping.*
 use Lingua.Lang.TokenField.*
 use Lingua.Lang.Lang.*
@@ -169,15 +169,21 @@ data Source = FromGrammar String Loc | Extends String Loc [Delta] | Written [Del
 
 use Source.*
 
-def langCall : Parser Tokens (Bool, String, [String], Source) =
+-- `with In, set`: what a language is written with besides its tables --
+-- `In`, each reading function again for a program being written; `set`, a
+-- field written again on a node already written.
+def asked : Parser Tokens [(String, Loc)] =
+  P.map (\o -> M.unwrapOr [] o) (P.optional (P.skipThen (keyword "with") (P.bind named (\first -> P.map (\more -> V.pushFront more first) (P.many (P.skipThen (punct ",") named))))))
+
+def langCall : Parser Tokens (Bool, String, [String], Source, [(String, Loc)]) =
   P.bind (P.optional (keyword "pub")) (\pub ->
     P.bind ident (\name ->
-      P.bind (P.many (P.token (\t -> match t with | Word w _ -> (if lowerStart w and w != "from" and w != "extends" then Just w else None) | _ -> None) [])) (\params ->
-          P.map (\src -> (M.isSome pub, name, params, src))
+      P.bind (P.many (P.token (\t -> match t with | Word w _ -> (if lowerStart w and w != "from" and w != "extends" and w != "with" then Just w else None) | _ -> None) [])) (\params ->
+          P.map (\src -> (M.isSome pub, name, params, fst src, snd src))
           (P.choice
-            [ P.skipThen (keyword "from") (P.map (\g -> FromGrammar (fst g) (snd g)) named),
-              P.skipThen (keyword "extends") (P.bind named (\b -> P.map (\ds -> Extends (fst b) (snd b) ds) (P.many delta))),
-              P.map Written (P.many delta) ]))))
+            [ P.skipThen (keyword "from") (P.bind named (\g -> P.map (\w -> (FromGrammar (fst g) (snd g), w)) asked)),
+              P.skipThen (keyword "extends") (P.bind named (\b -> P.bind asked (\w -> P.map (\ds -> (Extends (fst b) (snd b) ds, w)) (P.many delta)))),
+              P.bind asked (\w -> P.map (\ds -> (Written ds, w)) (P.many delta)) ]))))
 
 -- --- lang! ------------------------------------------------------------------------------
 
@@ -185,13 +191,19 @@ def langCall : Parser Tokens (Bool, String, [String], Source) =
 @pub fun lang (ts : [TokenTree]) : [TokenTree] ! { Expand | e } =
   match parseTokens langCall ts with
   | Err failed -> failed
-  | Ok (pub, name, params, src) ->
+  | Ok (pub, name, params, src, extras) ->
+      match V.find (\w -> not (V.elem (fst w) ["In", "set"])) extras with
+      | Just w -> [Fail "a language is written `with In` -- its readers again, for a program being written -- or `with set` -- a field written again -- or both; not `${fst w}`" (snd w)]
+      | None ->
       match baseOf src with
       | Err failed -> failed
       | Ok base ->
           match built name params base src with
           | Err failed -> failed
-          | Ok l ->
+          | Ok made ->
+              let l = withAsked made (V.map fst extras) in
+              if isTreeLang l and not (V.isEmpty extras) then [Fail "`${name}` is a tree language: its programs are trees, not tables, and there is nothing of them to write `with`" (M.unwrapOr Nowhere (M.map snd (V.get extras 0)))]
+              else
               let u = defineAs name l in
               [Code (langCode (if pub then "@pub " else "") l)]
 
@@ -200,7 +212,7 @@ def langCall : Parser Tokens (Bool, String, [String], Source) =
 -- it says first.
 fun baseOf (src : Source) : Result [TokenTree] Lang ! { Expand | e } =
   match src with
-  | Written ds -> Ok (Lang "" (firstSort ds) [] "" [] AsTables)
+  | Written ds -> Ok (Lang "" (firstSort ds) [] "" [] AsTables [])
   | FromGrammar g at -> found g at
   | Extends b at _ -> found b at
 
@@ -221,20 +233,20 @@ fun firstSort (ds : [Delta]) : String =
 fun built (name : String) (params : [String]) (base : Lang) (src : Source) : Result [TokenTree] Lang =
   let ps = V.append (langParams base) (V.filter (\p -> not (V.elem p (langParams base))) params) in
   match src with
-  | FromGrammar g _ -> Ok (Lang name (langRoot base) (langSorts base) g ps AsTables)
+  | FromGrammar g _ -> Ok (Lang name (langRoot base) (langSorts base) g ps AsTables [])
   | Written ds ->
       -- Every sort it writes, empty, first: a field may name one written
       -- further down.
       let sorts = V.foldl (\acc d -> let n = firstSort [d] in if V.elem n acc then acc else V.pushBack acc n) [] ds in
       V.foldl
         (\acc d -> match acc with | Err e -> Err e | Ok l -> change l d)
-        (Ok (Lang name (langRoot base) (V.map (\n -> Sort n []) sorts) "" ps AsTables))
+        (Ok (Lang name (langRoot base) (V.map (\n -> Sort n []) sorts) "" ps AsTables []))
         ds
   | Extends _ _ ds ->
       V.foldl
         (\acc d -> match acc with | Err e -> Err e | Ok l -> change l d)
         -- A language extending a tree language is one too, of kinds of its own.
-        (Ok (if isTreeLang base then Lang name (langRoot base) (langSorts base) name ps (langKeeping base) else Lang name (langRoot base) (langSorts base) "" ps AsTables))
+        (Ok (if isTreeLang base then Lang name (langRoot base) (langSorts base) name ps (langKeeping base) [] else Lang name (langRoot base) (langSorts base) "" ps AsTables []))
         ds
 
 fun change (l : Lang) (d : Delta) : Result [TokenTree] Lang =
@@ -281,14 +293,21 @@ fun childTy t =
 
 fun tokenTy t = match t with | TPrim _ -> True | TOpt x -> tokenTy x | TMany x -> tokenTy x | TSort _ -> False
 
-fun withKeeping l k = Lang (langName l) (langRoot l) (langSorts l) (langGrammar l) (langParams l) k
+fun withKeeping l k = Lang (langName l) (langRoot l) (langSorts l) (langGrammar l) (langParams l) k (langWith l)
+
+fun withAsked l (asked : [String]) = Lang (langName l) (langRoot l) (langSorts l) (langGrammar l) (langParams l) (langKeeping l) asked
+
+-- Whether a language was written `with In`, or `with set`.
+fun readsWriting l = V.elem "In" (langWith l)
+
+fun rewrites l = V.elem "set" (langWith l)
 
 -- `l` with `sort` in place of its sort of that name, or added.
 fun withSort l sort =
   let others = V.filter (\x -> sortName x != sortName sort) (langSorts l) in
   let had = V.any (\x -> sortName x == sortName sort) (langSorts l) in
   let sorts = if had then V.map (\x -> if sortName x == sortName sort then sort else x) (langSorts l) else V.pushBack others sort in
-  Lang (langName l) (langRoot l) sorts (langGrammar l) (langParams l) (langKeeping l)
+  Lang (langName l) (langRoot l) sorts (langGrammar l) (langParams l) (langKeeping l) (langWith l)
 
 -- A written type: a sort of the language, or any other type by its name.
 fun resolve l w =
@@ -320,8 +339,11 @@ fun resolve l w =
 --   metaCoreExpr a e                      where a node came from
 --   data CoreExprView, viewCoreExpr a e   a node as a value to match on
 --
--- and each reading function again, suffixed `In`, reading a builder while it
--- is written: what a pass reads the nodes it has just made with.
+-- each a line over what `Lingua.Lang` reads and writes every language's rows
+-- with. Written `with In`, a language also has each reading function again,
+-- suffixed `In`, reading a builder while it is written -- what a pass reads
+-- the nodes it has just made with; and `with set`, `setCoreLamParam b e v`,
+-- a field written again on a node already written.
 
 fun lowerOf l = lowerFirst (langName l)
 
@@ -370,14 +392,16 @@ fun valueTy l t =
   | TOpt x -> "(Maybe ${valueTy l x})"
   | TPrim n -> paren n
 
--- The tables of an arena or a builder, bound by name.
-fun tables l ctor = "${ctor} lingua_kinds lingua_starts lingua_ends lingua_firsts lingua_slots${S.join "" (V.map (\i -> " lingua_c${show i}") (V.range 0 (V.len (columns l))))}"
+-- A language's rows, read: an arena's `a`, or a builder's `b` -- and the
+-- functions of `Lingua.Lang` that read each.
+fun rows l (builder : Bool) : String = if builder then "(lingua${langName l}_w b)" else "(lingua${langName l}_t a)"
 
--- How a reading function reads table `t`'s entry `i`: from an arena's arrays,
--- or a builder's buffers.
-fun tableGet (builder : Bool) (t : String) (i : String) : String = if builder then "LinguaBuf.at ${t} (${i})" else "arrayGet ${t} (${i})"
+fun column l (builder : Bool) (k : Int) : String = if builder then "(lingua${langName l}_b${show k} b)" else "(lingua${langName l}_c${show k} a)"
 
-fun slotGet builder i = tableGet builder "lingua_slots" i
+fun reader (builder : Bool) (f : String) : String = if builder then "LinguaL.${f}In" else "LinguaL.${f}"
+
+-- Field `i` of node `e`, read as its type says.
+fun fieldRead l (builder : Bool) (t : Ty) (i : String) : String = decode l builder t "${reader builder "slot"} ${rows l builder} e ${i}" 0
 
 -- The value of type `t` a slot holding `raw` stands for. `d` numbers the
 -- names a list inside a list binds.
@@ -387,27 +411,30 @@ fun decode l (builder : Bool) (t : Ty) (raw : String) (d : Int) : String =
   | TPrim n ->
       if n == "Int" then raw
       else if n == "Bool" then "(${raw} != 0)"
-      else tableGet builder "lingua_c${show (columnOf l n)}" raw
+      else if builder then "LinguaBuf.at ${column l True (columnOf l n)} (${raw})"
+      else "arrayGet ${column l False (columnOf l n)} (${raw})"
   | TMany x ->
-      let at = "lingua_at${show d}" in
-      let i = "lingua_i${show d}" in
-      "(let ${at} = ${raw} in LinguaV.map (\\${i} -> ${decode l builder x (slotGet builder "${at} + 1 + ${i}") (d + 1)}) (LinguaV.range 0 (${slotGet builder at})))"
+      let from = "${reader builder "listFrom"} ${rows l builder} (${raw})" in
+      if isWord x then from
+      else (let i = "lingua_i${show d}" in "LinguaV.map (\\${i} -> ${decode l builder x i (d + 1)}) (${from})")
   | TOpt x ->
-      let at = "lingua_at${show d}" in
-      "(let ${at} = ${raw} in if ${slotGet builder at} == 0 then None else Just (${decode l builder x (slotGet builder "${at} + 1") (d + 1)}))"
+      let from = "${reader builder "maybeFrom"} ${rows l builder} (${raw})" in
+      if isWord x then from
+      else (let i = "lingua_i${show d}" in "LinguaM.map (\\${i} -> ${decode l builder x i (d + 1)}) (${from})")
 
--- The slot a value `v` of type `t` is written as: itself, or where it went.
+-- The slot a value `v` of type `t` is written as: itself, or where it went
+-- -- in builder `b`, whose rows are `lingua_w`.
 fun encode l (t : Ty) (v : String) (d : Int) : String =
   match t with
   | TSort _ -> v
   | TPrim n ->
       if n == "Int" then v
       else if n == "Bool" then "(if ${v} then 1 else 0)"
-      else "LinguaBuf.push lingua_c${show (columnOf l n)} (${v})"
-  | TMany x -> "LinguaL.pushList lingua_slots (${elements l x v d})"
+      else "LinguaBuf.push ${column l True (columnOf l n)} (${v})"
+  | TMany x -> "LinguaL.list lingua_w (${elements l x v d})"
   | TOpt x ->
       let y = "lingua_y${show d}" in
-      "LinguaL.pushList lingua_slots (match ${v} with | Just ${y} -> [${encode l x y (d + 1)}] | None -> [])"
+      "LinguaL.list lingua_w (match ${v} with | Just ${y} -> [${encode l x y (d + 1)}] | None -> [])"
 
 fun elements l x v d =
   if isWord x then v
@@ -419,7 +446,7 @@ fun elements l x v d =
 fun isWord t = match t with | TSort _ -> True | TPrim n -> n == "Int" | _ -> False
 
 fun header =
-  "use Lingua.Lang (Meta)
+  "use Lingua.Lang (Meta, LangTables, LangWriting)
 use Lingua.Lang as LinguaL
 use Lingua.Red as LinguaR
 use Lingua.Buf as LinguaBuf
@@ -441,23 +468,27 @@ fun langCode pub (l : Lang) : String =
         V.map (\p -> prodCode pub l p) (allProds l),
         [if langGrammar l == "" then "" else fromCode pub l] ])
 
+-- What only a language written `with In` has.
+fun whenReading l (code : String) : String = if readsWriting l then code else ""
+
 fun tablesCode pub l =
   let n = langName l in
   let lower = lowerOf l in
   let cols = columns l in
+  let ks = V.range 0 (V.len cols) in
   let colTys = S.join "" (V.map (\c -> " #[${c}]") cols) in
   let colBufs = S.join "" (V.map (\c -> " (Buf lst (${c}))") cols) in
-  let bufs = S.join "" (V.map (\i -> " (LinguaBuf.buffer ())") (V.range 0 (5 + V.len cols))) in
-  let names = V.append ["lingua_kinds", "lingua_starts", "lingua_ends", "lingua_firsts", "lingua_slots"] (V.map (\i -> "lingua_c${show i}") (V.range 0 (V.len cols))) in
-  let frozen = S.join "" (V.map (\t -> " (LinguaBuf.freeze ${t})") names) in
+  let bufs = S.join "" (V.map (\i -> " (LinguaBuf.buffer ())") ks) in
+  let bound = S.join "" (V.map (\i -> " lingua_c${show i}") ks) in
+  let frozen = S.join "" (V.map (\i -> " (LinguaBuf.freeze lingua_c${show i})") ks) in
+  let pick = \ctor k -> "${ctor} _${S.join "" (V.map (\i -> if i == k then " x" else " _") ks)} -> x" in
   "
--- `${n}`'s tables, as a program's are kept: each node's production, where it
--- came from, and where its fields start in the slots; the slots; and the
+-- `${n}`'s tables, as a program's are kept: its rows (`Lingua.Lang`), and the
 -- columns the fields that are neither nodes, numbers nor truths are kept in.
-${pub}data ${n}Arena${params l} = ${n}Arena #[Int] #[Int] #[Int] #[Int] #[Int]${colTys}
+${pub}data ${n}Arena${params l} = ${n}Arena LangTables${colTys}
 
 -- The same, being written.
-${pub}data ${n}Builder lst${params l} = ${n}Builder (Buf lst Int) (Buf lst Int) (Buf lst Int) (Buf lst Int) (Buf lst Int)${colBufs}
+${pub}data ${n}Builder lst${params l} = ${n}Builder (LangWriting lst)${colBufs}
 
 -- A `${n}` program: its tables, and its root.
 ${pub}data ${n}Program${params l} = ${n}Program ${arenaTy l} Int
@@ -466,21 +497,25 @@ ${pub}fun ${lower}Arena (p : ${programTy l}) : ${arenaTy l} = match p with | ${n
 
 ${pub}fun ${lower}Root (p : ${programTy l}) : Int = match p with | ${n}Program _ r -> r
 
+fun lingua${n}_t (a : ${arenaTy l}) : LangTables = match a with | ${n}Arena t${S.join "" (V.map (\i -> " _") ks)} -> t
+
+fun lingua${n}_w (b : ${builderTy l}) = match b with | ${n}Builder w${S.join "" (V.map (\i -> " _") ks)} -> w
+${S.join "" (V.map (\k -> "\nfun lingua${n}_c${show k} (a : ${arenaTy l}) = match a with | ${pick "${n}Arena" k}\n\nfun lingua${n}_b${show k} (b : ${builderTy l}) = match b with | ${pick "${n}Builder" k}\n") ks)}
 -- Empty tables, to write a program into.
-${pub}fun new${n}Builder () = ${n}Builder${bufs}
+${pub}fun new${n}Builder () = ${n}Builder (LinguaL.writing ())${bufs}
 
 -- What has been written, as a program's tables.
-${pub}fun freeze${n} (b : ${builderTy l}) = match b with | ${tables l "${n}Builder"} -> ${n}Arena${frozen}
+${pub}fun freeze${n} (b : ${builderTy l}) = match b with | ${n}Builder lingua_w${bound} -> ${n}Arena (LinguaL.frozen lingua_w)${frozen}
 
 -- Where a node starts and ends.
-${pub}fun ${lower}Start (a : ${arenaTy l}) (e : Int) : Int = match a with | ${tables l "${n}Arena"} -> arrayGet lingua_starts e
+${pub}fun ${lower}Start (a : ${arenaTy l}) (e : Int) : Int = LinguaL.startOf ${rows l False} e
 
-${pub}fun ${lower}End (a : ${arenaTy l}) (e : Int) : Int = match a with | ${tables l "${n}Arena"} -> arrayGet lingua_ends e
+${pub}fun ${lower}End (a : ${arenaTy l}) (e : Int) : Int = LinguaL.endOf ${rows l False} e
+${whenReading l "
+${pub}fun ${lower}StartIn (b : ${builderTy l}) (e : Int) = LinguaL.startIn ${rows l True} e
 
-${pub}fun ${lower}StartIn (b : ${builderTy l}) (e : Int) = match b with | ${tables l "${n}Builder"} -> LinguaBuf.at lingua_starts e
-
-${pub}fun ${lower}EndIn (b : ${builderTy l}) (e : Int) = match b with | ${tables l "${n}Builder"} -> LinguaBuf.at lingua_ends e
-"
+${pub}fun ${lower}EndIn (b : ${builderTy l}) (e : Int) = LinguaL.endIn ${rows l True} e
+"}"
 
 fun sortCode pub l s =
   let n = langName l in
@@ -542,15 +577,15 @@ ${pub}data ${t}Kind = ${S.join " | " (V.map prodName prods)}
 
 fun ${decide} (tag : Int) : ${t}Kind = ${S.join "" tests}${t}Kind.${prodName last}
 
-${pub}fun kind${t} (a : ${arenaTy l}) (e : Int) : ${t}Kind = match a with | ${tables l "${n}Arena"} -> ${decide} (arrayGet lingua_kinds e)
-
-${pub}fun kind${t}In (b : ${builderTy l}) (e : Int) = match b with | ${tables l "${n}Builder"} -> ${decide} (LinguaBuf.at lingua_kinds e)
+${pub}fun kind${t} (a : ${arenaTy l}) (e : Int) : ${t}Kind = ${decide} (LinguaL.tag ${rows l False} e)
 
 -- Where a `${t}` came from.
-${pub}fun meta${t} (a : ${arenaTy l}) (e : Int) : Meta = match a with | ${tables l "${n}Arena"} -> LinguaL.spanMeta (arrayGet lingua_starts e) (arrayGet lingua_ends e)
+${pub}fun meta${t} (a : ${arenaTy l}) (e : Int) : Meta = LinguaL.metaAt ${rows l False} e
+${whenReading l "
+${pub}fun kind${t}In (b : ${builderTy l}) (e : Int) = ${decide} (LinguaL.tagIn ${rows l True} e)
 
-${pub}fun meta${t}In (b : ${builderTy l}) (e : Int) = match b with | ${tables l "${n}Builder"} -> LinguaL.spanMeta (LinguaBuf.at lingua_starts e) (LinguaBuf.at lingua_ends e)
-"
+${pub}fun meta${t}In (b : ${builderTy l}) (e : Int) = LinguaL.metaIn ${rows l True} e
+"}"
 
 fun viewCode pub l s =
   let n = langName l in
@@ -566,11 +601,11 @@ ${pub}data ${t}View${params l} = ${S.join " | " (V.map (\p -> "${prodName p} ({ 
 ${pub}fun view${t} (a : ${arenaTy l}) (e : Int) : ${applied l "${t}View"} =
   match kind${t} a e with
 ${S.join "\n" (V.map (arm "" "a") prods)}
-
+${whenReading l "
 ${pub}fun view${t}In (b : ${builderTy l}) (e : Int) =
   match kind${t}In b e with
 ${S.join "\n" (V.map (arm "In" "b") prods)}
-"
+"}"
 
 -- A `${t}` node with its arena, `(a, e)`, as if its productions were
 -- constructors: `match (a, e) with | CoreLam x b -> …`. Each is a pattern
@@ -635,23 +670,24 @@ fun shared pub l s f =
   let t = "${n}${sortName s}" in
   let name = fieldName f in
   let prods = sortProds s in
-  let reader = sharedReader l f prods in
+  let read = sharedReader l f prods in
   "
 -- The `${name}` of a `${t}`, whichever production it is.
-${pub}fun ${name}${t} (a : ${arenaTy l}) (e : Int) : ${valueTy l (fieldTy f)} = match a with | ${tables l "${n}Arena"} -> ${reader False}
-
-${pub}fun ${name}${t}In (b : ${builderTy l}) (e : Int) = match b with | ${tables l "${n}Builder"} -> ${reader True}
-"
+${pub}fun ${name}${t} (a : ${arenaTy l}) (e : Int) : ${valueTy l (fieldTy f)} = ${read False}
+${whenReading l "
+${pub}fun ${name}${t}In (b : ${builderTy l}) (e : Int) = ${read True}
+"}"
 
 -- A shared field read off node `e`, where its production keeps it.
 fun sharedReader l f prods (builder : Bool) =
   let place = S.join "" (V.map (\p -> "if lingua_t == ${show (tagOf l (prodName p))} then ${show (fieldIndex p (fieldName f))} else ") prods) in
-  "(let lingua_t = ${tableGet builder "lingua_kinds" "e"} in let lingua_j = ${place}0 in ${decode l builder (fieldTy f) (slotGet builder "${tableGet builder "lingua_firsts" "e"} + lingua_j") 0})"
+  "(let lingua_t = ${reader builder "tag"} ${rows l builder} e in let lingua_j = ${place}0 in ${fieldRead l builder (fieldTy f) "lingua_j"})"
 
 def noField : Field = Field "" (TPrim "Int") "" False
 
 -- A production's constructor -- a node written, in `meta`, or in the bytes
--- from `lingua_s` to `lingua_t` -- and its fields' readers.
+-- from `lingua_s` to `lingua_t` -- and its fields' readers. A node of up to
+-- four fields is written by one call; of more, a field at a time.
 fun prodCode pub l p =
   let n = langName l in
   let fs = prodFields p in
@@ -659,20 +695,19 @@ fun prodCode pub l p =
   let fieldOf = \i -> V.getOr noField fs i in
   let ps = S.join "" (V.map (\i -> " (lingua_f${show i} : ${valueTy l (fieldTy (fieldOf i))})") idx) in
   let args = S.join "" (V.map (\i -> " lingua_f${show i}") idx) in
-  let encoded = S.join "" (V.map (\i -> "      let lingua_v${show i} = ${encode l (fieldTy (fieldOf i)) "lingua_f${show i}" 0} in\n") idx) in
-  let pushed = S.join "" (V.map (\i -> "      let _ = LinguaBuf.push lingua_slots lingua_v${show i} in\n") idx) in
+  -- A field that is its own slot is written as it is; any other is put
+  -- where it goes first, since a list is written into the slots too.
+  let slotOf = \i -> if isWord (fieldTy (fieldOf i)) then "lingua_f${show i}" else "lingua_v${show i}" in
+  let encoded = S.join "" (V.map (\i -> if isWord (fieldTy (fieldOf i)) then "" else "let lingua_v${show i} = ${encode l (fieldTy (fieldOf i)) "lingua_f${show i}" 0} in ") idx) in
+  let tag = show (tagOf l (prodName p)) in
+  let written =
+    (if V.len fs <= 4 then "LinguaL.node${show (V.len fs)} lingua_w ${tag} lingua_s lingua_t${S.join "" (V.map (\i -> " ${slotOf i}") idx)}"
+     else "let lingua_first = LinguaL.mark lingua_w in ${S.join "" (V.map (\i -> "let _ = LinguaL.field lingua_w ${slotOf i} in ") idx)}LinguaL.node lingua_w ${tag} lingua_s lingua_t lingua_first") in
   "
 -- A `${prodName p}` node, written: its row.
 ${pub}fun new${n}${prodName p} (b : ${builderTy l}) (m : Meta)${ps} = new${n}${prodName p}Span b (LinguaL.metaStart m) (LinguaL.metaEnd m)${args}
 
-${pub}fun new${n}${prodName p}Span (b : ${builderTy l}) (lingua_s : Int) (lingua_t : Int)${ps} =
-  match b with
-  | ${tables l "${n}Builder"} ->
-${encoded}      let lingua_first = LinguaBuf.len lingua_slots in
-${pushed}      let _ = LinguaBuf.push lingua_starts lingua_s in
-      let _ = LinguaBuf.push lingua_ends lingua_t in
-      let _ = LinguaBuf.push lingua_firsts lingua_first in
-      LinguaBuf.push lingua_kinds ${show (tagOf l (prodName p))}
+${pub}fun new${n}${prodName p}Span (b : ${builderTy l}) (lingua_s : Int) (lingua_t : Int)${ps} = let lingua_w = lingua${n}_w b in ${encoded}${written}
 ${S.join "" (V.map (\i -> accessor pub l p i) idx)}"
 
 -- Field `i` of production `p`, read off a node.
@@ -681,10 +716,10 @@ fun accessor pub l p i =
   let f = V.getOr noField (prodFields p) i in
   let name = "${lowerOf l}${prodName p}${upperFirst (fieldName f)}" in
   "
-${pub}fun ${name} (a : ${arenaTy l}) (e : Int) : ${valueTy l (fieldTy f)} = match a with | ${tables l "${n}Arena"} -> ${decode l False (fieldTy f) (slotGet False "arrayGet lingua_firsts e + ${show i}") 0}
-
-${pub}fun ${name}In (b : ${builderTy l}) (e : Int) = match b with | ${tables l "${n}Builder"} -> ${decode l True (fieldTy f) (slotGet True "LinguaBuf.at lingua_firsts e + ${show i}") 0}
-${setter pub l p i f}"
+${pub}fun ${name} (a : ${arenaTy l}) (e : Int) : ${valueTy l (fieldTy f)} = ${fieldRead l False (fieldTy f) (show i)}
+${whenReading l "
+${pub}fun ${name}In (b : ${builderTy l}) (e : Int) = ${fieldRead l True (fieldTy f) (show i)}
+"}${if rewrites l then setter pub l p i f else ""}"
 
 -- A field of one thing -- a node, a number, a truth, a text -- written again
 -- on a node already written: what a pass that fixes up what it wrote uses.
@@ -695,7 +730,7 @@ fun setter pub l p i f =
   | t ->
       let n = langName l in
       "
-${pub}fun set${n}${prodName p}${upperFirst (fieldName f)} (b : ${builderTy l}) (e : Int) (lingua_v : ${valueTy l t}) = match b with | ${tables l "${n}Builder"} -> LinguaBuf.put lingua_slots (LinguaBuf.at lingua_firsts e + ${show i}) (${encode l t "lingua_v" 0})
+${pub}fun set${n}${prodName p}${upperFirst (fieldName f)} (b : ${builderTy l}) (e : Int) (lingua_v : ${valueTy l t}) = LinguaL.setSlot (lingua${n}_w b) e ${show i} (${encode l t "lingua_v" 0})
 "
 
 -- The conversion from the typed AST of the grammar the language was read off:
@@ -1262,7 +1297,11 @@ fun placed to readers ts i w at done =
   match (V.get ts (i + 1), prodIn to w, qualified ts i) with
   | (Just (Group Brace inner _), Just prod, False) -> (V.append done (construct to readers w prod inner at), True)
   | _ ->
-      if V.elem w readers and not (qualified ts i) then (V.pushBack done (Group Paren [Word "${w}In" at, Word "lingua_out" Nowhere] Nowhere), False)
+      if V.elem w readers and not (qualified ts i) then
+        -- A reader of the target's reads what is being written: the target
+        -- has to have been written `with In`.
+        (if readsWriting to then (V.pushBack done (Group Paren [Word "${w}In" at, Word "lingua_out" Nowhere] Nowhere), False)
+         else (V.pushBack done (Fail "`${w}` here reads the `${langName to}` being written, and `${langName to}` has no readers for that: write `with In` after what it extends or is read from -- `${langName to} extends … with In`" at), False))
       else (V.pushBack done (Word w at), False)
 
 -- `Prod { f = …, … }`: the node written, its fields in the production's order.

@@ -434,11 +434,25 @@ reference-counted language needs of its trees. For `Core` the code has:
 | `CoreLam param body`, matching `(a, e)`       | a production as a pattern: a synonym, of the kind and fields |
 | `subCoreExpr a e`                             | a node and everything under it, as a program of its own      |
 
-and each reading function again, suffixed `In`, reading a builder while it is
-written. A field of one thing -- a node, a number, a truth, a text -- can be
-written again on a node already written, `setCoreLamParam b e v`: what a pass
-that fixes up what it wrote needs, such as taking the hygiene marks off the
-names a macro's expansion wrote once it is clear which names are locals. Asking a node's kind and reading its fields makes nothing; a view
+Two more families are written for a language that asks for them, after what
+it extends or is read from -- `lang! { pub Typed extends Core with In, set
+… }`. `with In` is each reading function again, suffixed `In`, reading a
+builder while it is written: what a pass's case reads the nodes it has just
+made with, so a pass whose cases read their target needs its target written
+so, and is told where if it was not. `with set` is a field of one thing -- a
+node, a number, a truth, a text -- written again on a node already written,
+`setCoreLamParam b e v`: what a pass that fixes up what it wrote needs, such
+as taking the hygiene marks off the names a macro's expansion wrote once it
+is clear which names are locals. Most languages want neither, and between
+them they were a third of what a language's declaration wrote.
+
+Every language keeps its rows the same way, so what reads and writes them is
+written once, in `Lingua.Lang` -- a node's tag and where it came from, a
+field's slot, a list's, a node written with its fields -- and a language's
+own functions are a line each over those, with its own types: `coreLamBody a
+e` is the second slot of `e` in `a`'s rows. A language that extends another
+is written out whole all the same, since its types are its own, but what is
+written for each production is its name and its place. Asking a node's kind and reading its fields makes nothing; a view
 makes one value, to match on where that reads better. Each production is also
 a **pattern synonym** over a node and its tables, and a sort's productions
 together cover it, so the tables are matched as if they were a data type:

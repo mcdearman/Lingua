@@ -162,7 +162,7 @@ fun frozen t =
 
 -- `Core`, every expression holding its type as inference has it so far.
 lang! {
-  pub Inferring s extends Core
+  pub Inferring s extends Core with In
   Expr * { ty : MType s }
 }
 

@@ -23,7 +23,7 @@ use Std.Maybe as M
 -- `Surface`, with ids where names were: a use is the id of its binder, and a
 -- binder -- a `let`'s name, a parameter -- is its own.
 @pub(pkg) lang! {
-  pub Resolved extends Surface
+  pub Resolved extends Surface with In
   Atom - NameRef
   Atom + NameRef { id : Int }
   Expr - Lam

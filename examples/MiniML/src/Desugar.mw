@@ -15,7 +15,7 @@ use Std.Maybe as M
 -- an operator is a primitive, and a literal is its value. A variable, a
 -- parameter and what a `let` binds are ids.
 @pub(pkg) lang! {
-  pub Core extends Resolved
+  pub Core extends Resolved with In
   Expr - Atom
   Expr - App
   Expr - Bin

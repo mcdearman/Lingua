@@ -1284,7 +1284,7 @@ fun grammarLang spec : Lang =
             (\f -> match f with | TokField name ts _ -> (if kept spec name ts then [TokenField (defName d) (fieldBare name) (V.map (\t -> "Token${tokKind spec t}") ts)] else []) | _ -> [])
             (fieldsOfDef spec d))
       spec.defs in
-  Lang spec.name root (V.append enumSorts loners) spec.name [] (AsTrees tokenKinds trivia tokenFieldsOf)
+  Lang spec.name root (V.append enumSorts loners) spec.name [] (AsTrees tokenKinds trivia tokenFieldsOf) []
 
 -- The production of rule `r`: an enum inside an enum is a production holding
 -- that enum's sort.

@@ -14,7 +14,9 @@
 -- the graph of units from the one it is asked to build, and gives each to the
 -- compiler -- `compile`, a function of a `Given`: its sources, the interfaces
 -- of the units it depends on, and a directory of its own to write into -- in
--- dependency order, the units nothing orders on threads of their own.
+-- dependency order, the units nothing orders on threads of their own. A
+-- build is parallel unless it says otherwise: `| parallel = false` compiles
+-- one unit after another, and is a build with no thread in it.
 --
 -- What happens between units is the build system's: a unit is compiled again
 -- only if its sources, or an interface it was compiled against, are not what
@@ -204,14 +206,15 @@ use Outcome.*
 
 -- The unit at `root`, and every unit it depends on, brought up to date: each
 -- said as it goes, and whether all of them are.
-@pub fun makeUnits lang us root compile encode decode =
+-- `each` is how the units of a round are compiled: `onThreads`, or `inTurn`.
+@pub fun makeUnits each lang us root compile encode decode =
   match graph us root with
   | Err why -> (let u = writeOutput "error: ${why}\n" in False)
   | Ok units ->
       let before = loadState root in
       let done =
         V.foldl
-          (\acc round -> V.append acc (buildRound lang us root compile encode decode before acc units round))
+          (\acc round -> V.append acc (buildRound each lang us root compile encode decode before acc units round))
           []
           (rounds units) in
         let dirs = V.map fst units in
@@ -226,17 +229,24 @@ use Outcome.*
         let w = writeOutput "${lang}: ${show compiled} compiled, ${show fresh} up to date${if failed > 0 then ", ${show failed} failed" else ""}\n" in
         failed == 0
 
--- One round: the units in it that need compiling, each on a thread of its
--- own, and the rest read back from what was built before.
-fun buildRound lang us root compile encode decode before (done : [(String, Outcome, Maybe Built, Maybe i)]) units round =
+-- One round: the units in it that need compiling -- `each` on a thread of
+-- its own, or one after another -- and the rest read back from what was
+-- built before.
+fun buildRound each lang us root compile encode decode before (done : [(String, Outcome, Maybe Built, Maybe i)]) units round =
   let plans = V.map (\dir -> plan us root before done dir (M.unwrapOr [] (M.map snd (V.find (\u -> fst u == dir) units)))) round in
-  let tasks = V.map (\p -> Thread.spawn (\() -> carryOut compile encode decode p)) plans in
-  let results = Thread.awaitAll tasks in
+  let results = each (\p -> carryOut compile encode decode p) plans in
   V.map
     (\r -> match r with
            | (dir, outcome, b, i) ->
                (let u = writeOutput (said lang root dir outcome) in (dir, outcome, b, i)))
     results
+
+-- A round's units at once, each on a thread of its own: what a build does
+-- unless it is told not to.
+@pub fun onThreads f ps = Thread.awaitAll (V.map (\p -> Thread.spawn (\() -> f p)) ps)
+
+-- A round's units one after another: `| parallel = false`.
+@pub fun inTurn f ps = V.map f ps
 
 fun said lang root dir outcome =
   let name = relative root dir in
@@ -390,7 +400,7 @@ def buildCall : Parser Tokens (Bool, String, String, [((String, Loc), String)]) 
 -- The settings a build needs, and those it may add.
 def settings : [String] = ["sources", "manifest", "compile"]
 
-def optional : [String] = ["dependencies", "files"]
+def optional : [String] = ["dependencies", "files", "parallel"]
 
 @macro
 @pub fun make (ts : [TokenTree]) : [TokenTree] ! { Expand | e } =
@@ -403,6 +413,9 @@ def optional : [String] = ["dependencies", "files"]
           match V.find (\k -> not (V.any (\s -> fst (fst s) == k) ss)) settings with
           | Just k -> [Fail "a build needs `${k}`" Nowhere]
           | None ->
+            match V.find (\s -> fst (fst s) == "parallel" and not (V.elem (snd s) ["true", "false"])) ss with
+            | Just s -> [Fail "`parallel` is `true` or `false`: whether units that do not depend on each other are compiled at once, which they are unless it says `false`" (snd (fst s))]
+            | None ->
               let get = \k -> M.unwrapOr "" (M.map snd (V.find (\s -> fst (fst s) == k) ss)) in
               let given = \k -> M.map snd (V.find (\s -> fst (fst s) == k) ss) in
               let units =
@@ -412,7 +425,7 @@ def optional : [String] = ["dependencies", "files"]
 -- ${lang}'s build: the unit at `root` and every unit it depends on, each
 -- compiled only if what it would be compiled from has changed.
 ${if pub then "@pub " else ""}fun build${name} (root : String) =
-  LinguaMake.makeUnits \"${lang}\" (${units}) root (\\u -> ${get "compile"} u) LinguaMake.encodeReflect LinguaMake.decodeReflect
+  LinguaMake.makeUnits ${if given "parallel" == Just "false" then "LinguaMake.inTurn" else "LinguaMake.onThreads"} \"${lang}\" (${units}) root (\\u -> ${get "compile"} u) LinguaMake.encodeReflect LinguaMake.decodeReflect
 
 -- What the unit at `dir` was compiled from in `root`'s last build.
 ${if pub then "@pub " else ""}fun given${name} (root : String) (dir : String) =

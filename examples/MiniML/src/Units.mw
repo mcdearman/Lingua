@@ -51,8 +51,8 @@ fun exports (i : Interface) : [(String, Type)] = match i with | Interface.Interf
 -- The compiler, given a unit. Inside it, it is the compiler's business how
 -- the work is done: here, with a session of its own, whose `exported` query
 -- is kept in the unit's directory between builds -- a unit built before is
--- read back and its files not typed again -- and whose files are typed on
--- threads of their own when they are.
+-- read back and its files not typed again -- and whose files are typed one
+-- after another when they are: the build is what runs units at once.
 fun compileUnit (u : Given Interface) : Result String Interface ! { Thread, Mut, Fs | e } =
   match toResult (\() -> compiling u) with
   | Ok r -> r
@@ -133,3 +133,29 @@ fun write dir file text =
   match built app with
   | (ok, lines) ->
       assertEq (ok, V.getOr "" lines 0, V.getOr "" lines (V.len lines - 1)) (False, "   Failed lib", "   Blocked app: lib did not build") "the failure, and what it stopped"
+
+-- The same build with no thread in it: `| parallel = false`.
+make! {
+  InTurn "miniml"
+    | sources = ".ml"
+    | manifest = "Unit"
+    | compile = compileUnit
+    | parallel = false
+}
+
+@test fun aBuildInTurnBuildsTheSame () =
+  let root = "target/build-in-turn" in
+  let a = write (Path.join root "one") "Unit" "" in
+  let b = write (Path.join root "one") "double.ml" "fun x -> x + x" in
+  let c = write (Path.join root "two") "Unit" "" in
+  let d = write (Path.join root "two") "id.ml" "fun x -> x" in
+  let e = write (Path.join root "app") "Unit" "../one\n../two\n" in
+  let f = write (Path.join root "app") "main.ml" "double (id 21)" in
+  let lines = \r -> match r with | (ok, said) -> (ok, V.filter (\l -> S.startsWith "   " l) (S.lines said)) in
+  let first = lines (withOutput (\() -> buildInTurn (Path.join root "app"))) in
+  let second = lines (withOutput (\() -> buildInTurn (Path.join root "app"))) in
+  assertEq
+    [first, second]
+    [ (True, ["   Compiled one", "   Compiled two", "   Compiled app"]),
+      (True, ["   Fresh one", "   Fresh two", "   Fresh app"]) ]
+    "each unit, one after another"

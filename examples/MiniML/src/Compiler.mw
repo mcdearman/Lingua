@@ -1,6 +1,8 @@
 -- The compiler, as queries (`database!`). Each file's text is an input;
--- everything else is worked out from it and remembered, and re-run only when
--- something it read has changed.
+-- everything else is worked out from it. An editor's session (`newSession`)
+-- remembers it, and re-runs only what read something that has changed; a
+-- command that reads its files once asks the same queries of a batch
+-- (`batchSession`), which runs each pass once and keeps nothing else.
 
 use Lingua (database!)
 use Lingua.Green (Green)
@@ -83,7 +85,7 @@ fun signature (t : Result [Diagnostic] String) : String = match t with | Ok ty -
 
 -- One program through the whole compiler: what MiniML's REPL prints for a line.
 @pub fun replLine (src : String) : String ! { Thread, Mut | e } =
-  let db = newSession () in
+  let db = batchSession () in
   let u = setSessionSource db 0 src in
   match toResult (\() -> sessionShown db 0) with
   | Ok out -> out

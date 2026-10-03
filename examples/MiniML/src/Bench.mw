@@ -69,27 +69,31 @@ def config : BenchConfig = BenchConfig { warmupNanos = 0, sampleNanos = 1, sampl
           benchUnitsWith config "run" bytes (\() -> run core) ]
 
 -- What the queries cost, and what threads buy: `files` programs of `n` `let`s
--- each, typed four ways -- straight through the passes, one file after
--- another and each on a thread of its own, and as the session's queries, the
--- same two ways -- and then what only the queries can do: asked again with
--- nothing changed, and with one file edited.
+-- each, typed six ways -- straight through the passes, as the session's
+-- queries in a batch, and as the session an editor keeps, each of the three
+-- one file after another and each file on a thread of its own -- and then
+-- what only the editor's session can do: asked again with nothing changed,
+-- and with one file edited.
 @pub fun drivers (files : Int) (n : Int) =
   let srcs = V.map (\i -> program (n + i)) (V.range 0 files) in
   let ids = V.range 1 (files + 1) in
   let bytes = V.foldl (\acc s -> acc + stringByteLength s) 0 srcs in
   let u = println "\n${show files} files of about ${show n} lets, ${show bytes} bytes\n" in
-  let fresh = \() ->
-    let db = newSession () in
+  let filled = \db ->
     let u = V.foldl (\acc i -> setSessionSource db i (V.getOr "" srcs (i - 1))) () ids in
     db in
+  let fresh = \() -> filled (newSession ()) in
+  let batch = \() -> filled (batchSession ()) in
   let warm = fresh () in
   let w = toResult (\() -> sessionTypedEach warm ids) in
   let first = V.getOr "" srcs 0 in
   report
     [ benchUnitsWith config "passes, in turn" bytes (\() -> V.map straight srcs),
       benchUnitsWith config "passes, threads" bytes (\() -> Thread.parMap straight srcs),
-      benchUnitsWith config "queries, in turn" bytes (\() -> let db = fresh () in toResult (\() -> V.map (\i -> sessionTyped db i) ids)),
-      benchUnitsWith config "queries, threads" bytes (\() -> let db = fresh () in toResult (\() -> sessionTypedEach db ids)),
+      benchUnitsWith config "batch, in turn" bytes (\() -> let db = batch () in toResult (\() -> sessionTypedEach db ids)),
+      benchUnitsWith config "batch, threads" bytes (\() -> let db = parallelSession (batch ()) in toResult (\() -> sessionTypedEach db ids)),
+      benchUnitsWith config "queries, in turn" bytes (\() -> let db = fresh () in toResult (\() -> sessionTypedEach db ids)),
+      benchUnitsWith config "queries, threads" bytes (\() -> let db = parallelSession (fresh ()) in toResult (\() -> sessionTypedEach db ids)),
       benchUnitsWith config "queries, unchanged" bytes (\() -> toResult (\() -> V.map (\i -> sessionTyped warm i) ids)),
       benchUnitsWith config "queries, 2 edits" bytes
         (\() ->

@@ -13,7 +13,8 @@
 -- of the other queries, each called as `query` and its name: `querySource
 -- file`, `queryTree file` -- a name of their own, so that a query called
 -- `tree` never meets a function called `tree`. `queryTreeEach files` asks for
--- several at once, each on a thread of its own. A body may call anything pure;
+-- several at once -- one after another, or each on a thread of its own in a
+-- database made `parallel`. A body may call anything pure;
 -- it may not print, or mutate, or perform any effect but the reading of other
 -- queries, since what it answers is reused whenever nothing it read has
 -- changed, on whatever thread asks. A `match` in it is parenthesised, since `|`
@@ -30,16 +31,25 @@
 -- - `SessionKey` and `SessionValue`, a case per query;
 -- - a function per query, for the bodies to call -- `queryTree file` -- and
 --   one for several at once -- `queryTreeEach files`;
--- - `newSession ()`, a database with every input unset;
+-- - `newSession ()`, a database with every input unset: the one that
+--   remembers what each answer read, and brings it up to date when an input
+--   changes -- an editor's;
+-- - `batchSession ()`, the same queries as a batch: each worked out once,
+--   the first time it is asked for, and nothing else kept -- the passes run
+--   straight through, which is what a compiler run once over its sources
+--   wants. It is set and asked with the same functions;
+-- - `parallelSession db`, either of them with every `…Each` on threads. A
+--   compiler is sequential unless it calls this, and one that never does has
+--   no thread in it;
 -- - `setSessionSource db file text` for each input;
 -- - `sessionTree db file` and `sessionTreeEach db files` for each query, to
---   ask from outside -- which raise `QueryError` (`Lingua.Query`) for an input
+--   ask from outside, in turn or on threads as the database is -- which raise `QueryError` (`Lingua.Query`) for an input
 --   that was never set or queries that read each other in a circle;
 -- - when a query is `persisted`, `saveSession db path` and `loadSession db
 --   path`.
 --
 -- The engine underneath is `Lingua.Query`: what reruns when, early cutoff,
--- threads, snapshots, and the log of what ran.
+-- the batch, threads, snapshots, and the log of what ran.
 
 use Std.Collections.Vector as V
 use Std.String as S
@@ -134,7 +144,7 @@ fun databaseCode pub db decls : [TokenTree] =
       V.concatMap (\d -> accessor pub key value several d) decls,
       [Code "\nfun lingua${db}_compute key =\n  match key with"],
       V.concatMap (\d -> computeArm key value d) decls,
-      [Code "\n\n-- A `${db}` database, every input unset.\n${pub}fun new${db} () = LinguaQ.newDb lingua${db}_compute\n"],
+      [Code "\n\n-- A `${db}` database, every input unset.\n${pub}fun new${db} () = LinguaQ.newDb lingua${db}_compute\n\n-- `${db}` as a batch: each query worked out once, and nothing else kept.\n${pub}fun batch${db} () = LinguaQ.newBatch lingua${db}_compute\n\n-- `db`, with several keys asked at once each on a thread of its own.\n${pub}fun parallel${db} db = LinguaQ.parallel db\n"],
       V.concatMap (\d -> outside pub db key value several d) decls,
       if keeps then [Code (codec pub db key value decls)] else [] ]
 
@@ -155,7 +165,7 @@ fun unwrap value several n = " with | ${value}.${upperFirst n}Value x -> x${if s
 fun unwrapping value several n = "(\\v -> match v${unwrap value several n})"
 
 -- The functions a query body calls: `queryTree file` reads the tree, and
--- `queryTreeEach files` reads several, each on a thread of its own.
+-- `queryTreeEach files` reads several at once.
 fun accessor pub key value several d =
   match d with
   | Decl _ _ n _ _ _ _ _ ->
@@ -173,7 +183,7 @@ fun outside pub db key value several d =
   | Decl input _ n _ _ _ _ _ ->
       let q = upperFirst n in
       let asker = "${lowerFirst db}${q}" in
-      let ask = "\n-- `${n}`, asked of a `${db}` database.\n${pub}fun ${asker} db key = match LinguaQ.get db (${key}.${q} key)${unwrap value several n}\n\n-- `${n}` of each of `keys`, each on a thread of its own.\n${pub}fun ${asker}Each db keys = LinguaV.map ${unwrapping value several n} (LinguaQ.getAll db (LinguaV.map ${key}.${q} keys))\n" in
+      let ask = "\n-- `${n}`, asked of a `${db}` database.\n${pub}fun ${asker} db key = match LinguaQ.get db (${key}.${q} key)${unwrap value several n}\n\n-- `${n}` of each of `keys`, asked at once.\n${pub}fun ${asker}Each db keys = LinguaV.map ${unwrapping value several n} (LinguaQ.getAll db (LinguaV.map ${key}.${q} keys))\n" in
       if input then [Code "\n-- Set input `${n}` for `key`.\n${pub}fun set${db}${q} db key x = LinguaQ.set db (${key}.${q} key) (${value}.${q}Value x)\n${ask}"]
       else [Code ask]
 

@@ -121,10 +121,12 @@ fun load db (paths : [String]) : Result String [(Int, String, String)] ! { Fs, T
     (Ok [])
     paths
 
--- Each file's type, or its diagnostics drawn against it -- the files typed
--- on threads of their own.
+-- Each file's type, or its diagnostics drawn against it. The files are read
+-- once, so the session is a batch -- the passes run straight through, with
+-- nothing remembered for an edit that will not come -- and typed on threads
+-- of their own, which is this compiler asking for them: `parallelSession`.
 fun checkFiles (paths : [String]) =
-  let db = newSession () in
+  let db = parallelSession (batchSession ()) in
   match load db paths with
   | Err why -> (let u = println why in False)
   | Ok files ->
@@ -137,9 +139,9 @@ fun checkFiles (paths : [String]) =
         True
         (V.range 0 (V.len files))
 
--- A program's value and type, or its diagnostics.
+-- A program's value and type, or its diagnostics: one file, read once.
 fun runFile (path : String) =
-  let db = newSession () in
+  let db = batchSession () in
   match load db [path] with
   | Err why -> (let u = println why in False)
   | Ok files ->
@@ -158,7 +160,7 @@ fun repl () =
 -- What the REPL prints for a line: `replLine`, its diagnostics in colour
 -- where `renderToOutput` says so.
 fun shown (src : String) =
-  let db = newSession () in
+  let db = batchSession () in
   let u = setSessionSource db 0 src in
   match toResult (\() -> sessionResult db 0) with
   | Ok (Ok out) -> out

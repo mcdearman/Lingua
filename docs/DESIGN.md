@@ -11,7 +11,7 @@ text ─Scythe─▶ tokens ─generated LL parser─▶ events ─▶ green tre
                                                          │ red view (positions, parents)
                                                          ▼ typed AST (from ungrammar labels)
                                    lang L0 ─pass─▶ lang L1 ─pass─▶ … ─▶ output
-                         every step a cached query: incremental and parallel
+             every step a query: remembered for an editor, run once for a build
 ```
 
 This document is the design. It is written ahead of the code, and each part
@@ -587,7 +587,7 @@ language with type parameters writes its tables in that same `runSt` --
 `inferSt`, `settleSt` -- since a function using the state of two at once is
 not one Meadow can type.
 
-## 6. Queries: incremental and parallel
+## 6. Queries: for an editor, and for a build
 
 Every step above is a function of what came before it: a file's text gives its
 tokens, its tree, its surface language; each pass's output is a function of
@@ -646,11 +646,36 @@ body is a call to what `syntax!` and `pass!` already wrote -- `parseCalc`,
 `lower` -- one line each. A pass over a whole program is a query per file;
 a pass per item waits on the open question below.
 
-**Parallel** (milestone 5). `queryTreeEach files` -- the `fetchAll`
-operation -- asks for several keys at once, each on a thread of its own
-(`Std.Thread`), and `sessionTreeEach db files` does the same from outside.
-Threads share nothing mutable, so the database is `TVar`s (`Std.Stm`): its
-revision, its inputs, a slot per derived key, and a log. A slot is worked
+**A batch.** What the engine above remembers is for the edit after this one.
+A compiler run once over its sources has no such edit to wait for, and pays
+for the remembering all the same: on MiniML, a tenth to a seventh more than
+the passes cost called one after another. So `database!` writes a second way
+to run the same queries, `batchSession ()`: a key is worked out the first
+time it is asked for and its answer kept, and that is all -- no revisions,
+nothing noted of what was read, no answer compared with the one before, no
+`TVar`. It is the passes, run once each in the order they are needed, and
+costs what they do. A batch is set and asked with the functions a session
+is -- `setSessionSource`, `sessionTyped` -- so a compiler is declared once
+and driven two ways: its editor keeps a `newSession ()`, and its `check`,
+its `run` and its REPL ask a batch. Setting an input of a batch forgets its
+answers, and a snapshot of one keeps nothing. What the passes read and write
+is the same either way: the lossless tree the parser made, and each pass's
+side table.
+
+**In turn, or parallel** (milestone 5). `queryTreeEach files` -- the
+`fetchAll` operation -- asks for several keys at once, and `sessionTreeEach
+db files` does the same from outside. They are worked out one after another:
+a compiler is sequential until it says otherwise, and it says so with
+`parallelSession db`, which is the database with each of those on a thread
+of its own (`Std.Thread`). Nothing else reaches a thread, so a compiler that
+does not ask has none in it -- which matters where a program that can spawn
+pays for it everywhere, as one compiled all the way down does. In a batch, a
+thread works a key out in a batch of its own, the inputs handed to it in a
+compact region rather than copied, and what it was asked for comes back. In
+a session, threads share nothing mutable, so the database is `TVar`s
+(`Std.Stm`): its revision, its inputs, a slot per derived key -- a `TVar`
+each, so that two threads writing what they worked out do not meet -- and a
+log. A slot is worked
 out, _running_ -- claimed by one piece of work, a _chain_, so that a second
 thread asking for the key waits for the first rather than computing it again
 -- or read back from a snapshot and not yet checked. A cycle within a chain is
@@ -735,14 +760,20 @@ at a unit, and they belong to different owners:
   its sources, or an interface it was compiled against, are not what they
   were; a change that leaves a unit's interface as it was compiles that unit
   and nothing that depends on it. Units that do not depend on each other are
-  compiled at once, on threads of their own. What was built is kept in
+  compiled at once, on threads of their own: a build is parallel unless it
+  says otherwise, `| parallel = false`, which compiles them one after another
+  and leaves no thread in it. That is the other way round from a compiler
+  (§6), which is sequential until it asks: a compiler may be used with no
+  build around it, and when there is one, the units are where the work
+  divides. What was built is kept in
   `target/lingua-build.json`, interfaces and all, which are `Reflect` so that
   they can be.
 - **Inside a unit**, the compiler's. `compile` is given the unit's sources,
   the interfaces it depends on, and a directory of its own; how it does the
   work -- its own queries, its own threads, its own cache in that directory --
   is its business. MiniML's keeps a persisted session there, so a unit built
-  before is read back and its files not typed again.
+  before is read back and its files not typed again, and types its files in
+  turn, since the build already runs its units at once.
 
 The compiler is held to that boundary by an effect handler: it runs under a
 handler for `Fs` through which it can read its unit's sources and its own
@@ -766,7 +797,8 @@ unit may want threads and a cache of its own.
    `Lingua.Database`, and the calculator as a database of files.
 5. **Parallel and persistent**: threads over independent keys, and the memo
    table written between runs. Done: `fetchAll`, `persisted`,
-   `saveSession`/`loadSession`, both examples using them.
+   `saveSession`/`loadSession`, both examples using them. And the batch:
+   `batchSession`, with `parallelSession` the one way to a thread.
 6. **Tooling** (§8), on MiniML: `cli!`, `lsp!`, name resolution as a pass
    with a context, and `make!` over compilation units. Done, on every Meadow
    runtime; the next language to get them is Meadow itself.

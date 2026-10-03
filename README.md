@@ -87,8 +87,14 @@ syntax! {
   outside, and derived queries whose bodies are ordinary Meadow reading the
   others by name -- and **`Lingua.Query`** runs them in the style of salsa:
   each remembered, re-run only when something it read has changed, and cut
-  off where it answers what it did before. Several keys can be asked at once,
-  each on a thread of its own, and a query marked `persisted` is kept between
+  off where it answers what it did before -- what an editor wants. The same
+  queries are also a **batch** (`batchSession ()`): each worked out once, the
+  passes straight through with nothing else remembered -- what a compiler run
+  once over its sources wants. Several keys can be asked at once: one after
+  another, or each on a thread of its own once the compiler asks for that
+  (`parallelSession db`) -- a compiler is sequential until it does, where a
+  build (`make!`) compiles its units at once unless it says `parallel = false`.
+  A query marked `persisted` is kept between
   runs, standing for as long as the inputs it read are what they were. An
   input never set, or queries that read each other in a circle -- on one
   thread or across several -- are a `QueryError`.

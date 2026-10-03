@@ -3,7 +3,7 @@
 -- (`lang!`).
 
 use Scythe (lexer!)
-use Lingua (syntax!, lang!)
+use Lingua (syntax!, lang!, format!)
 use Lingua.Green (dump)
 
 -- Whitespace and `--` comments are tokens -- no `@skip` -- so the tree keeps
@@ -78,6 +78,19 @@ use Lingua.Green (dump)
 -- The language the grammar implies: what name resolution reads.
 @pub(pkg) lang! { pub Surface from Mini }
 
+-- How MiniML is set out (`format!`): what each rule holds, in the grammar's
+-- order, and which of it is a level in. `formatStyle` sets every line of a
+-- program in by it, and `indentStyle` says where the line after an
+-- unfinished one starts.
+@pub(pkg) format! {
+  pub Style for Mini
+  indent 2
+  | Let   = "let" recursive name params "=" indent(value) "in" body
+  | Lam   = "fun" params "->" indent(body)
+  | If    = "if" cond indent("then" yes) indent("else" no)
+  | Paren = "(" indent(expr) ")"
+}
+
 -- The tree of `input`, drawn.
 @pub fun drawn (input : String) : String =
   match parseMini input with
@@ -110,3 +123,35 @@ use Std.Result.Result.*
 @test fun aMissingPieceIsAnErrorWhereItWouldBe () =
   match parseMini "let x = in 1" with
   | (_, errs) -> assertEq errs [(8, "expected Expr")] "at the `in`"
+
+-- The formatter.
+
+fun formatted (src : String) : String = formatStyle (fst (parseMini src))
+
+fun opens (src : String) : String = indentStyle (fst (parseMini src))
+
+@test fun everyLineIsSetInAsTheRulesSay () =
+  assertEq
+    (formatted "let x =\n1 + 2\nin\n      if x < 3\nthen (\nx\n)\nelse fun y ->\ny\n")
+    "let x =\n  1 + 2\nin\nif x < 3\n  then (\n    x\n  )\n  else fun y ->\n    y\n"
+    "a level for the value, the branches, the parentheses and the body"
+
+@test fun twoNodesBegunOnOneLineAreOneLevel () =
+  -- The `let` and the `fun` both begin on the first line: what follows is in
+  -- by one level, not two. On lines of their own, by one each.
+  let a = assertEq (formatted "let f = fun y ->\ny + 1\nin f 2") "let f = fun y ->\n  y + 1\nin f 2" "one line, one level" in
+  assertEq (formatted "let f =\nfun y ->\ny + 1\nin f 2") "let f =\n  fun y ->\n    y + 1\nin f 2" "two lines, two"
+
+@test fun aFormattedProgramIsLeftAsItIs () =
+  let src = "let x =\n  1 + 2 -- three\nin\n\nif x < 3\n  then x\n  else 0\n" in
+  let a = assertEq (formatted src) src "nothing to do" in
+  assertEq (formatted (formatted "let x =\n      1\n in x")) (formatted "let x =\n      1\n in x") "and doing it twice is doing it once"
+
+@test fun aBrokenProgramIsFormattedAsFarAsItReads () =
+  assertEq (formatted "let x =\n(1 +\nin x") "let x =\n  (1 +\nin x" "the value still a level in"
+
+@test fun theNextLineStartsWhereTheFormatterWouldPutIt () =
+  assertEq
+    (V.map opens ["let x =", "let x = 1 +", "let x = 1 in", "let f = fun y ->", "let f =\n  fun y ->", "if a", "if a then", "(", "(a)", "f x", ""])
+    ["  ", "  ", "", "  ", "    ", "  ", "  ", "  ", "", "", ""]
+    "a level for each line a node still open began on"

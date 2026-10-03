@@ -1,0 +1,436 @@
+-- `format!`: a formatter, declared against a grammar's rules.
+--
+--   format! {
+--     pub Style for Mini
+--     indent 2
+--     | Let   = "let" recursive name params "=" indent(value) "in" body
+--     | Lam   = "fun" params "->" indent(body)
+--     | If    = "if" cond indent("then" yes) indent("else" no)
+--     | Paren = "(" indent(expr) ")"
+--   }
+--
+-- A rule of the formatter is a rule of the grammar, written again as what a
+-- node of it holds, in the order the grammar has them: a token as it is
+-- written, `"let"`, and a child by its label -- or, where the grammar gave it
+-- none, by the name its accessor has, `expr` for an `Expr`. `indent(…)` says
+-- what it encloses is one level in from where the node began. A rule the
+-- formatter does not mention is left as it was written, so a formatter is
+-- written a rule at a time.
+--
+-- This is the first of two steps, and it is indentation alone: where lines
+-- break is as the program was written, and each line is set in by what the
+-- rules say of the place it starts at. Laying a node out again -- where it
+-- breaks, and within what width -- is the step after, and is why a rule is
+-- written whole rather than as a list of what to indent.
+--
+-- **How far a line is in.** A line is set in one level for each node that
+-- began on an earlier line and whose indented part the line starts in --
+-- once for each such *line*, not each node: `let x = fun y ->` opens a `let`
+-- and a `fun` on one line, and what follows is in by one level, not two.
+-- A line that starts inside a token -- a string or a comment over several
+-- lines -- is left alone, and so is what is on a line after its first token.
+--
+-- **Where the next line goes.** Of an entry that is not finished -- what a
+-- REPL has when Enter is pressed -- `indentStyle` says what the line after it
+-- should open with: a level for each line on which a node began that is
+-- still open at the end, in its indented part. A node is open there when
+-- what it has of that part runs to the end -- `let x = 1 +` -- or when it
+-- has none of it yet and nothing after it -- `let x =`. So an entry is
+-- indented as it is typed the way the formatter would indent it once it is
+-- whole.
+--
+-- What is written, for a formatter `Style` of a grammar `Mini`:
+--
+-- - `formatStyle : Green Mini -> String`, the tree's text with every line
+--   set in as the rules say;
+-- - `indentStyle : Green Mini -> String`, what the line after an unfinished
+--   entry opens with.
+--
+-- Underneath, a formatter is a `Style`: the rules as data, matched against a
+-- node's children as they are met -- so a tree with something missing in it,
+-- or something wrong, is formatted as far as it can be read.
+
+use Std.Collections.Vector as V
+use Std.Collections.HashMap as HashMap
+use Std.Collections.HashMap (HashMap)
+use Std.String as S
+use Std.Maybe as M
+use Std.Maybe.Maybe.*
+use Std.Sort (sortOn)
+use Lingua.Green (Green)
+use Lingua.Green as G
+use Lingua.Red (Syntax)
+use Lingua.Red as R
+
+-- What a rule says a node holds: a token, by its text; a child, by the names
+-- of the kinds it may be -- one, or as many as there are; and several of
+-- those, a level in.
+@pub data Elem = Tok String | Child [String] Bool | Indent [Elem]
+
+use Elem.*
+
+-- The same, as functions: what `format!` writes a rule with.
+@pub fun tok (t : String) : Elem = Tok t
+
+@pub fun child (kinds : [String]) (many : Bool) : Elem = Child kinds many
+
+@pub fun indented (es : [Elem]) : Elem = Indent es
+
+-- A formatter: how wide a level is, what a kind is called, which kinds are
+-- trivia, and the rules, each under the name of its node's kind.
+@pub data Style k = Style Int (k -> String) (k -> Bool) (HashMap String [Elem])
+
+@pub fun style (unit : Int) (name : k -> String) (trivia : k -> Bool) (rules : [(String, [Elem])]) : Style k =
+  Style unit name trivia (V.foldl (\m r -> HashMap.insert (fst r) (snd r) m) HashMap.empty rules)
+
+fun unitOf st = match st with | Style u _ _ _ -> u
+fun nameOf st = match st with | Style _ n _ _ -> n
+fun triviaOf st = match st with | Style _ _ t _ -> t
+fun rulesOf st = match st with | Style _ _ _ r -> r
+
+-- What an error node's kind is called, whatever the grammar: `syntax!` gives
+-- every grammar one.
+def errorNode : String = "ErrorNode"
+
+def absent : (Int, Int) = (0 - 1, 0 - 1)
+
+fun present (r : (Int, Int)) : Bool = fst r >= 0
+
+-- --- a rule against a node --------------------------------------------------------
+
+-- Each of `elems` against `kids` from child `i` on: where in the text each
+-- is -- `absent` for one that is not there -- and the child after the last
+-- one taken.
+fun matchAll (st : Style k) (kids : [Syntax k]) (elems : [Elem]) (i : Int) : ([(Int, Int)], Int) =
+  V.foldl
+    (\acc e -> match acc with
+               | (out, at) -> (match matchOne st kids e at with | (r, next) -> (V.pushBack out r, next)))
+    ([], i)
+    elems
+
+fun matchOne (st : Style k) (kids : [Syntax k]) (e : Elem) (i : Int) : ((Int, Int), Int) =
+  match e with
+  | Tok t ->
+      (match firstFrom (\c -> R.isTokenOf c and R.text c == t) kids i with
+       | Just j -> (rangeOf kids j, j + 1)
+       | None -> (absent, i))
+  | Child kinds many ->
+      let j = pastErrors st kids i in
+      if fits st kinds kids j then
+        let k = if many then lastFitting st kinds kids j else j in
+        ((fst (rangeOf kids j), snd (rangeOf kids k)), k + 1)
+      else (absent, i)
+  | Indent es -> (match matchAll st kids es i with | (rs, next) -> (hull rs, next))
+
+fun rangeOf (kids : [Syntax k]) (j : Int) : (Int, Int) =
+  match V.get kids j with
+  | Just c -> R.textRange c
+  | None -> absent
+
+fun firstFrom (p : Syntax k -> Bool) (kids : [Syntax k]) (i : Int) : Maybe Int =
+  match V.get kids i with
+  | None -> None
+  | Just c -> if p c then Just i else firstFrom p kids (i + 1)
+
+fun kindName (st : Style k) (c : Syntax k) : String = (nameOf st) (R.kindOf c)
+
+-- Past what the parser could not read: an error node is no child of a rule.
+fun pastErrors (st : Style k) (kids : [Syntax k]) (i : Int) : Int =
+  match V.get kids i with
+  | Just c -> if kindName st c == errorNode then pastErrors st kids (i + 1) else i
+  | None -> i
+
+fun fits (st : Style k) (kinds : [String]) (kids : [Syntax k]) (j : Int) : Bool =
+  match V.get kids j with
+  | Just c -> V.elem (kindName st c) kinds
+  | None -> False
+
+fun lastFitting (st : Style k) (kinds : [String]) (kids : [Syntax k]) (j : Int) : Int =
+  if fits st kinds kids (j + 1) then lastFitting st kinds kids (j + 1) else j
+
+-- From the first of the ranges that are there to the last.
+fun hull (rs : [(Int, Int)]) : (Int, Int) =
+  V.foldl (\acc r -> if not (present r) then acc else if not (present acc) then r else (fst acc, snd r)) absent rs
+
+-- --- the indented parts of a tree -------------------------------------------------
+
+-- An indented part: where it starts and ends in the text, and where the node
+-- it is part of began.
+data Region = Region Int Int Int
+
+fun regionStart r = match r with | Region a _ _ -> a
+fun regionEnd r = match r with | Region _ b _ -> b
+fun regionOwner r = match r with | Region _ _ o -> o
+
+-- A node with a rule: where it began and ends, and each element of its rule
+-- -- whether it is indented, and where it is.
+fun ruled (st : Style k) (g : Green k) : [(Int, Int, [(Bool, (Int, Int))])] =
+  V.concatMap
+    (\i ->
+      if G.isTokenAt g i then []
+      else
+        let s = R.Syntax g i in
+        match HashMap.lookup (kindName st s) (rulesOf st) with
+        | None -> []
+        | Just elems ->
+            let kids = V.filter (\c -> not ((triviaOf st) (R.kindOf c))) (R.children s) in
+            let rs = fst (matchAll st kids elems 0) in
+            let marked = V.map (\j -> ((match V.get elems j with | Just (Indent _) -> True | _ -> False), V.getOr absent rs j)) (V.range 0 (V.len elems)) in
+            [(G.startAt g i, G.endAt g i, marked)])
+    (V.range 0 (G.slots g))
+
+-- Every indented part that is there, in the order they start.
+fun regions (st : Style k) (g : Green k) : [Region] =
+  sortOn regionStart
+    (V.concatMap
+      (\n -> match n with
+             | (from, _, marked) -> V.concatMap (\m -> if fst m and present (snd m) then [Region (fst (snd m)) (snd (snd m)) from] else []) marked)
+      (ruled st g))
+
+-- --- lines ------------------------------------------------------------------------
+
+fun lineStarts (t : String) : [Int] =
+  V.foldl (\acc i -> if toInt (stringByteAt t i) == 10 then V.pushBack acc (i + 1) else acc) [0] (V.range 0 (stringByteLength t))
+
+-- Which line `at` is on: the last that starts at or before it.
+fun lineOf (starts : [Int]) (at : Int) : Int = searchLine starts at 0 (V.len starts - 1)
+
+fun searchLine (starts : [Int]) (at : Int) (lo : Int) (hi : Int) : Int =
+  if lo >= hi then lo
+  else
+    let mid = (lo + hi + 1) / 2 in
+    if V.getOr 0 starts mid <= at then searchLine starts at mid hi else searchLine starts at lo (mid - 1)
+
+-- Where a line's first character that is not a space or a tab is.
+fun pastBlanks (t : String) (i : Int) (stop : Int) : Int =
+  if i < stop and (toInt (stringByteAt t i) == 32 or toInt (stringByteAt t i) == 9) then pastBlanks t (i + 1) stop else i
+
+-- How many different lines the nodes of `open` began on.
+fun levels (starts : [Int]) (open : [Region]) : Int =
+  V.len (V.foldl (\seen r -> let l = lineOf starts (regionOwner r) in if V.elem l seen then seen else V.pushBack seen l) [] open)
+
+-- --- formatting -------------------------------------------------------------------
+
+-- The tree's text, each line set in as the rules say.
+@pub fun reindent (st : Style k) (g : Green k) : String =
+  let t = G.text g in
+  let starts = lineStarts t in
+  let all = regions st g in
+  let total = stringByteLength t in
+  let step = \acc l ->
+    match acc with
+    | (out, open, next) ->
+        let from = V.getOr 0 starts l in
+        let stop = (if l + 1 < V.len starts then V.getOr total starts (l + 1) - 1 else total) in
+        let at = pastBlanks t from stop in
+        -- The parts this line starts in: those open before that have not
+        -- ended, and those that start by here.
+        let upTo = startingBy all next at in
+        let entered = V.filter (\r -> regionEnd r > at) (V.map (\i -> V.getOr (Region 0 0 0) all i) (V.range next upTo)) in
+        let open2 = V.append (V.filter (\r -> regionEnd r > at) open) entered in
+        let line =
+          (if at >= stop then ""
+           else if insideToken g from then stringSlice t from stop
+           else
+             let counted = V.filter (\r -> lineOf starts (regionOwner r) < l) open2 in
+             S.repeat " " (unitOf st * levels starts counted) ++ stringSlice t at stop) in
+          (V.pushBack out line, open2, upTo) in
+    match V.foldl step ([], [], 0) (V.range 0 (V.len starts)) with
+    | (out, _, _) -> S.join "\n" out
+
+-- The first region from `i` on that starts after `at`.
+fun startingBy (all : [Region]) (i : Int) (at : Int) : Int =
+  match V.get all i with
+  | Just r -> if regionStart r <= at then startingBy all (i + 1) at else i
+  | None -> i
+
+-- Whether a line starting at `from` starts inside a token that began before
+-- it, and is not blank space: a string or a comment that runs over lines.
+fun insideToken (g : Green k) (from : Int) : Bool =
+  if from == 0 then False
+  else
+    match R.tokenAt from (R.root g) with
+    | Just tok ->
+        let r = R.textRange tok in
+        fst r < from and not (S.isEmpty (S.trim (stringSlice (G.text g) (fst r) from)))
+    | None -> False
+
+-- What the line after the tree's text opens with, the text being unfinished:
+-- a level for each line on which a node began that is still open at the end,
+-- in its indented part.
+@pub fun continuation (st : Style k) (g : Green k) : String =
+  let t = G.text g in
+  let starts = lineStarts t in
+  let last = lastEnd st g in
+  if last < 0 then ""
+  else
+    let open =
+      V.concatMap
+        (\n -> match n with
+               | (from, to, marked) ->
+                   V.concatMap
+                     (\j -> match V.get marked j with
+                            | Just (True, r) ->
+                                -- There, and running to the end; or not there, with
+                                -- nothing after it, in a node that runs to the end.
+                                if present r then (if snd r >= last then [Region (fst r) (snd r) from] else [])
+                                else if to >= last and V.all (\m -> not (present (snd m))) (V.drop marked (j + 1)) then [Region last last from]
+                                else []
+                            | _ -> [])
+                     (V.range 0 (V.len marked)))
+        (ruled st g) in
+      S.repeat " " (unitOf st * levels starts open)
+
+-- Where the last token that is not trivia ends: -1 when there is none.
+fun lastEnd (st : Style k) (g : Green k) : Int =
+  V.foldl
+    (\acc i -> if G.isTokenAt g i and not ((triviaOf st) (G.kindAt g i)) and G.endAt g i > G.startAt g i then max acc (G.endAt g i) else acc)
+    (0 - 1)
+    (V.range 0 (G.slots g))
+
+-- --- format! --------------------------------------------------------------------------
+
+use Std.Macro (TokenTree, Delim, Loc, isPunct, lookupAs)
+use Std.Macro.TokenTree.*
+use Std.Macro.Loc.*
+use Std.Macro.Delim.*
+use Std.Macro.Parse (Tokens, parseTokens, ident, keyword, punct, number, treesUntil)
+use Std.String.Parse as P
+use Std.String.Parse (Parser)
+use Std.Macro (Expand)
+use Std.Result.Result.*
+use Lingua.Lang (Lang, Sort, Prod, Field, Ty, Keeping, TokenField)
+use Lingua.Lang.Lang.*
+use Lingua.Lang.Sort.*
+use Lingua.Lang.Prod.*
+use Lingua.Lang.Field.*
+use Lingua.Lang.Ty.*
+use Lingua.Lang.Keeping.*
+use Lingua.Lang.TokenField.*
+
+-- An element as it was written: a token, a child's name and where it was
+-- written, or what `indent(…)` encloses.
+data Written = WTok String | WName String Loc | WIndent [Written]
+
+use Written.*
+
+def formatNamed : Parser Tokens (String, Loc) = P.label "a name" (P.token (\t -> match t with | Word w at -> Just (w, at) | _ -> None) [])
+
+-- `indent` before parentheses is the level; anywhere else it is a child's name.
+fun writtenOf (ts : [TokenTree]) : [Written] = writing ts 0 []
+
+fun writing (ts : [TokenTree]) (i : Int) (out : [Written]) : [Written] =
+  match (V.get ts i, V.get ts (i + 1)) with
+  | (Just (Word "indent" _), Just (Group Paren inner _)) -> writing ts (i + 2) (V.pushBack out (WIndent (writtenOf inner)))
+  | (Just (Str s _), _) -> writing ts (i + 1) (V.pushBack out (WTok s))
+  | (Just (Word w at), _) -> writing ts (i + 1) (V.pushBack out (WName w at))
+  | (Just _, _) -> writing ts (i + 1) out
+  | (None, _) -> out
+
+def formatRule : Parser Tokens ((String, Loc), [TokenTree]) =
+  P.skipThen (punct "|") (P.bind formatNamed (\r -> P.skipThen (punct "=") (P.map (\body -> (r, body)) (treesUntil (isPunct "|")))))
+
+def formatCall : Parser Tokens (Bool, String, (String, Loc), Maybe Int, [((String, Loc), [TokenTree])]) =
+  P.bind (P.optional (keyword "pub")) (\pub ->
+    P.bind ident (\name ->
+      P.skipThen (keyword "for") (
+        P.bind formatNamed (\grammar ->
+          P.bind (P.optional (P.skipThen (keyword "indent") number)) (\unit ->
+            P.map (\rules -> (M.isSome pub, name, grammar, unit, rules)) (P.many formatRule))))))
+
+@macro
+@pub fun format (ts : [TokenTree]) : [TokenTree] ! { Expand | e } =
+  match parseTokens formatCall ts with
+  | Err failed -> failed
+  | Ok (pub, name, grammar, unit, rules) ->
+      match lookupAs (fst grammar) with
+      | Err _ -> [Fail "no grammar is called ${fst grammar}: `format!` is of a grammar `syntax!` declared" (snd grammar)]
+      | Ok l ->
+          match l with
+          | Lang _ _ sorts _ _ keeping ->
+              (match keeping with
+               | AsTables -> [Fail "${fst grammar} is kept as tables: a formatter is of a tree" (snd grammar)]
+               | AsTrees _ trivia tokenFields ->
+                   let prods = V.concatMap (\s -> match s with | Sort _ ps -> ps) sorts in
+                   let done = V.map (\r -> ruleCode sorts prods tokenFields r) rules in
+                   match V.find (\d -> match d with | Err _ -> True | Ok _ -> False) done with
+                   | Just (Err failed) -> failed
+                   | _ -> formatCode (if pub then "@pub " else "") name (fst grammar) (M.unwrapOr 2 unit) trivia (V.concatMap (\d -> match d with | Ok c -> [c] | Err _ -> []) done))
+
+-- A rule as the data `Style` holds: the node's kind, and its elements.
+fun ruleCode sorts prods tokenFields (r : ((String, Loc), [TokenTree])) : Result [TokenTree] String =
+  match r with
+  | ((n, at), body) ->
+      match V.find (\p -> match p with | Prod m fs -> m == n and not (isEnumProd sorts p)) prods with
+      | None -> Err [Fail "no rule of the grammar is called ${n} -- or it is a choice of rules, and has no node of its own" at]
+      | Just (Prod _ fs) ->
+          match elemsCode sorts tokenFields n fs (writtenOf body) with
+          | Err failed -> Err failed
+          | Ok code -> Ok "(\"Node${n}\", ${code})"
+
+-- An enum's production holds only the enum's sort, under its own name.
+fun isEnumProd sorts p =
+  match p with
+  | Prod n fs -> V.any (\s -> match s with | Sort m _ -> m == n) sorts and V.len fs == 1 and V.any (\f -> match f with | Field _ (TSort m) _ _ -> m == n | _ -> False) fs
+
+fun elemsCode sorts tokenFields rule fs (ws : [Written]) : Result [TokenTree] String =
+  let each = V.map (\w -> elemCode sorts tokenFields rule fs w) ws in
+  match V.find (\d -> match d with | Err _ -> True | Ok _ -> False) each with
+  | Just (Err failed) -> Err failed
+  | _ -> Ok "[${S.join ", " (V.concatMap (\d -> match d with | Ok c -> [c] | Err _ -> []) each)}]"
+
+fun elemCode sorts tokenFields rule fs (w : Written) : Result [TokenTree] String =
+  match w with
+  | WTok t -> Ok "LinguaF.tok ${quote t}"
+  | WIndent inner ->
+      (match elemsCode sorts tokenFields rule fs inner with
+       | Ok code -> Ok "LinguaF.indented ${code}"
+       | Err failed -> Err failed)
+  | WName n at ->
+      match V.find (\f -> match f with | Field m _ _ _ -> m == n) fs with
+      | None ->
+          Err [Fail "${rule} has no child called `${n}`: it has ${S.join ", " (V.map (\f -> match f with | Field m _ _ _ -> "`${m}`") fs)} -- and its tokens, each written as it is, in quotes" at]
+      | Just (Field _ ty _ token) ->
+          let many = (match ty with | TMany _ -> True | _ -> False) in
+          let kinds =
+            (if token then V.concatMap (\tf -> match tf with | TokenField r f ks -> if r == rule and f == n then ks else []) tokenFields
+             else V.map (\k -> "Node${k}") (kindsOf sorts (sortOf ty) [])) in
+            Ok "LinguaF.child [${S.join ", " (V.map quote kinds)}] ${if many then "True" else "False"}"
+
+fun sortOf (ty : Ty) : String =
+  match ty with
+  | TSort n -> n
+  | TMany t -> sortOf t
+  | TOpt t -> sortOf t
+  | TPrim _ -> ""
+
+-- The rules a child of sort `n` may be a node of: its productions, and those
+-- of each that is a choice of rules itself.
+fun kindsOf sorts (n : String) (seen : [String]) : [String] =
+  if V.elem n seen then []
+  else
+    match V.find (\s -> match s with | Sort m _ -> m == n) sorts with
+    | None -> [n]
+    | Just (Sort _ ps) ->
+        V.concatMap
+          (\p -> match p with
+                 | Prod m _ -> if m != n and V.any (\s -> match s with | Sort k _ -> k == m) sorts then kindsOf sorts m (V.pushBack seen n) else [m])
+          ps
+
+fun quote (s : String) : String =
+  "\"" ++ S.join "" (V.map (\i -> let c = stringSlice s i (i + 1) in if c == "\"" then "\\\"" else if c == "\\" then "\\\\" else if c == "$" then "\\$" else c) (V.range 0 (stringByteLength s))) ++ "\""
+
+fun formatCode pub name grammar (unit : Int) (trivia : [String]) (rules : [String]) : [TokenTree] =
+  let isTrivia = S.join "" (V.map (\k -> " | ${grammar}.${k} -> True") trivia) in
+  [Code "use Lingua.Format as LinguaF
+
+-- `${name}`: how a ${grammar} tree is set out.
+def lingua${name}_style =
+  LinguaF.style ${show unit} (\\k -> show k) (\\k -> match k with${isTrivia} | _ -> False) [${S.join ", " rules}]
+
+-- The tree's text, every line set in as `${name}` says.
+${pub}fun format${name} g = LinguaF.reindent lingua${name}_style g
+
+-- What the line after an unfinished entry opens with.
+${pub}fun indent${name} g = LinguaF.continuation lingua${name}_style g
+"]

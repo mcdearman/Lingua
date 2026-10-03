@@ -87,7 +87,7 @@ fun compiling (u : Given Interface) =
 
 use Std.Test (assertEq)
 use Std.Console (withOutput)
-use Std.Fs (createDirAll)
+use Std.Fs (createDirAll, removeDirAll)
 
 -- Build `root` and say, for each unit, how it went.
 fun built root = match withOutput (\() -> buildBuild root) with | (ok, said) -> (ok, V.filter (\l -> S.startsWith "   " l) (S.lines said))
@@ -145,6 +145,8 @@ make! {
 
 @test fun aBuildInTurnBuildsTheSame () =
   let root = "target/build-in-turn" in
+  -- From nothing: what an earlier run of this test built would be up to date.
+  let z = removeDirAll root in
   let a = write (Path.join root "one") "Unit" "" in
   let b = write (Path.join root "one") "double.ml" "fun x -> x + x" in
   let c = write (Path.join root "two") "Unit" "" in
@@ -164,6 +166,8 @@ make! {
   -- `near` depends on `quick` alone, and `far` on `slow` alone. Whichever of
   -- them finishes first, each is compiled after its own and all four are.
   let root = "target/build-as-ready" in
+  -- From nothing: what an earlier run of this test built would be up to date.
+  let z = removeDirAll root in
   let a = write (Path.join root "quick") "Unit" "" in
   let b = write (Path.join root "quick") "id.ml" "fun x -> x" in
   let c = write (Path.join root "slow") "Unit" "" in

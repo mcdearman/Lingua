@@ -25,7 +25,11 @@ lsp! {
     | references = referencesAt
     | completion = completionAt
     | symbols = symbolsOf
+    | format = formattedOf
 }
+
+-- The file as MiniML's formatter sets it out (`format!`, in `Syntax`).
+fun formattedOf db file = formatStyle (treeOf db file)
 
 -- A query's answer, or `fallback` if it has none -- an input never set.
 fun answered fallback act = match toResult act with | Ok x -> x | Err _ -> fallback
@@ -82,6 +86,8 @@ fun symbolsOf db file =
 -- What the server answers, asked of a session directly.
 
 use Std.Test (assertEq)
+use Std.Json as J
+use Lingua.Lsp (formatReply)
 
 fun editing src =
   let db = newSession () in
@@ -118,3 +124,13 @@ fun spelled src (ps : [(Int, Meta)]) = V.map (\p -> match snd p with | Meta a b 
 @test fun theSymbolsAreWhatLetsBind () =
   let db = editing "let id = fun x -> x in let one = id 1 in one" in
   assertEq (symbolsOf db 1) [("id", "function", Meta 4 6), ("one", "variable", Meta 27 30)] "not the parameter"
+
+@test fun aFileIsFormattedAsOneEdit () =
+  let src = "let x =\n1\nin x" in
+  let db = editing src in
+  let a = assertEq (formattedOf db 1) "let x =\n  1\nin x" "the value a level in" in
+  let b = assertEq
+    (J.render (formatReply src (formattedOf db 1)))
+    "[{\"range\":{\"start\":{\"line\":0,\"character\":0},\"end\":{\"line\":2,\"character\":4}},\"newText\":\"let x =\\n  1\\nin x\"}]"
+    "the whole file, replaced" in
+  assertEq (J.render (formatReply "1" "1")) "[]" "and nothing to do for one already set out"

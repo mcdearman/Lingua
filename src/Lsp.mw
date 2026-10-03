@@ -10,6 +10,7 @@
 --     | references = referencesAt
 --     | completion = completionAt
 --     | symbols = symbolsOf
+--     | format = formattedOf
 --   }
 --
 -- A server keeps its compiler's database -- `for Session` makes it with
@@ -29,6 +30,9 @@
 --   references    db -> Int -> Int -> [(Int, Meta)]  -- highlights and rename too
 --   completion    db -> Int -> Int -> [(String, String)]
 --   symbols       db -> Int -> [(String, String, Meta)]
+--   format        db -> Int -> String              its text, set out: what a
+--                                                  formatter (`format!`) makes
+--                                                  of its tree
 --
 -- Only `text` is needed; the server says it can do what it was given. Where
 -- a feature answers places, each is a file and a `Meta` in it. What is
@@ -251,7 +255,8 @@ fun initialized name features =
               when "definition" [("definitionProvider", J.jBool True)],
               when "references" [("referencesProvider", J.jBool True), ("documentHighlightProvider", J.jBool True), ("renameProvider", J.jObject [("prepareProvider", J.jBool True)])],
               when "completion" [("completionProvider", J.jObject [])],
-              when "symbols" [("documentSymbolProvider", J.jBool True)] ])),
+              when "symbols" [("documentSymbolProvider", J.jBool True)],
+              when "format" [("documentFormattingProvider", J.jBool True)] ])),
       ("serverInfo", J.jObject [("name", J.jString name)]) ]
 
 -- --- answers ------------------------------------------------------------------------
@@ -260,6 +265,12 @@ fun initialized name features =
   match h with
   | None -> J.jNull ()
   | Just (m, what) -> J.jObject [("contents", J.jObject [("kind", J.jString "markdown"), ("value", J.jString what)]), ("range", rangeJson t (lineStarts t) m)]
+
+-- The file set out: one edit putting `formatted` where the whole of `t` is,
+-- and none when they are the same.
+@pub fun formatReply (t : String) (formatted : String) : Json =
+  if formatted == t then J.jArray []
+  else J.jArray [J.jObject [("range", rangeJson t (lineStarts t) (Meta 0 (stringByteLength t))), ("newText", J.jString formatted)]]
 
 fun locationJson docs (p : (Int, Meta)) =
   let t = textOf docs (fst p) in
@@ -411,7 +422,7 @@ use Std.String.Parse as P
 use Std.String.Parse (Parser)
 
 -- The features a server can be given, and what each does.
-def features : [String] = ["text", "diagnostics", "tree", "hover", "definition", "references", "completion", "symbols"]
+def features : [String] = ["text", "diagnostics", "tree", "hover", "definition", "references", "completion", "symbols", "format"]
 
 def namedP : Parser Tokens (String, Loc) = P.label "a name" (P.token (\t -> match t with | Word w at -> Just (w, at) | _ -> None) [])
 
@@ -457,7 +468,7 @@ ${pub}fun serve${name} () =
     (\\file -> ${if has "diagnostics" then "${fn "diagnostics"} db file" else "[]"})
     (\\docs method file t offset params ->
     if False then None
-${arm "hover" "textDocument/hover" "LinguaLsp.hoverReply t (${fn "hover"} db file offset)"}${arm "tree" "textDocument/semanticTokens/full" "LinguaLsp.tokensReply t ${tree} display"}${arm "tree" "textDocument/foldingRange" "LinguaLsp.foldingReply t ${tree}"}${arm "tree" "textDocument/selectionRange" "LinguaLsp.selectionReply t ${tree} params"}${arm "definition" "textDocument/definition" "LinguaLsp.locationsReply docs (${fn "definition"} db file offset)"}${arm "references" "textDocument/references" "LinguaLsp.locationsReply docs ${refs}"}${arm "references" "textDocument/documentHighlight" "LinguaLsp.highlightsReply t file ${refs}"}${arm "references" "textDocument/prepareRename" "LinguaLsp.prepareRenameReply t file offset ${refs}"}${arm "references" "textDocument/rename" "LinguaLsp.renameReply docs ${refs} (LinguaLsp.newName params)"}${arm "completion" "textDocument/completion" "LinguaLsp.completionReply (${fn "completion"} db file offset)"}${arm "symbols" "textDocument/documentSymbol" "LinguaLsp.symbolsReply t (${fn "symbols"} db file)"}    else None)
+${arm "hover" "textDocument/hover" "LinguaLsp.hoverReply t (${fn "hover"} db file offset)"}${arm "tree" "textDocument/semanticTokens/full" "LinguaLsp.tokensReply t ${tree} display"}${arm "tree" "textDocument/foldingRange" "LinguaLsp.foldingReply t ${tree}"}${arm "tree" "textDocument/selectionRange" "LinguaLsp.selectionReply t ${tree} params"}${arm "definition" "textDocument/definition" "LinguaLsp.locationsReply docs (${fn "definition"} db file offset)"}${arm "references" "textDocument/references" "LinguaLsp.locationsReply docs ${refs}"}${arm "references" "textDocument/documentHighlight" "LinguaLsp.highlightsReply t file ${refs}"}${arm "references" "textDocument/prepareRename" "LinguaLsp.prepareRenameReply t file offset ${refs}"}${arm "references" "textDocument/rename" "LinguaLsp.renameReply docs ${refs} (LinguaLsp.newName params)"}${arm "completion" "textDocument/completion" "LinguaLsp.completionReply (${fn "completion"} db file offset)"}${arm "symbols" "textDocument/documentSymbol" "LinguaLsp.symbolsReply t (${fn "symbols"} db file)"}${arm "format" "textDocument/formatting" "LinguaLsp.formatReply t (${fn "format"} db file)"}    else None)
 "
 
 -- --- tests --------------------------------------------------------------------------

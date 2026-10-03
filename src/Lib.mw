@@ -23,6 +23,7 @@
 @pub mod Cli
 @pub mod Lsp
 @pub mod Make
+@pub mod Format
 
 @pub use Lingua.Gen (syntax)
 @pub use Lingua.Pass (lang, pass)
@@ -30,3 +31,4 @@
 @pub use Lingua.Cli (cli)
 @pub use Lingua.Lsp (lsp)
 @pub use Lingua.Make (make)
+@pub use Lingua.Format (format)

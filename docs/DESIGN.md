@@ -818,9 +818,11 @@ at a unit, and they belong to different owners:
 - **Inside a unit**, the compiler's. `compile` is given the unit's sources,
   the interfaces it depends on, and a directory of its own; how it does the
   work -- its own queries, its own threads, its own cache in that directory --
-  is its business. MiniML's keeps a persisted session there, so a unit built
-  before is read back and its files not typed again, and types its files in
-  turn, since the build already runs its units at once.
+  is its business. MiniML's is a batch (§6): the unit's files read once, the
+  passes run straight through and its files typed in turn, since the build
+  already runs its units at once, and nothing kept there -- a cache of a
+  whole unit's answers stood only when nothing in the unit had changed,
+  which is when the build does not ask.
 
 The compiler is held to that boundary by an effect handler: it runs under a
 handler for `Fs` through which it can read its unit's sources and its own
@@ -844,7 +846,7 @@ unit may want threads and a cache of its own.
    `Lingua.Database`, and the calculator as a database of files.
 5. **Parallel and persistent**: threads over independent keys, and the memo
    table written between runs. Done: `fetchAll`, `persisted`,
-   `saveSession`/`loadSession`, both examples using them. And the batch:
+   `saveSession`/`loadSession`, the calculator using them. And the batch:
    `batchSession`, with `parallelSession` the one way to a thread.
 6. **Tooling** (§8), on MiniML: `cli!`, `lsp!`, name resolution as a pass
    with a context, and `make!` over compilation units. Done, on every Meadow

@@ -56,9 +56,14 @@
 -- with the one before, and nothing is a `TVar` -- the passes, run once each,
 -- in the order they are needed. It is asked exactly as the other is, so one
 -- set of queries is an editor's database and a build's compiler. Setting an
--- input forgets every answer, and a snapshot has nothing to keep. In `parallel`, each key of a `fetchAll` is worked out on a
--- thread with answers of its own, the inputs shared between them in a compact
--- region, and only what was asked for comes back.
+-- input forgets every answer, and a snapshot has nothing to keep. In
+-- `parallel`, each key of a `fetchAll` is worked out on a thread with answers
+-- of its own and a copy of the inputs, and only what was asked for comes
+-- back. `shared` hands the threads the inputs in one compact region instead
+-- of a copy each -- which saves the copies, and is worth it only where
+-- reading a region from several threads is cheap: on a runtime that counts
+-- references, every read of a string or a record in one writes a count the
+-- threads share, and they wait on each other for it.
 --
 -- A query is a function of its key and of what it fetches, and nothing else:
 -- its effects are `Fetch` and no others, so a result can always be reused, and
@@ -115,7 +120,7 @@ data Live k v
       (Live k v -> Chain k -> [k] -> Result (QueryError k) [(v, Int)] ! { Thread, Mut })
 
 -- A batch: the inputs, the answers so far, the inputs as a compact region
--- once a thread has needed them, the keys computed since the log was last
+-- once a `shared` batch's thread has needed them, the keys computed since the log was last
 -- taken, the queries, and how several keys asked at once are worked out --
 -- given the keys being computed, outermost first.
 data Once k v
@@ -149,12 +154,21 @@ data Chain k = Chain Int [k]
   Db.Batch (Once (newRef HashMap.empty) (newRef HashMap.empty) (newRef None) (newRef []) compute onceInTurn)
 
 -- `db`, with several keys asked at once each worked out on a thread of its
--- own. The only way to a thread there is: a program that does not call this
--- has none.
+-- own -- in a batch, each with a copy of the inputs. This and `shared` are
+-- the only ways to a thread: a program that calls neither has none.
 @pub fun parallel (db : Db k v) : Db k v =
   match db with
   | Db.Incremental (Live r i s w c l f _) -> Db.Incremental (Live r i s w c l f inParallel)
   | Db.Batch (Once i m c l f _) -> Db.Batch (Once i m c l f onceOnThreads)
+
+-- `parallel db`, and in a batch the threads read the inputs from one compact
+-- region rather than a copy each. No input may hold a function, a `Ref` or a
+-- mutable array, which a region refuses. A database that is not a batch
+-- already shares what it holds, and is only made `parallel`.
+@pub fun shared (db : Db k v) : Db k v =
+  match db with
+  | Db.Batch (Once i m c l f _) -> Db.Batch (Once i m c l f onceOnThreadsShared)
+  | _ -> parallel db
 
 fun revisionVar db = match db with | Live r _ _ _ _ _ _ _ -> r
 fun inputsVar db = match db with | Live _ i _ _ _ _ _ _ -> i
@@ -301,18 +315,26 @@ fun onceInTurn (o : Once k v) (stack : [k]) (keys : [k]) : Result (QueryError k)
     keys
 
 -- Each of `keys` not answered yet on a thread of its own: a batch each, with
--- these inputs -- compacted once, so that a thread is handed a pointer to them
--- rather than a copy -- and no answers. What each was asked for comes back
--- and is kept; what it worked out on the way does not.
+-- a copy of these inputs -- the thread's own, so that reading them is no
+-- other thread's business -- and no answers. What each was asked for comes
+-- back and is kept; what it worked out on the way does not.
 fun onceOnThreads (o : Once k v) (stack : [k]) (keys : [k]) : Result (QueryError k) [v] ! { Thread, Mut | e } =
-  let known = \k -> HashMap.member k (getRef (onceInputs o)) or HashMap.member k (getRef (onceMemo o)) in
-  let todo = V.filter (\k -> not (known k)) (noting [] keys) in
+  let ins = getRef (onceInputs o) in
+  let compute = onceCompute o in
+  onceSpread o stack keys (\() -> Once (newRef ins) (newRef HashMap.empty) (newRef None) (newRef []) compute onceOnThreads)
+
+-- The same, the inputs compacted once and each thread handed a pointer to
+-- them rather than a copy.
+fun onceOnThreadsShared (o : Once k v) (stack : [k]) (keys : [k]) : Result (QueryError k) [v] ! { Thread, Mut | e } =
   let ins = sharedInputs o in
   let compute = onceCompute o in
-  let tasks =
-    V.map
-      (\k -> Thread.spawn (\() -> onceGet (Once (newRef (Compact.get ins)) (newRef HashMap.empty) (newRef (Just ins)) (newRef []) compute onceOnThreads) stack k))
-      todo in
+  onceSpread o stack keys (\() -> Once (newRef (Compact.get ins)) (newRef HashMap.empty) (newRef (Just ins)) (newRef []) compute onceOnThreadsShared)
+
+-- `own` is the batch a thread makes for itself, once it is running.
+fun onceSpread (o : Once k v) (stack : [k]) (keys : [k]) (own : () -> Once k v ! { Mut }) : Result (QueryError k) [v] ! { Thread, Mut | e } =
+  let known = \k -> HashMap.member k (getRef (onceInputs o)) or HashMap.member k (getRef (onceMemo o)) in
+  let todo = V.filter (\k -> not (known k)) (noting [] keys) in
+  let tasks = V.map (\k -> Thread.spawn (\() -> onceGet (own ()) stack k)) todo in
   let results = Thread.awaitAll tasks in
   let failed =
     V.foldl
@@ -935,6 +957,13 @@ fun batch () =
   let a = assertEq (toResult (\() -> V.map num (getAll db [K.Len 1, K.Len 2, K.Len 1, K.Total]))) (Ok [3, 2, 3, 5]) "every answer, a key asked twice too" in
   let b = assertEq (toResult (\() -> get db (K.Lens [1, 2]))) (Ok (Val.Nums [3, 2])) "and a query that asks for several" in
   assertEq (toResult (\() -> get db K.Both)) (Err (Cycle [K.Both, K.Left, K.Right, K.Left])) "a cycle on a thread is still one"
+
+@test fun aBatchSharingItsInputsAnswersTheSame () =
+  let db = shared (batch ()) in
+  let a = assertEq (toResult (\() -> V.map num (getAll db [K.Len 1, K.Len 2, K.Len 1, K.Total]))) (Ok [3, 2, 3, 5]) "every answer" in
+  let b = assertEq (toResult (\() -> get db (K.Lens [1, 2]))) (Ok (Val.Nums [3, 2])) "a query that asks for several, from a thread's own batch" in
+  let c = set db (K.Cell 1) (Val.Text "abcd") in
+  assertEq (toResult (\() -> V.map num (getAll db [K.Len 1, K.Total]))) (Ok [4, 6]) "and the inputs as they are now, after one is set"
 
 @test fun aBatchKeepsNothingBetweenRuns () =
   let db = batch () in

@@ -40,7 +40,11 @@
 --   wants. It is set and asked with the same functions;
 -- - `parallelSession db`, either of them with every `…Each` on threads. A
 --   compiler is sequential unless it calls this, and one that never does has
---   no thread in it;
+--   no thread in it. A batch's threads take a copy of the inputs each;
+-- - `sharedSession db`, the same, with a batch's threads reading the inputs
+--   from one compact region instead: no copies, where reading a region from
+--   several threads is cheap -- which, for inputs of strings and records on
+--   a runtime that counts references, it is not;
 -- - `setSessionSource db file text` for each input;
 -- - `sessionTree db file` and `sessionTreeEach db files` for each query, to
 --   ask from outside, in turn or on threads as the database is -- which raise `QueryError` (`Lingua.Query`) for an input
@@ -144,7 +148,7 @@ fun databaseCode pub db decls : [TokenTree] =
       V.concatMap (\d -> accessor pub key value several d) decls,
       [Code "\nfun lingua${db}_compute key =\n  match key with"],
       V.concatMap (\d -> computeArm key value d) decls,
-      [Code "\n\n-- A `${db}` database, every input unset.\n${pub}fun new${db} () = LinguaQ.newDb lingua${db}_compute\n\n-- `${db}` as a batch: each query worked out once, and nothing else kept.\n${pub}fun batch${db} () = LinguaQ.newBatch lingua${db}_compute\n\n-- `db`, with several keys asked at once each on a thread of its own.\n${pub}fun parallel${db} db = LinguaQ.parallel db\n"],
+      [Code "\n\n-- A `${db}` database, every input unset.\n${pub}fun new${db} () = LinguaQ.newDb lingua${db}_compute\n\n-- `${db}` as a batch: each query worked out once, and nothing else kept.\n${pub}fun batch${db} () = LinguaQ.newBatch lingua${db}_compute\n\n-- `db`, with several keys asked at once each on a thread of its own.\n${pub}fun parallel${db} db = LinguaQ.parallel db\n\n-- `parallel${db} db`, a batch's threads sharing the inputs in a compact region.\n${pub}fun shared${db} db = LinguaQ.shared db\n"],
       V.concatMap (\d -> outside pub db key value several d) decls,
       if keeps then [Code (codec pub db key value decls)] else [] ]
 

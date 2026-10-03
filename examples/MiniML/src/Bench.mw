@@ -69,9 +69,10 @@ def config : BenchConfig = BenchConfig { warmupNanos = 0, sampleNanos = 1, sampl
           benchUnitsWith config "run" bytes (\() -> run core) ]
 
 -- What the queries cost, and what threads buy: `files` programs of `n` `let`s
--- each, typed six ways -- straight through the passes, as the session's
+-- each, typed seven ways -- straight through the passes, as the session's
 -- queries in a batch, and as the session an editor keeps, each of the three
--- one file after another and each file on a thread of its own -- and then
+-- one file after another and each file on a thread of its own, and the batch
+-- once more with its threads sharing the inputs in a compact region -- and then
 -- what only the editor's session can do: asked again with nothing changed,
 -- and with one file edited.
 @pub fun drivers (files : Int) (n : Int) =
@@ -92,6 +93,7 @@ def config : BenchConfig = BenchConfig { warmupNanos = 0, sampleNanos = 1, sampl
       benchUnitsWith config "passes, threads" bytes (\() -> Thread.parMap straight srcs),
       benchUnitsWith config "batch, in turn" bytes (\() -> let db = batch () in toResult (\() -> sessionTypedEach db ids)),
       benchUnitsWith config "batch, threads" bytes (\() -> let db = parallelSession (batch ()) in toResult (\() -> sessionTypedEach db ids)),
+      benchUnitsWith config "batch, shared" bytes (\() -> let db = sharedSession (batch ()) in toResult (\() -> sessionTypedEach db ids)),
       benchUnitsWith config "queries, in turn" bytes (\() -> let db = fresh () in toResult (\() -> sessionTypedEach db ids)),
       benchUnitsWith config "queries, threads" bytes (\() -> let db = parallelSession (fresh ()) in toResult (\() -> sessionTypedEach db ids)),
       benchUnitsWith config "queries, unchanged" bytes (\() -> toResult (\() -> V.map (\i -> sessionTyped warm i) ids)),

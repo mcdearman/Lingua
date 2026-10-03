@@ -670,8 +670,13 @@ a compiler is sequential until it says otherwise, and it says so with
 of its own (`Std.Thread`). Nothing else reaches a thread, so a compiler that
 does not ask has none in it -- which matters where a program that can spawn
 pays for it everywhere, as one compiled all the way down does. In a batch, a
-thread works a key out in a batch of its own, the inputs handed to it in a
-compact region rather than copied, and what it was asked for comes back. In
+thread works a key out in a batch of its own, with a copy of the inputs, and
+what it was asked for comes back. `sharedSession db` hands the threads the
+inputs in one compact region instead, which saves the copies and is not the
+default because of what it costs where Lingua is meant to run: a runtime
+that counts references writes a count the threads share for every string or
+record read out of a region, and they wait on each other for it. A copy each
+is never very slow; a region of sources read from eight threads was. In
 a session, threads share nothing mutable, so the database is `TVar`s
 (`Std.Stm`): its revision, its inputs, a slot per derived key -- a `TVar`
 each, so that two threads writing what they worked out do not meet -- and a

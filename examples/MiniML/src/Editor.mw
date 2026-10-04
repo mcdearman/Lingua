@@ -368,3 +368,14 @@ use Lingua.Lsp (classOf)
     (at 0, at 24)
     ([classOf "keyword"], [classOf "number"])
     "and what a spelling says is as it was"
+
+@test fun thePromptShowsAFunctionsNameAndAnotherNameApart () =
+  -- `f` is a function's name and `x` is not: each in its own colour, where
+  -- it is bound and where it is used.
+  let out =
+    prompted (V.append (typing "let f = fun x -> x in f 1") [T.key Enter])
+  in
+  let a =
+    assertEq (S.contains "\u{1b}[93mf\u{1b}[0m" out) True "the function's name"
+  in
+  assertEq (S.contains "\u{1b}[94mx\u{1b}[0m" out) True "and the parameter's"

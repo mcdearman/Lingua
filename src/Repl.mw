@@ -118,15 +118,18 @@ use Fuzzy as F
   match V.foldl step ("", 0) classes with
   | (out, at) -> out ++ stringSlice text at (stringByteLength text)
 
--- A class of token's colour, as Meadow's own prompt has them: keywords bold;
--- types, constructors, modules, numbers and strings a colour each; comments
--- dim; names, functions and operators as they are.
+-- A class of token's colour. Keywords bold; types, constructors, modules,
+-- numbers and strings a colour each and comments dim, as Meadow's own prompt
+-- has them; and a function's name and any other name a colour each too, so
+-- that what name resolution found shows. Operators are as they are.
 fun colourOf (class : Int) : Maybe String =
   match V.getOr "" tokenTypes class with
   | "keyword" -> Just "\u{1b}[1;35m"
   | "type" -> Just "\u{1b}[36m"
   | "enumMember" -> Just "\u{1b}[34m"
   | "namespace" -> Just "\u{1b}[2;36m"
+  | "function" -> Just "\u{1b}[93m"
+  | "variable" -> Just "\u{1b}[94m"
   | "number" -> Just "\u{1b}[33m"
   | "string" -> Just "\u{1b}[32m"
   | "comment" -> Just "\u{1b}[2m"
@@ -647,14 +650,14 @@ fun after (ks : [Key]) : (Finder, Found) =
   assertEq (fst got) (Just "map") "what was chosen"
 
 @test fun whatAServerClassifiesIsPaintedWhereItIs () =
-  -- A keyword, a name -- which has no colour -- and a number.
+  -- A keyword, a name and a number, and an operator, which has no colour.
   let a = assertEq
   (painted
       "let x = 12"
       [ (0, 3, classOf "keyword"),
         (4, 5, classOf "variable"),
         (8, 10, classOf "number") ])
-    "\u{1b}[1;35mlet\u{1b}[0m x = \u{1b}[33m12\u{1b}[0m"
+    "\u{1b}[1;35mlet\u{1b}[0m \u{1b}[94mx\u{1b}[0m = \u{1b}[33m12\u{1b}[0m"
     "each token in its class's colour, and what is between them as it was" in
   assertEq
     (painted "a -- one\nb" [(2, 8, classOf "comment")])

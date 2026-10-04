@@ -72,7 +72,7 @@ use Std.Terminal (Key, Event)
 use Std.Terminal.Code.*
 use Lingua.Green (Green)
 use Lingua.Green as G
-use Lingua.Lsp (classified, serverOf)
+use Lingua.Lsp (classified, serverOf, tokenTypes, classOf)
 use LineEditor as LE
 use LineEditor (Editor, Outcome, Bound)
 use Doodle as D
@@ -118,14 +118,19 @@ use Fuzzy as F
   match V.foldl step ("", 0) classes with
   | (out, at) -> out ++ stringSlice text at (stringByteLength text)
 
--- A class of token's colour: keywords bold, numbers and strings a colour
--- each, comments dim; names and operators as they are.
+-- A class of token's colour, as Meadow's own prompt has them: keywords bold;
+-- types, constructors, modules, numbers and strings a colour each; comments
+-- dim; names, functions and operators as they are.
 fun colourOf (class : Int) : Maybe String =
-  if class == 0 then Just "\u{1b}[1;35m"
-  else if class == 2 then Just "\u{1b}[33m"
-  else if class == 3 then Just "\u{1b}[32m"
-  else if class == 4 then Just "\u{1b}[2m"
-  else None
+  match V.getOr "" tokenTypes class with
+  | "keyword" -> Just "\u{1b}[1;35m"
+  | "type" -> Just "\u{1b}[36m"
+  | "enumMember" -> Just "\u{1b}[34m"
+  | "namespace" -> Just "\u{1b}[2;36m"
+  | "number" -> Just "\u{1b}[33m"
+  | "string" -> Just "\u{1b}[32m"
+  | "comment" -> Just "\u{1b}[2m"
+  | _ -> None
 
 fun isNameChar (c : Char) : Bool =
   C.isAlphaNum c or C.code c == 95 or C.code c == 39
@@ -642,12 +647,16 @@ fun after (ks : [Key]) : (Finder, Found) =
   assertEq (fst got) (Just "map") "what was chosen"
 
 @test fun whatAServerClassifiesIsPaintedWhereItIs () =
-  -- Classes 0 and 2 are a keyword and a number; 1, a name, has no colour.
+  -- A keyword, a name -- which has no colour -- and a number.
   let a = assertEq
-  (painted "let x = 12" [(0, 3, 0), (4, 5, 1), (8, 10, 2)])
+  (painted
+      "let x = 12"
+      [ (0, 3, classOf "keyword"),
+        (4, 5, classOf "variable"),
+        (8, 10, classOf "number") ])
     "\u{1b}[1;35mlet\u{1b}[0m x = \u{1b}[33m12\u{1b}[0m"
     "each token in its class's colour, and what is between them as it was" in
   assertEq
-    (painted "a -- one\nb" [(2, 8, 4)])
+    (painted "a -- one\nb" [(2, 8, classOf "comment")])
     "a \u{1b}[2m-- one\u{1b}[0m\nb"
     "and nothing of a line's colour on the next"

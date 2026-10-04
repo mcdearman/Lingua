@@ -27,6 +27,7 @@ lsp! {
     | completion = completionAt
     | symbols = symbolsOf
     | format = formattedOf
+    | resolved = resolvedOf
 }
 
 -- The prompt (`repl!`), over the same session and with the server's own
@@ -147,6 +148,19 @@ fun completionAt db file at =
     (V.map
       (\k -> (k, "keyword"))
       ["let", "rec", "in", "fun", "if", "then", "else", "true", "false"])
+
+-- What name resolution knows of a name that its spelling does not: a name
+-- bound to a function is a function's, where it is bound and wherever it is
+-- used. Each by the byte it starts at.
+fun resolvedOf db file =
+  V.concatMap
+    (\(b : Binder) ->
+      if b.kind != "function" then []
+      else
+        V.map
+          (\m -> match m with | Meta a _ -> (a, "function"))
+          (V.pushFront b.uses b.at))
+    (bindersOf db file)
 
 -- Everything a `let` binds.
 fun symbolsOf db file =
@@ -321,3 +335,36 @@ fun prompted (keys : [Key]) =
         (V.concat [typing "let total = 7 in tot", [T.key Tab, T.key Enter]])))
     True
     "the one way it could go on"
+
+-- Colour: by spelling, and by what a name resolved to.
+
+use Lingua.Lsp (classOf)
+
+@test fun aNameIsColouredByWhatItResolvedTo () =
+  -- `f` is bound to a function and `x` is not: the same spelling of token,
+  -- told apart where each is bound and where each is used.
+  let src = "let f = fun x -> x in f 1" in
+  let db = editing src in
+  let classes = tokensServer db 1 in
+  let at =
+    \from ->
+      V.concatMap
+        (\c -> match c with | (a, _, k) -> if a == from then [k] else [])
+        classes
+  in
+  let a =
+    assertEq
+      (at 4, at 22)
+      ([classOf "function"], [classOf "function"])
+      "`f`, bound and used"
+  in
+  let b =
+    assertEq
+      (at 12, at 17)
+      ([classOf "variable"], [classOf "variable"])
+      "`x`, a parameter"
+  in
+  assertEq
+    (at 0, at 24)
+    ([classOf "keyword"], [classOf "number"])
+    "and what a spelling says is as it was"

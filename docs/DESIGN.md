@@ -808,7 +808,12 @@ the database, a file and the byte the editor points at -- `diagnostics`,
 `completion`, `symbols`, `format`, the file set out by its formatter, and
 `tree`, the lossless tree, from which semantic
 tokens, folds and selection ranges are read here, the same for every
-language. An edit sets an input and nothing more: what it changed is all
+language. A token's class is first what its kind and spelling say -- a
+keyword, a name, a number -- and then, with `resolved`, what the compiler
+knows of that occurrence: the byte a token starts at, and whether what it
+names is a `function`, a `type`, an `enumMember`, a `namespace`. That is how
+Meadow's own server colours a file, and the classes are its: a spelling
+cannot say that a name is a function's, and name resolution can. An edit sets an input and nothing more: what it changed is all
 that is worked out again, so hovering after an edit reads an elaboration that
 was only redone for the file that changed. The protocol is Lingua's -- its
 framing, which needs Meadow's `Console.readExact`, its UTF-16 positions, the
@@ -828,8 +833,8 @@ in a finder under the line: what is typed there narrows them to what it is
 found in, the likeliest first, and Enter puts the chosen name where the
 cursor was. What is typed is coloured as an editor colours a file: where the
 database has a server (`lsp!`), by the server's own answer to what each token
-is -- `tokensServer`, which is also what it tells the editor -- and where it
-has none, from the tree. What is written is `runRepl ()`.
+is -- `tokensServer`, which is also what it tells the editor, name resolution
+and all -- and where it has none, from the tree. What is written is `runRepl ()`.
 
 The line, the finder's matching and its drawing are packages of their own,
 which a compiler not written with Lingua can use as well:

@@ -48,7 +48,8 @@
 -- prompt asks the tree the same question itself.
 --
 -- **Themes.** How each class is shown is a theme, and a prompt has several
--- built in -- `bright`, `quiet`, `editor`, `warm`, `soft`, `plain`. A line
+-- built in -- `soft`, which it starts in unless it says otherwise, `bright`,
+-- `quiet`, `editor`, `warm` and `plain`. A line
 -- that starts with `:` is for the prompt and not the language: `:theme`
 -- lists them, each with a line in its colours and the one that is on
 -- marked, and `:theme quiet` turns one on, for what is typed from then on.
@@ -147,9 +148,23 @@ fun shownAs (theme : Theme) (class : Int) : Maybe String =
         (\w -> "\u{1b}[${snd w}m")
         (V.find (\w -> fst w == V.getOr "" tokenTypes class) ways)
 
--- The themes a prompt has. The first is the one it starts with.
+-- The themes a prompt has. The first is the one it starts with: soft shades,
+-- which read alike whatever the terminal's own colours are.
 @pub def themes : [Theme] =
   [
+    -- Soft shades of the terminal's 256, the same whatever its own colours.
+    Theme
+      "soft"
+      [
+        ("keyword", "1;38;5;183"),
+        ("function", "38;5;117"),
+        ("type", "38;5;116"),
+        ("enumMember", "38;5;216"),
+        ("namespace", "38;5;245"),
+        ("number", "38;5;215"),
+        ("string", "38;5;150"),
+        ("comment", "3;38;5;245")
+      ],
     -- A colour for everything name resolution tells apart.
     Theme
       "bright"
@@ -203,19 +218,6 @@ fun shownAs (theme : Theme) (class : Int) : Maybe String =
         ("number", "36"),
         ("string", "32"),
         ("comment", "2")
-      ],
-    -- Soft shades of the terminal's 256, the same whatever its own colours.
-    Theme
-      "soft"
-      [
-        ("keyword", "1;38;5;183"),
-        ("function", "38;5;117"),
-        ("type", "38;5;116"),
-        ("enumMember", "38;5;216"),
-        ("namespace", "38;5;245"),
-        ("number", "38;5;215"),
-        ("string", "38;5;150"),
-        ("comment", "3;38;5;245")
       ],
     -- Nothing coloured.
     Theme "plain" []
@@ -874,7 +876,7 @@ fun after (ks : [Key]) : (Finder, Found) =
   in
   assertEq
     (themeName (themeOr "no such theme"))
-    "bright"
+    "soft"
     "and a theme nobody has is the first"
 
 @test fun aLineForThePromptChoosesATheme () =
@@ -893,8 +895,8 @@ fun after (ks : [Key]) : (Finder, Found) =
     assertEq
       (
         V.len listed,
-        S.startsWith "* bright" (V.getOr "" listed 0),
-        S.startsWith "  quiet" (V.getOr "" listed 1)
+        S.startsWith "  soft" (V.getOr "" listed 0),
+        S.startsWith "* bright" (V.getOr "" listed 1)
       )
       (6, True, True)
       "each on a line, the one that is on marked"

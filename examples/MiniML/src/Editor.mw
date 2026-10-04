@@ -4,6 +4,9 @@
 -- and neither runs again until the file does.
 
 use Lingua (lsp!, repl!)
+use Lingua.Green (Green)
+use Lingua.Red (Syntax)
+use Lingua.Red as R
 use Lingua.Diagnostic (renderToOutput)
 use Lingua.Lang (Meta)
 use MiniML.Syntax
@@ -151,16 +154,62 @@ fun completionAt db file at =
 
 -- What name resolution knows of a name that its spelling does not: a name
 -- bound to a function is a function's, where it is bound and wherever it is
--- used. Each by the byte it starts at.
+-- used. Each by the byte it starts at. An entry still being typed -- `let f
+-- x = x`, with no `in` yet -- is not a program, and has no names resolved:
+-- then it is what the tree itself shows.
 fun resolvedOf db file =
-  V.concatMap
-    (\(b : Binder) ->
-      if b.kind != "function" then []
-      else
-        V.map
-          (\m -> match m with | Meta a _ -> (a, "function"))
-          (V.pushFront b.uses b.at))
-    (bindersOf db file)
+  let binders = bindersOf db file in
+  if V.isEmpty binders then written (treeOf db file)
+  else
+    V.concatMap
+      (\(b : Binder) ->
+        if b.kind != "function" then []
+        else
+          V.map
+            (\m -> match m with | Meta a _ -> (a, "function"))
+            (V.pushFront b.uses b.at))
+      binders
+
+-- The same of a tree nothing was resolved in, by what is written: the name
+-- of a `let` with parameters after it, or whose value is a `fun`, is a
+-- function's -- and so is a name spelled as one of those, wherever it is.
+-- No scope is known here, so a name that hides another is not told from
+-- it; that is for when the entry is whole.
+fun written (g : Green Mini) : [(Int, String)] =
+  let nodes = everyNode (R.root g) in
+  let bound =
+    V.concatMap
+      (\s ->
+        match asMiniLet s with
+        | None -> []
+        | Just l ->
+            (match miniLetName l with
+             | None -> []
+             | Just n ->
+                 if not (V.isEmpty (miniLetParams l)) or isFun (miniLetValue l)
+                 then [syntaxMiniName n]
+                 else []))
+      nodes
+  in
+  let names = V.map R.text bound in
+  V.append
+    (V.map (\n -> (R.offset n, "function")) bound)
+    (V.concatMap
+      (\s ->
+        match asMiniNameRef s with
+        | Just _ ->
+            if V.elem (R.text s) names then [(R.offset s, "function")] else []
+        | None -> [])
+      nodes)
+
+fun isFun (v : Maybe MiniExpr) : Bool =
+  match v with
+  | Just (MiniExpr.Lam _) -> True
+  | _ -> False
+
+fun everyNode (s : Syntax Mini) : [Syntax Mini] =
+  if R.isTokenOf s then []
+  else V.pushFront (V.concatMap everyNode (R.children s)) s
 
 -- Everything a `let` binds.
 fun symbolsOf db file =
@@ -379,3 +428,36 @@ use Lingua.Lsp (classOf)
     assertEq (S.contains "\u{1b}[93mf\u{1b}[0m" out) True "the function's name"
   in
   assertEq (S.contains "\u{1b}[94mx\u{1b}[0m" out) True "and the parameter's"
+
+@test fun anUnfinishedEntrysFunctionsAreColouredAsTheyAreWritten () =
+  -- No `in` yet, so nothing is resolved: a `let` with parameters after its
+  -- name, a `let rec`, and a `let` of a `fun` are functions by how they are
+  -- written, and so is a use of one.
+  let functions = \src ->
+    V.concatMap
+      (\c -> match c with
+             | (a, b, k) ->
+                 if k == classOf "function"
+                 then ["${stringSlice src a b}@${show a}"]
+                 else [])
+      (tokensServer (editing src) 1)
+  in
+  let a =
+    assertEq (functions "let foo a = a") ["foo@4"] "parameters after the name"
+  in
+  let b =
+    assertEq
+      (functions "let rec f n = f n")
+      ["f@8", "f@14"]
+      "a `let rec`, and its use of itself"
+  in
+  let c =
+    assertEq (functions "let g = fun x ->") ["g@4"] "a `fun` as the value"
+  in
+  let d =
+    assertEq (functions "let x = 1") [] "and a plain `let` is no function"
+  in
+  assertEq
+    (functions "let foo a = a in foo 1")
+    ["foo@4", "foo@17"]
+    "whole, it is resolved, as before"

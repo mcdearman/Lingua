@@ -424,6 +424,23 @@ may be of a type applied to them, `MType s`; a language extending it takes
 them too. A field's type is a sort of
 the language, `[T]`, `Maybe T`, or any other type by name.
 
+A production is one of its **sort's**, and two sorts may each have one of a
+name: a variable is an expression and a variable is a pattern, `Expr + Var`
+and `Pat + Var`, with no prefix on either to tell them apart. What is written
+for a production is named for its language, its sort and itself --
+`newCoreExprLam`, `corePatVarName`, the pattern `CoreExprLam` -- so the names
+say which, always, and adding a `Var` to another sort renames nothing. The
+one production of a sort of its own name is that name once: `newCoreName`. A
+tree language keeps one production of a name, since a node's kind is its
+rule's.
+
+In a `pass!` none of those names is written. A case is its production's
+name and a node is too -- `| Lam { … } -> Lam { … }` -- the node being the
+one of the sort that is being written, if that sort has one of the name.
+Where two sorts have a production of the name, the sort says which, as a
+constructor is said of its type: `| Pat.Var { … }`, `Pat.Var { … }`; a bare
+name two sorts have is an error saying both.
+
 Each language is written out as **tables**, not as a type of node. A program
 is a handful of arrays: for each node its production, the bytes of the source
 it came from, and where its fields start in one table of slots. A node is the
@@ -438,11 +455,11 @@ reference-counted language needs of its trees. For `Core` the code has:
 | --------------------------------------------- | ------------------------------------------------------------ |
 | `CoreProgram`, `coreArena`, `coreRoot`        | a program: its tables, and its root's row                    |
 | `CoreBuilder`, `newCoreBuilder`, `freezeCore` | the tables being written, inside a `runSt`, and finished     |
-| `newCoreLam b meta param body`                | a node, written: its row                                     |
+| `newCoreExprLam b meta param body`            | a node, written: its row                                     |
 | `CoreExprKind`, `kindCoreExpr a e`            | which production a node is -- a constructor with no fields   |
-| `coreLamBody a e`, `metaCoreExpr a e`         | a field of a node, and where it came from                    |
+| `coreExprLamBody a e`, `metaCoreExpr a e`     | a field of a node, and where it came from                    |
 | `CoreExprView`, `viewCoreExpr a e`            | a node as a value to `match` on, its nodes rows still        |
-| `CoreLam param body`, matching `(a, e)`       | a production as a pattern: a synonym, of the kind and fields |
+| `CoreExprLam param body`, matching `(a, e)`   | a production as a pattern: a synonym, of the kind and fields |
 | `subCoreExpr a e`                             | a node and everything under it, as a program of its own      |
 
 Two more families are written for a language that asks for them, after what
@@ -452,7 +469,7 @@ builder while it is written: what a pass's case reads the nodes it has just
 made with, so a pass whose cases read their target needs its target written
 so, and is told where if it was not. `with set` is a field of one thing -- a
 node, a number, a truth, a text -- written again on a node already written,
-`setCoreLamParam b e v`: what a pass that fixes up what it wrote needs, such
+`setCoreExprLamParam b e v`: what a pass that fixes up what it wrote needs, such
 as taking the hygiene marks off the names a macro's expansion wrote once it
 is clear which names are locals. Most languages want neither, and between
 them they were a third of what a language's declaration wrote.
@@ -460,7 +477,7 @@ them they were a third of what a language's declaration wrote.
 Every language keeps its rows the same way, so what reads and writes them is
 written once, in `Lingua.Lang` -- a node's tag and where it came from, a
 field's slot, a list's, a node written with its fields -- and a language's
-own functions are a line each over those, with its own types: `coreLamBody a
+own functions are a line each over those, with its own types: `coreExprLamBody a
 e` is the second slot of `e` in `a`'s rows. A language that extends another
 is written out whole all the same, since its types are its own, but what is
 written for each production is its name and its place. Asking a node's kind and reading its fields makes nothing; a view
@@ -471,9 +488,9 @@ together cover it, so the tables are matched as if they were a data type:
 ```meadow
 fun eval (a : CoreArena) env (e : CoreExpr) =
   match (a, e) with
-  | CoreInt n -> Value.Int n
-  | CoreLam param body -> Value.Closure param body env
-  | CoreApp func arg -> apply a (eval a env func) (eval a env arg)
+  | CoreExprInt n -> Value.Int n
+  | CoreExprLam param body -> Value.Closure param body env
+  | CoreExprApp func arg -> apply a (eval a env func) (eval a env arg)
   …
 ```
 

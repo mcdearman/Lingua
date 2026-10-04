@@ -290,14 +290,14 @@ fun stepCore a env s =
 fun evalCore (a : CoreArena) env (e : CoreExpr) : Int =
   match kindCoreExpr a e with
   | CoreExprKind.Literal ->
-      (match S.toInt (coreLiteralNumber a e) with | Just n -> n | None -> 0)
-  | CoreExprKind.NameRef -> lookup env (coreNameRefIdent a e)
-  | CoreExprKind.Paren -> evalCore a env (coreParenExpr a e)
+      (match S.toInt (coreExprLiteralNumber a e) with | Just n -> n | None -> 0)
+  | CoreExprKind.NameRef -> lookup env (coreExprNameRefIdent a e)
+  | CoreExprKind.Paren -> evalCore a env (coreExprParenExpr a e)
   | CoreExprKind.Prim ->
-      (let args = corePrimArgs a e in
+      (let args = coreExprPrimArgs a e in
         match (V.get args 0, V.get args 1) with
         | (Just x, Just y) ->
-            apply (corePrimOp a e) (evalCore a env x) (evalCore a env y)
+            apply (coreExprPrimOp a e) (evalCore a env x) (evalCore a env y)
         | _ -> 0)
   | CoreExprKind.Call -> 0
 
@@ -329,7 +329,7 @@ pass! {
   pub lowerFolding : Surface -> Core
     | Bin { raw lhs, op, rhs } ->
         (if kindSurfaceExpr src lhs == SurfaceExprKind.Literal
-          and surfaceLiteralNumber src lhs == "0"
+          and surfaceExprLiteralNumber src lhs == "0"
           and op == "+"
           then rhs
           else Prim { op = op, args = [lowerFoldingExpr src out lhs, rhs] })
@@ -345,7 +345,7 @@ pass! {
       in
       let folded =
         (match top with
-         | Just (CoreStmtView.Let l) -> corePrimOp a l.value
+         | Just (CoreStmtView.Let l) -> coreExprPrimOp a l.value
          | _ -> "")
       in
       let u = assertEq folded "*" "`0 +` is gone" in
@@ -556,3 +556,80 @@ fun twoFiles () =
           (R.nodes (R.root g)))
         ["x = 1 + 2", "y = x"]
         "both lets, the first's value taken apart"
+
+-- --- two sorts, a production of one name each -------------------------------
+--
+-- A variable is an expression, and a variable is a pattern: each sort has a
+-- `Var`, and what is written for each says which it is of.
+
+use Lingua.Lang (noMeta)
+
+lang! {
+  Shapes
+  Expr + Var { name : String }
+  Expr + Lam { param : Pat, body : Expr }
+  Pat + Var { name : String }
+  Pat + Wild {}
+}
+
+lang! {
+  Depths extends Shapes
+  Expr - Var
+  Expr + Var { name : String, depth : Int }
+}
+
+-- How many `fun`s each variable is under. The case says which `Var` it is
+-- for; the `Var` it writes is the one of the sort it is writing, an
+-- expression's; and a pattern's `Var`, which no case is for, is copied.
+pass! {
+  deepen : Shapes -> Depths with depth
+    | Expr.Var { name } -> Var { name = name, depth = depth }
+    | Lam { param, later body } ->
+        Lam { param = param, body = body (depth + 1) }
+}
+
+-- `fun x -> fun _ -> x`.
+fun nested () : ShapesProgram =
+  runSt (\() ->
+    let b = newShapesBuilder () in
+    let x = newShapesPatVar b noMeta "x" in
+    let wild = newShapesPatWild b noMeta in
+    let seen = newShapesExprVar b noMeta "x" in
+    let inner = newShapesExprLam b noMeta wild seen in
+    let root = newShapesExprLam b noMeta x inner in
+    ShapesProgram (freezeShapes b) root)
+
+@test fun twoSortsEachHaveAProductionOfOneName () =
+  let p = nested () in
+  let a = shapesArena p in
+  match (a, shapesRoot p) with
+  | ShapesExprLam param body ->
+      let k =
+        assertEq (kindShapesPat a param) ShapesPatKind.Var "the pattern's"
+      in
+      let n = assertEq (shapesPatVarName a param) "x" "and its name" in
+      (match (a, body) with
+       | ShapesExprLam _ inner ->
+           assertEq
+             (kindShapesExpr a inner)
+             ShapesExprKind.Var
+             "the expression's"
+       | _ -> assertEq "a lam" "" "the inner function")
+  | _ -> assertEq "a lam" "" "the root"
+
+@test fun aCaseSaysWhichSortsProductionItIsFor () =
+  let q = deepen 0 (nested ()) in
+  let a = depthsArena q in
+  match (a, depthsRoot q) with
+  | DepthsExprLam param body ->
+      -- The pattern's `Var` was copied as it was; the expression's, two
+      -- functions down, was written by the case.
+      let n = assertEq (depthsPatVarName a param) "x" "the pattern, copied" in
+      (match (a, body) with
+       | DepthsExprLam _ inner ->
+           assertEq
+             (depthsExprVarName a inner, depthsExprVarDepth a inner)
+             ("x", 2)
+             "the variable, and how deep"
+       | _ -> assertEq "a lam" "" "the inner function")
+  | _ -> assertEq "a lam" "" "the root"

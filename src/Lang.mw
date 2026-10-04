@@ -141,8 +141,8 @@ use Keeping.*
 -- --- what a language's tables stand on ---------------------------------------
 --
 -- Every language keeps its programs the same way, so what reads and writes
--- them is written once, here, and a language's own functions -- `coreLamBody`,
--- `newCoreLam` -- are a line each over these. A node is a row: its
+-- them is written once, here, and a language's own functions -- `coreExprLamBody`,
+-- `newCoreExprLam` -- are a line each over these. A node is a row: its
 -- production's tag, the bytes it came from, and where its fields start in the
 -- slots. A field is one slot: a node's row, a number or a truth itself; for
 -- a list or a `Maybe`, where its elements start in the slots, how many first;

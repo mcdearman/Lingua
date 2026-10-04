@@ -26,24 +26,24 @@ fun showValue v =
 -- the fields the arm binds from the tables -- nothing is built to match on.
 fun eval (a : CoreArena) env (e : CoreExpr) =
   match (a, e) with
-  | CoreInt n -> Value.Int n
-  | CoreBool b -> Value.Bool b
-  | CoreVar id ->
+  | CoreExprInt n -> Value.Int n
+  | CoreExprBool b -> Value.Bool b
+  | CoreExprVar id ->
       (match L.lookupAssoc id env with
        | Just v -> v
        | None ->
            raise (errorAt (metaCoreExpr a e) "binder ${show id} has no value"))
-  | CoreLam param body -> Value.Closure param body env
-  | CoreApp func arg ->
+  | CoreExprLam param body -> Value.Closure param body env
+  | CoreExprApp func arg ->
       apply a (metaCoreExpr a e) (eval a env func) (eval a env arg)
-  | CoreLet id value body -> eval a ((id, eval a env value) :: env) body
-  | CoreLetRec id param value body ->
+  | CoreExprLet id value body -> eval a ((id, eval a env value) :: env) body
+  | CoreExprLetRec id param value body ->
       eval a ((id, Value.Rec id param value env) :: env) body
-  | CoreIf cond yes no ->
+  | CoreExprIf cond yes no ->
       (match eval a env cond with
        | Value.Bool True -> eval a env yes
        | _ -> eval a env no)
-  | CorePrim op args -> operate a env e op args
+  | CoreExprPrim op args -> operate a env e op args
 
 fun operate a env e op args =
   match (V.get args 0, V.get args 1) with

@@ -289,12 +289,13 @@ pass! {
 
 fun children (a : TypedArena) (e : TypedExpr) : [TypedExpr] =
   match kindTypedExpr a e with
-  | TypedExprKind.App -> [typedAppFunc a e, typedAppArg a e]
-  | TypedExprKind.Prim -> typedPrimArgs a e
-  | TypedExprKind.Lam -> [typedLamBody a e]
-  | TypedExprKind.Let -> [typedLetValue a e, typedLetBody a e]
-  | TypedExprKind.LetRec -> [typedLetRecValue a e, typedLetRecBody a e]
-  | TypedExprKind.If -> [typedIfCond a e, typedIfYes a e, typedIfNo a e]
+  | TypedExprKind.App -> [typedExprAppFunc a e, typedExprAppArg a e]
+  | TypedExprKind.Prim -> typedExprPrimArgs a e
+  | TypedExprKind.Lam -> [typedExprLamBody a e]
+  | TypedExprKind.Let -> [typedExprLetValue a e, typedExprLetBody a e]
+  | TypedExprKind.LetRec -> [typedExprLetRecValue a e, typedExprLetRecBody a e]
+  | TypedExprKind.If ->
+      [typedExprIfCond a e, typedExprIfYes a e, typedExprIfNo a e]
   | _ -> []
 
 -- The expression an elaborated program is: its root. An elaboration is the

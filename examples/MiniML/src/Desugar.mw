@@ -67,7 +67,7 @@ in
 -- `fun` of each of `params` in turn, around `body`: each where the node
 -- that took them was, `at`, and written into `out`.
 fun lambdas out (at : Meta) (params : [Int]) (body : CoreExpr) =
-  V.foldr (\p acc -> newCoreLam out at p acc) body params
+  V.foldr (\p acc -> newCoreExprLam out at p acc) body params
 
 -- An atom, as the expression it is: read off the atom `out` has just been
 -- given, and written after it.
@@ -76,15 +76,16 @@ fun atomExpr out (a : CoreAtom) =
   let e = coreEndIn out a in
   match kindCoreAtomIn out a with
   | CoreAtomKind.Literal ->
-      newCoreIntSpan
+      newCoreExprIntSpan
         out
         s
         e
-        (M.unwrapOr 0 (S.toInt (coreLiteralNumberIn out a)))
+        (M.unwrapOr 0 (S.toInt (coreAtomLiteralNumberIn out a)))
   | CoreAtomKind.BoolLit ->
-      newCoreBoolSpan out s e (coreBoolLitValueIn out a == "true")
-  | CoreAtomKind.NameRef -> newCoreVarSpan out s e (coreNameRefIdIn out a)
-  | CoreAtomKind.Paren -> coreParenExprIn out a
+      newCoreExprBoolSpan out s e (coreAtomBoolLitValueIn out a == "true")
+  | CoreAtomKind.NameRef ->
+      newCoreExprVarSpan out s e (coreAtomNameRefIdIn out a)
+  | CoreAtomKind.Paren -> coreAtomParenExprIn out a
 
 -- The expression a program is.
 @pub fun programExpr (p : CoreProgram) : CoreExpr =

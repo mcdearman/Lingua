@@ -55,7 +55,23 @@ use Std.Path as Path
 use Std.Json as J
 use Std.Json (Json)
 use Std.Thread as Thread
-use Std.Fs (Fs, FileMeta, readToString, readBytes, writeString, writeBytes, appendString, removeFile, removeDirAll, createDirAll, readDir, isDir, exists, metadata, rename)
+use Std.Fs (
+  Fs,
+  FileMeta,
+  readToString,
+  readBytes,
+  writeString,
+  writeBytes,
+  appendString,
+  removeFile,
+  removeDirAll,
+  createDirAll,
+  readDir,
+  isDir,
+  exists,
+  metadata,
+  rename
+)
 use Std.Process (Process, currentExe, currentPid)
 use Std.Console (Console, writeOutput)
 use Std.Macro (Datum, Reflect, toDatum, fromDatum)
@@ -64,7 +80,7 @@ use Lingua.Query (datumJson, jsonDatum)
 
 fun okOf r = match r with | Ok x -> Just x | Err _ -> None
 
--- --- a unit ---------------------------------------------------------------------------
+-- --- a unit ------------------------------------------------------------------
 
 -- What the compiler is given: the unit's directory, its sources -- each path
 -- and its text -- the interface of each unit it depends on, by directory,
@@ -75,13 +91,15 @@ use Given.*
 
 @pub fun unitDir (u : Given i) : String = match u with | Given d _ _ _ -> d
 
-@pub fun unitSources (u : Given i) : [(String, String)] = match u with | Given _ s _ _ -> s
+@pub fun unitSources (u : Given i) : [(String, String)] =
+  match u with | Given _ s _ _ -> s
 
-@pub fun unitImports (u : Given i) : [(String, i)] = match u with | Given _ _ i _ -> i
+@pub fun unitImports (u : Given i) : [(String, i)] =
+  match u with | Given _ _ i _ -> i
 
 @pub fun unitOut (u : Given i) : String = match u with | Given _ _ _ o -> o
 
--- --- the graph ------------------------------------------------------------------------
+-- --- the graph ---------------------------------------------------------------
 
 -- How units are found, `us`: the manifest's name, the sources' ending, and --
 -- when the language says -- how to read a manifest (`deps`) and where a unit's
@@ -89,28 +107,45 @@ use Given.*
 
 -- The units `dir` depends on, as its manifest names them -- or why they
 -- cannot be read.
-fun depsOf us (root : String) (dir : String) : Result String [String] ! { Fs | e } =
+fun depsOf us (root : String) (dir : String) : Result String
+    [String] ! { Fs | e } =
   match readToString (Path.join dir us.manifest) with
   | Err _ -> Err "${dir} is not a unit: it has no `${us.manifest}`"
   | Ok text ->
       (match us.deps with
-       | Just read -> (match read root dir text with | Ok ds -> Ok (V.map Path.normalize ds) | Err e -> Err e)
-       | None -> Ok (V.map (\l -> Path.normalize (Path.join dir (S.trim l))) (V.filter (\l -> not (S.isEmpty (S.trim l)) and not (S.startsWith "#" (S.trim l))) (S.lines text))))
+       | Just read ->
+           (match read root dir text with
+            | Ok ds -> Ok (V.map Path.normalize ds)
+            | Err e -> Err e)
+       | None ->
+           Ok
+             (V.map (\l -> Path.normalize (Path.join dir (S.trim l))) (V.filter (\l -> not (S.isEmpty (S.trim l)) and not (S.startsWith "#" (S.trim l))) (S.lines text))))
 
 -- A unit's sources: where the language says, or its files ending in `ext`.
 fun filesOf us (dir : String) : [String] ! { Fs | e } =
   match us.files with
   | Just list -> sort (list dir)
-  | None -> sort (V.map (\f -> Path.join dir f) (V.filter (\f -> S.endsWith us.ext f) (M.unwrapOr [] (okOf (readDir dir)))))
+  | None ->
+      sort
+        (V.map
+          (\f -> Path.join dir f)
+          (V.filter
+            (\f -> S.endsWith us.ext f)
+            (M.unwrapOr [] (okOf (readDir dir)))))
 
 -- Every unit `root` reaches, each with the units it depends on -- or the
 -- first thing wrong: a unit that is not one, or units that depend on each
 -- other in a circle.
-fun graph us (root : String) : Result String [(String, [String])] ! { Fs | e } = visit us (Path.normalize root) [] [] (Path.normalize root)
+fun graph us (root : String) : Result String [(String, [String])] ! { Fs | e } =
+  visit us (Path.normalize root) [] [] (Path.normalize root)
 
-fun visit us root (path : [String]) (done : [(String, [String])]) (dir : String) =
+fun visit us root (path : [String]) (done : [(String, [String])])
+    (dir : String) =
   if V.any (\d -> fst d == dir) done then Ok done
-  else if V.elem dir path then Err "the units ${S.join " -> " (V.pushBack (V.drop path (V.foldl (\at i -> if V.get path i == Just dir then i else at) 0 (V.range 0 (V.len path)))) dir)} depend on each other in a circle"
+  else if V.elem dir path
+  then
+    Err
+      "the units ${S.join " -> " (V.pushBack (V.drop path (V.foldl (\at i -> if V.get path i == Just dir then i else at) 0 (V.range 0 (V.len path)))) dir)} depend on each other in a circle"
   else
     match depsOf us root dir with
     | Err why -> Err why
@@ -127,10 +162,12 @@ fun roundsFrom units (placed : [String]) =
   let left = V.filter (\u -> not (V.elem (fst u) placed)) units in
   if V.isEmpty left then []
   else
-    let ready = V.map fst (V.filter (\u -> V.all (\d -> V.elem d placed) (snd u)) left) in
+    let ready =
+      V.map fst (V.filter (\u -> V.all (\d -> V.elem d placed) (snd u)) left)
+    in
     V.pushFront (roundsFrom units (V.append placed ready)) ready
 
--- --- what was built before -------------------------------------------------------------
+-- --- what was built before ---------------------------------------------------
 
 -- For each unit built: the fingerprint of its sources, of each interface it
 -- was compiled against, and its own interface and that one's fingerprint.
@@ -147,11 +184,18 @@ fun loadState (root : String) : HashMap String Built ! { Fs, Process | e } =
       let state = okOf (J.parse text) in
       -- What another compiler built says nothing about what this one would:
       -- an interface is the compiler's as much as the sources'.
-      if M.andThen (\j -> M.andThen J.asString (J.get "compiler" j)) state != Just (compilerId ()) then HashMap.empty
+      if M.andThen (\j -> M.andThen J.asString (J.get "compiler" j)) state != Just (compilerId ())
+      then HashMap.empty
       else
         (match M.andThen J.asObject (M.andThen (J.get "units") state) with
          | None -> HashMap.empty
-         | Just us -> V.foldl (\m u -> match builtOf (snd u) with | Just b -> HashMap.insert (fst u) b m | None -> m) HashMap.empty us)
+         | Just us ->
+             V.foldl
+               (\m u -> match builtOf (snd u) with
+                        | Just b -> HashMap.insert (fst u) b m
+                        | None -> m)
+               HashMap.empty
+               us)
 
 -- The compiler running this build, as far as it can tell: the program it is
 -- (`currentExe` -- the process's arguments do not say), how long it is, and
@@ -164,14 +208,33 @@ fun compilerId () : String ! { Fs, Process | e } =
   | Just exe ->
       let found = V.find (\p -> exists p) [exe, exe ++ ".exe"] in
       match M.andThen (\p -> okOf (metadata p)) found with
-      | Just (m : FileMeta) -> "${Path.normalize (M.unwrapOr exe found)}#${show m.len}#${show m.modified}"
+      | Just (m : FileMeta) ->
+          "${Path.normalize (M.unwrapOr exe found)}#${show m.len}#${show m.modified}"
       | None -> exe
 
 fun builtOf (j : Json) : Maybe Built =
   let int = \k -> M.andThen J.asInt (J.get k j) in
-  match (int "sources", M.andThen J.asArray (J.get "against" j), M.andThen jsonDatum (J.get "interface" j), int "fingerprint") with
+  match (
+    int "sources",
+    M.andThen J.asArray (J.get "against" j),
+    M.andThen jsonDatum (J.get "interface" j),
+    int "fingerprint"
+  ) with
   | (Just s, Just ds, Just i, Just f) ->
-      Just (Built s (V.concatMap (\d -> match (M.andThen J.asString (J.index 0 d), M.andThen J.asInt (J.index 1 d)) with | (Just n, Just h) -> [(n, h)] | _ -> []) ds) i f)
+      Just
+        (Built
+          s
+          (V.concatMap
+            (\d ->
+              match (
+                M.andThen J.asString (J.index 0 d),
+                M.andThen J.asInt (J.index 1 d)
+              ) with
+              | (Just n, Just h) -> [(n, h)]
+              | _ -> [])
+            ds)
+          i
+          f)
   | _ -> None
 
 -- Remove what is under `target/units` that no unit of the build owns: a unit
@@ -179,7 +242,9 @@ fun builtOf (j : Json) : Maybe Built =
 fun prune (root : String) (owned : [String]) =
   let units = Path.joinAll [Path.normalize root, "target", "units"] in
   V.foldl
-    (\u name -> if V.elem name owned then u else (let r = removeDirAll (Path.join units name) in u))
+    (\u name -> if V.elem name owned
+      then u
+      else (let r = removeDirAll (Path.join units name) in u))
     ()
     (M.unwrapOr [] (okOf (readDir units)))
 
@@ -188,7 +253,23 @@ fun saveState (root : String) (state : HashMap String Built) =
     V.map
       (\p -> match snd p with
              | Built s ds i f ->
-                 (fst p, J.jObject [("sources", J.jInt s), ("against", J.jArray (V.map (\d -> J.jArray [J.jString (fst d), J.jInt (snd d)]) ds)), ("interface", datumJson i), ("fingerprint", J.jInt f)]))
+                 (
+                   fst p,
+                   J.jObject
+                     [
+                       ("sources", J.jInt s),
+                       (
+                         "against",
+                         J.jArray
+                           (V.map
+                             (\d ->
+                               J.jArray [J.jString (fst d), J.jInt (snd d)])
+                             ds)
+                       ),
+                       ("interface", datumJson i),
+                       ("fingerprint", J.jInt f)
+                     ]
+                 ))
       (HashMap.toVec state) in
     let u = createDirAll (Path.joinAll [root, "target"]) in
     -- Written aside and moved into place, so that a build running beside this
@@ -196,10 +277,22 @@ fun saveState (root : String) (state : HashMap String Built) =
     let aside = "${statePath root}.${show (currentPid ())}" in
     -- Unindented: every build reads all of it, and indenting made it seven
     -- times as long.
-    let w = writeString (aside, J.render (J.jObject [("lingua", J.jInt 1), ("compiler", J.jString (compilerId ())), ("units", J.jObject units)])) in
+    let w =
+      writeString
+        (
+          aside,
+          J.render
+            (J.jObject
+              [
+                ("lingua", J.jInt 1),
+                ("compiler", J.jString (compilerId ())),
+                ("units", J.jObject units)
+              ])
+        )
+    in
     rename (aside, statePath root)
 
--- --- building -------------------------------------------------------------------------
+-- --- building ----------------------------------------------------------------
 
 -- How a unit went.
 @pub data Outcome = Compiled | Fresh | Broke String | Blocked String
@@ -216,20 +309,57 @@ use Outcome.*
       let before = loadState root in
       let done =
         schedule
-          (\done dir -> plan us root before done dir (M.unwrapOr [] (M.map snd (V.find (\u -> fst u == dir) units))))
+          (\done dir ->
+            plan
+              us
+              root
+              before
+              done
+              dir
+              (M.unwrapOr [] (M.map snd (V.find (\u -> fst u == dir) units))))
           (\p -> carryOut compile encode decode p)
-          (\r -> match r with | (dir, outcome, b, i) -> (let u = writeOutput (said lang root dir outcome) in (dir, outcome, b, i)))
+          (\r -> match r with
+                 | (dir, outcome, b, i) ->
+                     (let u = writeOutput (said lang root dir outcome) in
+                       (dir, outcome, b, i)))
           units in
         let dirs = V.map fst units in
-        let kept = V.foldl (\m kv -> if V.elem (fst kv) dirs then HashMap.insert (fst kv) (snd kv) m else m) HashMap.empty (HashMap.toVec before) in
-        let state = V.foldl (\m d -> match d with | (dir, _, Just b, _) -> HashMap.insert dir b m | _ -> m) kept done in
+        let kept =
+          V.foldl
+            (\m kv -> if V.elem (fst kv) dirs
+              then HashMap.insert (fst kv) (snd kv) m
+              else m)
+            HashMap.empty
+            (HashMap.toVec before)
+        in
+        let state =
+          V.foldl
+            (\m d -> match d with
+                     | (dir, _, Just b, _) -> HashMap.insert dir b m
+                     | _ -> m)
+            kept
+            done
+        in
         let u = saveState root state in
         let p = prune root (V.map (outName root) dirs) in
-        let counts = \p -> V.len (V.filter (\d -> match d with | (_, o, _, _) -> p o) done) in
-        let compiled = counts (\o -> match o with | Compiled -> True | _ -> False) in
+        let counts =
+          \p -> V.len (V.filter (\d -> match d with | (_, o, _, _) -> p o) done)
+        in
+        let compiled =
+          counts (\o -> match o with | Compiled -> True | _ -> False)
+        in
         let fresh = counts (\o -> match o with | Fresh -> True | _ -> False) in
-        let failed = counts (\o -> match o with | Broke _ -> True | Blocked _ -> True | _ -> False) in
-        let w = writeOutput "${lang}: ${show compiled} compiled, ${show fresh} up to date${if failed > 0 then ", ${show failed} failed" else ""}\n" in
+        let failed =
+          counts
+            (\o -> match o with
+                   | Broke _ -> True
+                   | Blocked _ -> True
+                   | _ -> False)
+        in
+        let w =
+          writeOutput
+            "${lang}: ${show compiled} compiled, ${show fresh} up to date${if failed > 0 then ", ${show failed} failed" else ""}\n"
+        in
         failed == 0
 
 -- A scheduler is given how a unit is planned from what is done so far --
@@ -247,20 +377,44 @@ use Outcome.*
   running ch planOf work report units [] [] []
 
 fun running ch planOf work report units started tasks done =
-  let finished = \d -> V.any (\x -> match x with | (n, _, _, _) -> n == d) done in
-  let ready = V.filter (\u -> not (V.elem (fst u) started) and V.all finished (snd u)) units in
-  let begun = V.map (\u -> let p = planOf done (fst u) in Thread.spawn (\() -> Thread.send ch (work p))) ready in
+  let finished =
+    \d -> V.any (\x -> match x with | (n, _, _, _) -> n == d) done
+  in
+  let ready =
+    V.filter
+      (\u -> not (V.elem (fst u) started) and V.all finished (snd u))
+      units
+  in
+  let begun =
+    V.map
+      (\u ->
+        let p = planOf done (fst u) in
+        Thread.spawn (\() -> Thread.send ch (work p)))
+      ready
+  in
   let started2 = V.append started (V.map fst ready) in
   let tasks2 = V.append tasks begun in
   -- Nothing running and nothing to start: every unit is done -- or what is
   -- left waits for itself, which `graph` has already refused.
   if V.len started2 == V.len done then (let u = Thread.awaitAll tasks2 in done)
-  else running ch planOf work report units started2 tasks2 (V.pushBack done (report (Thread.receive ch)))
+  else
+    running
+      ch
+      planOf
+      work
+      report
+      units
+      started2
+      tasks2
+      (V.pushBack done (report (Thread.receive ch)))
 
 -- The units one after another, in an order that has each after the units it
 -- depends on: `| parallel = false`.
 @pub fun inTurn planOf work report units =
-  V.foldl (\done dir -> V.pushBack done (report (work (planOf done dir)))) [] (V.concat (rounds units))
+  V.foldl
+    (\done dir -> V.pushBack done (report (work (planOf done dir))))
+    []
+    (V.concat (rounds units))
 
 fun said lang root dir outcome =
   let name = relative root dir in
@@ -275,7 +429,8 @@ fun said lang root dir outcome =
 -- (`lib`, `app`) -- or, for one elsewhere, for its last part and a hash of the
 -- whole, since a path from another drive or directory would reach out of
 -- `units` altogether.
-fun outDir root dir = Path.joinAll [Path.normalize root, "target", "units", outName root dir]
+fun outDir root dir =
+  Path.joinAll [Path.normalize root, "target", "units", outName root dir]
 
 fun outName root dir =
   let d = Path.normalize dir in
@@ -290,7 +445,8 @@ fun outName root dir =
 fun relative root dir =
   let base = M.unwrapOr "." (Path.parent (Path.normalize root)) in
   if base == "." or base == "" then dir
-  else if S.startsWith (base ++ "/") dir then S.drop dir (stringByteLength base + 1)
+  else if S.startsWith (base ++ "/") dir
+  then S.drop dir (stringByteLength base + 1)
   else dir
 
 -- What a unit needs: its sources read, and the interfaces it depends on --
@@ -300,13 +456,40 @@ data Plan i = Blocked2 String String | Ready String [(String, String)] Int [(Str
 use Plan.*
 
 fun plan us root before done dir deps =
-  let failedDep = V.find (\d -> V.any (\x -> match x with | (n, _, None, _) -> n == d | _ -> False) done) deps in
+  let failedDep =
+    V.find
+      (\d ->
+        V.any
+          (\x -> match x with | (n, _, None, _) -> n == d | _ -> False)
+          done)
+      deps
+  in
   match failedDep with
   | Just d -> Blocked2 dir "${relative root d} did not build"
   | None ->
-      let sources = V.map (\f -> (f, M.unwrapOr "" (okOf (readToString f)))) (filesOf us dir) in
-      let imports = V.concatMap (\d -> V.concatMap (\x -> match x with | (n, _, Just (Built _ _ _ f), Just i) -> if n == d then [(d, i, f)] else [] | _ -> []) done) deps in
-      Ready dir sources (hash sources) imports (HashMap.lookup dir before) (outDir root dir)
+      let sources =
+        V.map
+          (\f -> (f, M.unwrapOr "" (okOf (readToString f))))
+          (filesOf us dir)
+      in
+      let imports =
+        V.concatMap
+          (\d ->
+            V.concatMap
+              (\x -> match x with
+                     | (n, _, Just (Built _ _ _ f), Just i) ->
+                         if n == d then [(d, i, f)] else []
+                     | _ -> [])
+              done)
+          deps
+      in
+      Ready
+        dir
+        sources
+        (hash sources)
+        imports
+        (HashMap.lookup dir before)
+        (outDir root dir)
 
 -- Compile the unit, unless what it would be compiled from is what it was.
 fun carryOut compile encode decode p =
@@ -316,15 +499,30 @@ fun carryOut compile encode decode p =
       let against = V.map (\x -> match x with | (d, _, f) -> (d, f)) imports in
       let reuse =
         (match was with
-         | Just (Built s ds i f) -> if s == fp and ds == against then M.map (\x -> (x, Built s ds i f)) (okOf (decode i)) else None
+         | Just (Built s ds i f) ->
+             if s == fp and ds == against
+             then M.map (\x -> (x, Built s ds i f)) (okOf (decode i))
+             else None
          | None -> None) in
         match reuse with
         | Just (i, b) -> (dir, Fresh, Just b, Just i)
         | None ->
-            let unit = Given dir sources (V.map (\x -> match x with | (d, i, _) -> (d, i)) imports) out in
+            let unit =
+              Given
+                dir
+                sources
+                (V.map (\x -> match x with | (d, i, _) -> (d, i)) imports)
+                out
+            in
             match sandboxed (V.map fst sources) out (\() -> compile unit) with
             | Err report -> (dir, Broke report, None, None)
-            | Ok i -> (dir, Compiled, Just (Built fp against (encode i) (hash (encode i))), Just i)
+            | Ok i ->
+                (
+                  dir,
+                  Compiled,
+                  Just (Built fp against (encode i) (hash (encode i))),
+                  Just i
+                )
 
 -- What the unit at `dir` was compiled from in `root`'s last build: its
 -- sources as they are now, and the interfaces of the units it depends on as
@@ -346,22 +544,31 @@ fun carryOut compile encode decode p =
             | Ok is ->
                 (match M.andThen (\b -> match b with | Built _ _ i _ -> okOf (decode i)) (HashMap.lookup x state) with
                                         | Just i -> Ok (V.pushBack is (x, i))
-                                        | None -> Err "${relative r x} has not been built"))
+                                        | None ->
+                                            Err
+                                              "${relative r x} has not been built"))
           (Ok [])
           deps in
         match imports with
         | Err e -> Err e
         | Ok is ->
-            let sources = V.map (\f -> (f, M.unwrapOr "" (okOf (readToString f)))) (filesOf us d) in
+            let sources =
+              V.map
+                (\f -> (f, M.unwrapOr "" (okOf (readToString f))))
+                (filesOf us d)
+            in
             Ok (Given d sources is (outDir r d))
 
--- --- the compiler, held to its unit ---------------------------------------------------
+-- --- the compiler, held to its unit ------------------------------------------
 
 -- `act`, able to read `sources` and what is under `out`, and to write only
 -- under `out`: anything else it asks the file system for fails, saying why.
 @pub fun sandboxed (sources : [String]) (out : String) act =
   let made = \p -> M.map createDirAll (Path.parent p) in
-  let readable = \p -> V.elem (Path.normalize p) (V.map Path.normalize sources) or under out p in
+  let readable =
+    \p ->
+      V.elem (Path.normalize p) (V.map Path.normalize sources) or under out p
+  in
   let refused = \p -> Err "${p} is not an input of this unit" in
   handle act () with {
     readToString p resume -> resume (if readable p then readToString p else refused p),
@@ -387,7 +594,7 @@ fun under (dir : String) (p : String) : Bool =
 
 @pub fun decodeReflect d = fromDatum d
 
--- --- make! --------------------------------------------------------------------------
+-- --- make! -------------------------------------------------------------------
 
 use Std.Macro (TokenTree, Loc, isPunct)
 use Std.Macro.TokenTree.*
@@ -399,7 +606,6 @@ use Std.String.Parse (keep, skip)
 use Lingua.Pipe (named)
 use Std.Macro (Expand)
 use Std.Collections.HashMap (HashMap)
-
 
 -- `| sources = ".ml"` or `| compile = compileUnit`: a setting, where it was
 -- written, and what it is.
@@ -431,19 +637,32 @@ def optional : [String] = ["dependencies", "files", "parallel"]
   | Err failed -> failed
   | Ok (pub, name, lang, ss) ->
       match V.find (\s -> not (V.elem (fst (fst s)) (V.append settings optional))) ss with
-      | Just s -> [Fail "a build has no setting `${fst (fst s)}`: they are ${S.join ", " (V.map (\x -> "`${x}`") (V.append settings optional))}" (snd (fst s))]
+      | Just s ->
+          [Fail
+            "a build has no setting `${fst (fst s)}`: they are ${S.join ", " (V.map (\x -> "`${x}`") (V.append settings optional))}"
+            (snd (fst s))]
       | None ->
           match V.find (\k -> not (V.any (\s -> fst (fst s) == k) ss)) settings with
           | Just k -> [Fail "a build needs `${k}`" Nowhere]
           | None ->
-            match V.find (\s -> fst (fst s) == "parallel" and not (V.elem (snd s) ["true", "false"])) ss with
-            | Just s -> [Fail "`parallel` is `true` or `false`: whether units that do not depend on each other are compiled at once, which they are unless it says `false`" (snd (fst s))]
-            | None ->
-              let get = \k -> M.unwrapOr "" (M.map snd (V.find (\s -> fst (fst s) == k) ss)) in
-              let given = \k -> M.map snd (V.find (\s -> fst (fst s) == k) ss) in
-              let units =
-                "{ manifest = \"${get "manifest"}\", ext = \"${get "sources"}\", deps = ${M.unwrapOr "None" (M.map (\f -> "Just (\\r d t -> ${f} r d t)") (given "dependencies"))}, files = ${M.unwrapOr "None" (M.map (\f -> "Just (\\d -> ${f} d)") (given "files"))} }" in
-                [Code "use Lingua.Make as LinguaMake
+              match V.find (\s -> fst (fst s) == "parallel" and not (V.elem (snd s) ["true", "false"])) ss with
+              | Just s ->
+                  [Fail
+                    "`parallel` is `true` or `false`: whether units that do not depend on each other are compiled at once, which they are unless it says `false`"
+                    (snd (fst s))]
+              | None ->
+                  let get =
+                    \k ->
+                      M.unwrapOr
+                        ""
+                        (M.map snd (V.find (\s -> fst (fst s) == k) ss))
+                  in
+                  let given =
+                    \k -> M.map snd (V.find (\s -> fst (fst s) == k) ss)
+                  in
+                  let units =
+                    "{ manifest = \"${get "manifest"}\", ext = \"${get "sources"}\", deps = ${M.unwrapOr "None" (M.map (\f -> "Just (\\r d t -> ${f} r d t)") (given "dependencies"))}, files = ${M.unwrapOr "None" (M.map (\f -> "Just (\\d -> ${f} d)") (given "files"))} }" in
+                    [Code "use Lingua.Make as LinguaMake
 
 -- ${lang}'s build: the unit at `root` and every unit it depends on, each
 -- compiled only if what it would be compiled from has changed.
@@ -455,16 +674,37 @@ ${if pub then "@pub " else ""}fun given${name} (root : String) (dir : String) =
   LinguaMake.givenOf (${units}) root dir LinguaMake.decodeReflect
 "]
 
-                  -- --- tests --------------------------------------------------------------------------
+                      -- --- tests ---------------------------------------------
 
-                  use Std.Test (assertEq)
+                      use Std.Test (assertEq)
 
-                  @test fun aCompilerCanReadOnlyItsUnit () =
-                    let read = sandboxed ["src/a.ml"] "target/out" (\() -> (readToString "src/b.ml", writeString ("elsewhere/x", "y"))) in
-                    assertEq read (Err "src/b.ml is not an input of this unit", Err "elsewhere/x is not an input of this unit") "a read and a write outside it"
+                      @test fun aCompilerCanReadOnlyItsUnit () =
+                        let read =
+                          sandboxed
+                            ["src/a.ml"]
+                            "target/out"
+                            (\() ->
+                              (
+                                readToString "src/b.ml",
+                                writeString ("elsewhere/x", "y")
+                              ))
+                        in
+                        assertEq
+                          read
+                          (
+                            Err "src/b.ml is not an input of this unit",
+                            Err "elsewhere/x is not an input of this unit"
+                          )
+                          "a read and a write outside it"
 
-                    @test fun unitsAreBuiltInRoundsOfWhatTheyDependOn () =
-                      assertEq
-                      (rounds [("a", []), ("b", ["a"]), ("c", ["a"]), ("d", ["b", "c"])])
-                      [["a"], ["b", "c"], ["d"]]
-                      "b and c together"
+                        @test fun unitsAreBuiltInRoundsOfWhatTheyDependOn () =
+                          assertEq
+                          (rounds
+                            [
+                              ("a", []),
+                              ("b", ["a"]),
+                              ("c", ["a"]),
+                              ("d", ["b", "c"])
+                            ])
+                          [["a"], ["b", "c"], ["d"]]
+                          "b and c together"

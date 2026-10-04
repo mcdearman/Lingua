@@ -86,7 +86,8 @@ use Pretty (Doc)
 -- of the kinds it may be -- one, or as many as there are; several of those a
 -- level in; several that go on one line or break together; and, between
 -- them, how they are parted (`Parting`).
-@pub data Elem = Tok String | Child [String] Bool | Indent [Elem] | Group [Elem] | Mark Int
+@pub data Elem =
+  Tok String | Child [String] Bool | Indent [Elem] | Group [Elem] | Mark Int
 
 use Elem.*
 
@@ -118,10 +119,17 @@ def breaking : Int = 3
 -- A formatter: how wide a level is, how wide a line may be -- 0 for one that
 -- only indents -- what a kind is called, which kinds are trivia, and the
 -- rules, each under the name of its node's kind.
-@pub data Style k = Style Int Int (k -> String) (k -> Bool) (HashMap String [Elem])
+@pub data Style k =
+  Style Int Int (k -> String) (k -> Bool) (HashMap String [Elem])
 
-@pub fun style (unit : Int) (width : Int) (name : k -> String) (trivia : k -> Bool) (rules : [(String, [Elem])]) : Style k =
-  Style unit width name trivia (V.foldl (\m r -> HashMap.insert (fst r) (snd r) m) HashMap.empty rules)
+@pub fun style (unit : Int) (width : Int) (name : k -> String)
+    (trivia : k -> Bool) (rules : [(String, [Elem])]) : Style k =
+  Style
+    unit
+    width
+    name
+    trivia
+    (V.foldl (\m r -> HashMap.insert (fst r) (snd r) m) HashMap.empty rules)
 
 fun unitOf st = match st with | Style u _ _ _ _ -> u
 fun widthOf st = match st with | Style _ w _ _ _ -> w
@@ -137,7 +145,7 @@ def absent : (Int, Int) = (0 - 1, 0 - 1)
 
 fun present (r : (Int, Int)) : Bool = fst r >= 0
 
--- --- a rule against a node --------------------------------------------------------
+-- --- a rule against a node ---------------------------------------------------
 
 -- The tokens and children a rule names, in order, through what encloses them.
 fun leaves (es : [Elem]) : [Elem] =
@@ -151,15 +159,18 @@ fun leaves (es : [Elem]) : [Elem] =
 
 -- Each leaf against `kids`, from the first on: which of them it is -- the
 -- first and the last, or `absent`.
-fun matchLeaves (st : Style k) (kids : [Syntax k]) (ls : [Elem]) : [(Int, Int)] =
+fun matchLeaves (st : Style k) (kids : [Syntax k]) (ls : [Elem]) :
+    [(Int, Int)] =
   fst
     (V.foldl
       (\acc e -> match acc with
-                 | (out, at) -> (match matchOne st kids e at with | (r, next) -> (V.pushBack out r, next)))
+                 | (out, at) ->
+                     (match matchOne st kids e at with | (r, next) -> (V.pushBack out r, next)))
       ([], 0)
       ls)
 
-fun matchOne (st : Style k) (kids : [Syntax k]) (e : Elem) (i : Int) : ((Int, Int), Int) =
+fun matchOne (st : Style k) (kids : [Syntax k]) (e : Elem) (i : Int) :
+    ((Int, Int), Int) =
   match e with
   | Tok t ->
       (match firstFrom (\c -> R.isTokenOf c and R.text c == t) kids i with
@@ -183,15 +194,18 @@ fun kindName (st : Style k) (c : Syntax k) : String = (nameOf st) (R.kindOf c)
 -- Past what the parser could not read: an error node is no child of a rule.
 fun pastErrors (st : Style k) (kids : [Syntax k]) (i : Int) : Int =
   match V.get kids i with
-  | Just c -> if kindName st c == errorNode then pastErrors st kids (i + 1) else i
+  | Just c ->
+      if kindName st c == errorNode then pastErrors st kids (i + 1) else i
   | None -> i
 
-fun fits (st : Style k) (kinds : [String]) (kids : [Syntax k]) (j : Int) : Bool =
+fun fits (st : Style k) (kinds : [String]) (kids : [Syntax k]) (j : Int)
+    : Bool =
   match V.get kids j with
   | Just c -> V.elem (kindName st c) kinds
   | None -> False
 
-fun lastFitting (st : Style k) (kinds : [String]) (kids : [Syntax k]) (j : Int) : Int =
+fun lastFitting (st : Style k) (kinds : [String]) (kids : [Syntax k]) (j : Int)
+    : Int =
   if fits st kinds kids (j + 1) then lastFitting st kinds kids (j + 1) else j
 
 -- Which leaves each `indent(…)` of a rule encloses, at any depth: the first,
@@ -202,16 +216,25 @@ fun indentSpans (es : [Elem]) (from : Int) : [(Int, Int)] =
       (\acc e -> match acc with
                  | (out, at) ->
                      (match e with
-                      | Indent inner -> (V.append (V.pushBack out (at, at + V.len (leaves inner))) (indentSpans inner at), at + V.len (leaves inner))
-                      | Group inner -> (V.append out (indentSpans inner at), at + V.len (leaves inner))
+                      | Indent inner ->
+                          (
+                            V.append (V.pushBack out (at, at + V.len (leaves inner))) (indentSpans inner at),
+                            at + V.len (leaves inner)
+                          )
+                      | Group inner ->
+                          (
+                            V.append out (indentSpans inner at),
+                            at + V.len (leaves inner)
+                          )
                       | Mark _ -> (out, at)
                       | _ -> (out, at + 1)))
       ([], from)
       es)
 
-fun kidsOf (st : Style k) (s : Syntax k) : [Syntax k] = V.filter (\c -> not ((triviaOf st) (R.kindOf c))) (R.children s)
+fun kidsOf (st : Style k) (s : Syntax k) : [Syntax k] =
+  V.filter (\c -> not ((triviaOf st) (R.kindOf c))) (R.children s)
 
--- --- the indented parts of a tree -------------------------------------------------
+-- --- the indented parts of a tree --------------------------------------------
 
 -- An indented part: where it starts and ends in the text, and where the node
 -- it is part of began.
@@ -235,12 +258,30 @@ fun ruled (st : Style k) (g : Green k) : [(Int, Int, [((Int, Int), Bool)])] =
         | Just elems ->
             let kids = kidsOf st s in
             let found = matchLeaves st kids (leaves elems) in
-            let place = \r -> if present r then (fst (R.textRange (V.getOr s kids (fst r))), snd (R.textRange (V.getOr s kids (snd r)))) else absent in
+            let place =
+              \r -> if present r
+                    then
+                      (
+                        fst (R.textRange (V.getOr s kids (fst r))),
+                        snd (R.textRange (V.getOr s kids (snd r)))
+                      )
+                    else absent
+            in
             let parts =
               V.map
                 (\span ->
-                  let inside = V.filter present (V.map (\j -> V.getOr absent found j) (V.range (fst span) (snd span))) in
-                  let spot = (match (V.get inside 0, V.last inside) with | (Just a, Just b) -> (fst (place a), snd (place b)) | _ -> absent) in
+                  let inside =
+                    V.filter
+                      present
+                      (V.map
+                        (\j -> V.getOr absent found j)
+                        (V.range (fst span) (snd span)))
+                  in
+                  let spot =
+                    (match (V.get inside 0, V.last inside) with
+                     | (Just a, Just b) -> (fst (place a), snd (place b))
+                     | _ -> absent)
+                  in
                   (spot, V.any present (V.drop found (snd span))))
                 (indentSpans elems 0) in
               [(G.startAt g i, G.endAt g i, parts)])
@@ -251,32 +292,54 @@ fun regions (st : Style k) (g : Green k) : [Region] =
   sortOn regionStart
     (V.concatMap
       (\n -> match n with
-             | (from, _, parts) -> V.concatMap (\p -> if present (fst p) then [Region (fst (fst p)) (snd (fst p)) from] else []) parts)
+             | (from, _, parts) ->
+                 V.concatMap
+                   (\p -> if present (fst p)
+                     then [Region (fst (fst p)) (snd (fst p)) from]
+                     else [])
+                   parts)
       (ruled st g))
 
--- --- lines ------------------------------------------------------------------------
+-- --- lines -------------------------------------------------------------------
 
 fun lineStarts (t : String) : [Int] =
-  V.foldl (\acc i -> if toInt (stringByteAt t i) == 10 then V.pushBack acc (i + 1) else acc) [0] (V.range 0 (stringByteLength t))
+  V.foldl
+    (\acc i -> if toInt (stringByteAt t i) == 10
+      then V.pushBack acc (i + 1)
+      else acc)
+    [0]
+    (V.range 0 (stringByteLength t))
 
 -- Which line `at` is on: the last that starts at or before it.
-fun lineOf (starts : [Int]) (at : Int) : Int = searchLine starts at 0 (V.len starts - 1)
+fun lineOf (starts : [Int]) (at : Int) : Int =
+  searchLine starts at 0 (V.len starts - 1)
 
 fun searchLine (starts : [Int]) (at : Int) (lo : Int) (hi : Int) : Int =
   if lo >= hi then lo
   else
     let mid = (lo + hi + 1) / 2 in
-    if V.getOr 0 starts mid <= at then searchLine starts at mid hi else searchLine starts at lo (mid - 1)
+    if V.getOr 0 starts mid <= at
+    then searchLine starts at mid hi
+    else searchLine starts at lo (mid - 1)
 
 -- Where a line's first character that is not a space or a tab is.
 fun pastBlanks (t : String) (i : Int) (stop : Int) : Int =
-  if i < stop and (toInt (stringByteAt t i) == 32 or toInt (stringByteAt t i) == 9) then pastBlanks t (i + 1) stop else i
+  if i < stop
+  and (toInt (stringByteAt t i) == 32 or toInt (stringByteAt t i) == 9)
+  then pastBlanks t (i + 1) stop
+  else i
 
 -- How many different lines the nodes of `open` began on.
 fun levels (starts : [Int]) (open : [Region]) : Int =
-  V.len (V.foldl (\seen r -> let l = lineOf starts (regionOwner r) in if V.elem l seen then seen else V.pushBack seen l) [] open)
+  V.len
+    (V.foldl
+      (\seen r -> let l = lineOf starts (regionOwner r) in if V.elem l seen
+        then seen
+        else V.pushBack seen l)
+      []
+      open)
 
--- --- indenting --------------------------------------------------------------------
+-- --- indenting ---------------------------------------------------------------
 
 -- The tree's text, each line set in as the rules say, and broken where it was.
 @pub fun reindent (st : Style k) (g : Green k) : String =
@@ -288,22 +351,33 @@ fun levels (starts : [Int]) (open : [Region]) : Int =
     match acc with
     | (out, open, next) ->
         let from = V.getOr 0 starts l in
-        let stop = (if l + 1 < V.len starts then V.getOr total starts (l + 1) - 1 else total) in
+        let stop =
+          (if l + 1 < V.len starts
+            then V.getOr total starts (l + 1) - 1
+            else total)
+        in
         let at = pastBlanks t from stop in
         -- The parts this line starts in: those open before that have not
         -- ended, and those that start by here.
         let upTo = startingBy all next at in
-        let entered = V.filter (\r -> regionEnd r > at) (V.map (\i -> V.getOr (Region 0 0 0) all i) (V.range next upTo)) in
+        let entered =
+          V.filter
+            (\r -> regionEnd r > at)
+            (V.map (\i -> V.getOr (Region 0 0 0) all i) (V.range next upTo))
+        in
         let open2 = V.append (V.filter (\r -> regionEnd r > at) open) entered in
         let line =
           (if at >= stop then ""
-           else if insideToken g from then stringSlice t from stop
-           else
-             let counted = V.filter (\r -> lineOf starts (regionOwner r) < l) open2 in
-             S.repeat " " (unitOf st * levels starts counted) ++ stringSlice t at stop) in
+            else if insideToken g from then stringSlice t from stop
+            else
+              let counted =
+                V.filter (\r -> lineOf starts (regionOwner r) < l) open2
+              in
+              S.repeat " " (unitOf st * levels starts counted)
+                ++ stringSlice t at stop) in
           (V.pushBack out line, open2, upTo) in
-    match V.foldl step ([], [], 0) (V.range 0 (V.len starts)) with
-    | (out, _, _) -> S.join "\n" out
+          match V.foldl step ([], [], 0) (V.range 0 (V.len starts)) with
+          | (out, _, _) -> S.join "\n" out
 
 -- The first region from `i` on that starts after `at`.
 fun startingBy (all : [Region]) (i : Int) (at : Int) : Int =
@@ -319,7 +393,8 @@ fun insideToken (g : Green k) (from : Int) : Bool =
     match R.tokenAt from (R.root g) with
     | Just tok ->
         let r = R.textRange tok in
-        fst r < from and not (S.isEmpty (S.trim (stringSlice (G.text g) (fst r) from)))
+        fst r < from
+          and not (S.isEmpty (S.trim (stringSlice (G.text g) (fst r) from)))
     | None -> False
 
 -- What the line after the tree's text opens with, the text being unfinished:
@@ -340,8 +415,13 @@ fun insideToken (g : Green k) (from : Int) : Bool =
                             | (r, later) ->
                                 -- There, and running to the end; or not there, with
                                 -- nothing after it, in a node that runs to the end.
-                                if present r then (if snd r >= last then [Region (fst r) (snd r) from] else [])
-                                else if to >= last and not later then [Region last last from]
+                                if present r
+                                then
+                                  (if snd r >= last
+                                    then [Region (fst r) (snd r) from]
+                                    else [])
+                                else if to >= last and not later
+                                then [Region last last from]
                                 else [])
                      parts)
         (ruled st g) in
@@ -350,11 +430,16 @@ fun insideToken (g : Green k) (from : Int) : Bool =
 -- Where the last token that is not trivia ends: -1 when there is none.
 fun lastEnd (st : Style k) (g : Green k) : Int =
   V.foldl
-    (\acc i -> if G.isTokenAt g i and not ((triviaOf st) (G.kindAt g i)) and G.endAt g i > G.startAt g i then max acc (G.endAt g i) else acc)
+    (\acc i ->
+      if G.isTokenAt g i
+      and not ((triviaOf st) (G.kindAt g i))
+        and G.endAt g i > G.startAt g i
+      then max acc (G.endAt g i)
+      else acc)
     (0 - 1)
     (V.range 0 (G.slots g))
 
--- --- laying out -------------------------------------------------------------------
+-- --- laying out --------------------------------------------------------------
 
 -- A piece of a node being laid out: a parting -- how strong, and how many
 -- levels in -- or something to write, at a level, and whether it begins and
@@ -371,8 +456,11 @@ use Item.*
   | Ok out ->
       -- A line of nothing but its indent is an empty one; and the text ends
       -- with a line's end if it did.
-      let lines = V.map (\l -> if S.isEmpty (S.trim l) then "" else l) (S.split "\n" out) in
-      S.trimEnd (S.join "\n" lines) ++ (if S.endsWith "\n" t and not (S.isEmpty (S.trim out)) then "\n" else "")
+      let lines =
+        V.map (\l -> if S.isEmpty (S.trim l) then "" else l) (S.split "\n" out)
+      in
+      S.trimEnd (S.join "\n" lines)
+        ++ (if S.endsWith "\n" t and not (S.isEmpty (S.trim out)) then "\n" else "")
   | Err _ -> t
 
 fun docOf (st : Style k) (s : Syntax k) : Doc () =
@@ -390,8 +478,14 @@ fun docOf (st : Style k) (s : Syntax k) : Doc () =
 -- node is taken for part of the comment -- but not at the end of the text.
 fun writtenDoc (st : Style k) (s : Syntax k) : Doc () =
   let all = R.children s in
-  let blank = \c -> (triviaOf st) (R.kindOf c) and S.isEmpty (S.trim (R.text c)) in
-  let solid = V.filter (\i -> match V.get all i with | Just c -> not (blank c) | None -> False) (V.range 0 (V.len all)) in
+  let blank =
+    \c -> (triviaOf st) (R.kindOf c) and S.isEmpty (S.trim (R.text c))
+  in
+  let solid =
+    V.filter
+      (\i -> match V.get all i with | Just c -> not (blank c) | None -> False)
+      (V.range 0 (V.len all))
+  in
   match (V.get solid 0, V.last solid) with
   | (Just first, Just last) ->
       let body =
@@ -402,7 +496,8 @@ fun writtenDoc (st : Style k) (s : Syntax k) : Doc () =
             | Just c ->
                 if (triviaOf st) (R.kindOf c) then
                   let t = R.text c in
-                  if not (S.isEmpty (S.trim t)) then PP.append acc (PP.text (S.trim t))
+                  if not (S.isEmpty (S.trim t))
+                  then PP.append acc (PP.text (S.trim t))
                   else
                     let breaks = V.len (S.split "\n" t) - 1 in
                     if breaks == 0 then PP.append acc (PP.text t)
@@ -411,8 +506,14 @@ fun writtenDoc (st : Style k) (s : Syntax k) : Doc () =
                 else PP.append acc (docOf st c))
           PP.nil
           (V.range first (last + 1)) in
-        let endsInComment = (match V.get all last with | Just c -> (triviaOf st) (R.kindOf c) | None -> False) in
-        if endsInComment and M.isSome (R.parent s) then PP.append body PP.hardline else body
+        let endsInComment =
+          (match V.get all last with
+           | Just c -> (triviaOf st) (R.kindOf c)
+           | None -> False)
+        in
+        if endsInComment and M.isSome (R.parent s)
+        then PP.append body PP.hardline
+        else body
   | _ -> PP.nil
 
 -- A node as its rule lays it out: a group of what the rule names, each child
@@ -420,12 +521,22 @@ fun writtenDoc (st : Style k) (s : Syntax k) : Doc () =
 fun ruledDoc (st : Style k) (s : Syntax k) (elems : [Elem]) : Doc () =
   let all = R.children s in
   -- Where each child that is not trivia is among them all.
-  let places = V.filter (\i -> match V.get all i with | Just c -> not ((triviaOf st) (R.kindOf c)) | None -> False) (V.range 0 (V.len all)) in
+  let places =
+    V.filter
+      (\i -> match V.get all i with
+             | Just c -> not ((triviaOf st) (R.kindOf c))
+             | None -> False)
+      (V.range 0 (V.len all))
+  in
   let kids = V.map (\i -> V.getOr s all i) places in
   let found = matchLeaves st kids (leaves elems) in
   match itemsOf st all places kids found elems 0 0 (0 - 1) with
   | (items, _, taken) ->
-      let rest = V.map (\j -> kidItem st all places kids 0 j) (V.range (taken + 1) (V.len kids)) in
+      let rest =
+        V.map
+          (\j -> kidItem st all places kids 0 j)
+          (V.range (taken + 1) (V.len kids))
+      in
       let after = trailing st all (V.getOr (0 - 1) places (V.len kids - 1)) in
       PP.group (assemble st (V.concat [items, rest, after]))
 
@@ -433,13 +544,16 @@ fun ruledDoc (st : Style k) (s : Syntax k) (elems : [Elem]) : Doc () =
 -- before, and `taken` the last child written. A child the rule did not name
 -- -- something the parser could not place -- is written before the next one
 -- it did, so nothing that was in the text is left out.
-fun itemsOf (st : Style k) (all : [Syntax k]) (places : [Int]) (kids : [Syntax k]) (found : [(Int, Int)]) (es : [Elem]) (level : Int) (leaf : Int) (taken : Int) : ([Item], Int, Int) =
+fun itemsOf (st : Style k) (all : [Syntax k]) (places : [Int])
+    (kids : [Syntax k]) (found : [(Int, Int)]) (es : [Elem]) (level : Int)
+    (leaf : Int) (taken : Int) : ([Item], Int, Int) =
   V.foldl
     (\acc e ->
       match acc with
       | (out, at, done) ->
           (match e with
-           | Mark strength -> (V.pushBack out (Parting strength level), at, done)
+           | Mark strength ->
+               (V.pushBack out (Parting strength level), at, done)
            | Indent inner ->
                (match itemsOf st all places kids found inner (level + 1) at done with
                 | (items, at2, done2) -> (V.append out items, at2, done2))
@@ -447,42 +561,66 @@ fun itemsOf (st : Style k) (all : [Syntax k]) (places : [Int]) (kids : [Syntax k
                (match itemsOf st all places kids found inner 0 at done with
                 | (items, at2, done2) ->
                     if V.isEmpty items then (out, at2, done2)
-                    else (V.pushBack out (Written level (PP.group (assemble st items)) (opensParted items) (closesParted items)), at2, done2))
+                    else
+                      (
+                        V.pushBack out (Written level (PP.group (assemble st items)) (opensParted items) (closesParted items)),
+                        at2,
+                        done2
+                      ))
            | _ ->
                let r = V.getOr absent found at in
                if not (present r) then (out, at + 1, done)
                else
-                 let skipped = V.map (\j -> kidItem st all places kids level j) (V.range (done + 1) (fst r)) in
-                 let named = V.map (\j -> kidItem st all places kids level j) (V.range (fst r) (snd r + 1)) in
+                 let skipped =
+                   V.map
+                     (\j -> kidItem st all places kids level j)
+                     (V.range (done + 1) (fst r))
+                 in
+                 let named =
+                   V.map
+                     (\j -> kidItem st all places kids level j)
+                     (V.range (fst r) (snd r + 1))
+                 in
                  (V.concat [out, skipped, named], at + 1, snd r)))
     ([], leaf, taken)
     es
 
-fun opensParted (items : [Item]) : Bool = match V.get items 0 with | Just (Parting _ _) -> True | _ -> False
+fun opensParted (items : [Item]) : Bool =
+  match V.get items 0 with | Just (Parting _ _) -> True | _ -> False
 
-fun closesParted (items : [Item]) : Bool = match V.last items with | Just (Parting _ _) -> True | _ -> False
+fun closesParted (items : [Item]) : Bool =
+  match V.last items with | Just (Parting _ _) -> True | _ -> False
 
 -- Child `j`, with the comments written before it, each on a line of its own.
-fun kidItem (st : Style k) (all : [Syntax k]) (places : [Int]) (kids : [Syntax k]) (level : Int) (j : Int) : Item =
+fun kidItem (st : Style k) (all : [Syntax k]) (places : [Int])
+    (kids : [Syntax k]) (level : Int) (j : Int) : Item =
   let at = V.getOr 0 places j in
   let before = (if j == 0 then 0 else V.getOr 0 places (j - 1) + 1) in
   let comments = commentsIn all before at in
   let own = (match V.get kids j with | Just c -> docOf st c | None -> PP.nil) in
-  let doc = V.foldr (\c d -> PP.append (PP.append (PP.text c) PP.hardline) d) own comments in
+  let doc =
+    V.foldr
+      (\c d -> PP.append (PP.append (PP.text c) PP.hardline) d)
+      own
+      comments
+  in
   Written level doc False False
 
 -- The trivia from child `from` up to `to` that is not blank: comments.
 fun commentsIn (all : [Syntax k]) (from : Int) (to : Int) : [String] =
   V.concatMap
     (\i -> match V.get all i with
-           | Just c -> (let t = S.trim (R.text c) in if S.isEmpty t then [] else [t])
+           | Just c ->
+               (let t = S.trim (R.text c) in if S.isEmpty t then [] else [t])
            | None -> [])
     (V.range from to)
 
 -- Comments after a node's last child: each written, and a break after it,
 -- so that nothing which follows is taken for part of it.
 fun trailing (st : Style k) (all : [Syntax k]) (last : Int) : [Item] =
-  V.concatMap (\c -> [Written 0 (PP.text c) False False, Parting breaking 0]) (commentsIn all (last + 1) (V.len all))
+  V.concatMap
+    (\c -> [Written 0 (PP.text c) False False, Parting breaking 0])
+    (commentsIn all (last + 1) (V.len all))
 
 -- Items as one document: each at its level, a parting as what it is, and a
 -- space between two written things nothing parts. Of several partings in a
@@ -494,20 +632,29 @@ fun assemble (st : Style k) (items : [Item]) : Doc () =
             match acc with
             | (doc, pending, level, closed) ->
                 (match item with
-                 | Parting strength at -> (doc, max pending strength, at, closed)
+                 | Parting strength at ->
+                     (doc, max pending strength, at, closed)
                  | Written at d opens closes ->
                      -- A break is set in as what follows it is, so the two
                      -- are nested together.
                      let sep =
                        (if pending >= 0 then partingDoc pending
-                        else if closed or opens then PP.nil
-                        else PP.space) in
-                       (PP.append doc (PP.nest (unit * at) (PP.append sep d)), 0 - 1, 0, closes)))
+                         else if closed or opens then PP.nil
+                         else PP.space) in
+                       (
+                         PP.append doc (PP.nest (unit * at) (PP.append sep d)),
+                         0 - 1,
+                         0,
+                         closes
+                       )))
           (PP.nil, 0 - 1, 0, True)
           items with
-  -- A parting with nothing after it parts nothing -- unless it is a break
-  -- that was asked for.
-  | (doc, pending, level, _) -> if pending == breaking then PP.append doc (PP.nest (unit * level) PP.hardline) else doc
+          -- A parting with nothing after it parts nothing -- unless it is a break
+          -- that was asked for.
+          | (doc, pending, level, _) ->
+              if pending == breaking
+              then PP.append doc (PP.nest (unit * level) PP.hardline)
+              else doc
 
 fun partingDoc (strength : Int) : Doc () =
   if strength == tightly then PP.nil
@@ -515,13 +662,21 @@ fun partingDoc (strength : Int) : Doc () =
   else if strength == lining then PP.line
   else PP.hardline
 
--- --- format! --------------------------------------------------------------------------
+-- --- format! -----------------------------------------------------------------
 
 use Std.Macro (TokenTree, Delim, Loc, isPunct, lookupAs)
 use Std.Macro.TokenTree.*
 use Std.Macro.Loc.*
 use Std.Macro.Delim.*
-use Std.Macro.Parse (Tokens, parseTokens, ident, keyword, punct, number, treesUntil)
+use Std.Macro.Parse (
+  Tokens,
+  parseTokens,
+  ident,
+  keyword,
+  punct,
+  number,
+  treesUntil
+)
 use Std.String.Parse as P
 use Std.String.Parse (Parser)
 use Std.String.Parse (keep, skip)
@@ -543,7 +698,6 @@ data Written = WTok String | WName String Loc | WIndent [Written] | WGroup [Writ
 
 use Written.*
 
-
 -- `indent` and `group` before parentheses are what they say; anywhere else
 -- they are a child's name. The partings are words of their own.
 def partings : [String] = ["tight", "cut", "line", "newline"]
@@ -552,10 +706,16 @@ fun writtenOf (ts : [TokenTree]) : [Written] = writing ts 0 []
 
 fun writing (ts : [TokenTree]) (i : Int) (out : [Written]) : [Written] =
   match (V.get ts i, V.get ts (i + 1)) with
-  | (Just (Word "indent" _), Just (Group Paren inner _)) -> writing ts (i + 2) (V.pushBack out (WIndent (writtenOf inner)))
-  | (Just (Word "group" _), Just (Group Paren inner _)) -> writing ts (i + 2) (V.pushBack out (WGroup (writtenOf inner)))
+  | (Just (Word "indent" _), Just (Group Paren inner _)) ->
+      writing ts (i + 2) (V.pushBack out (WIndent (writtenOf inner)))
+  | (Just (Word "group" _), Just (Group Paren inner _)) ->
+      writing ts (i + 2) (V.pushBack out (WGroup (writtenOf inner)))
   | (Just (Str s _), _) -> writing ts (i + 1) (V.pushBack out (WTok s))
-  | (Just (Word w at), _) -> writing ts (i + 1) (V.pushBack out (if V.elem w partings then WMark w else WName w at))
+  | (Just (Word w at), _) ->
+      writing
+        ts
+        (i + 1)
+        (V.pushBack out (if V.elem w partings then WMark w else WName w at))
   | (Just _, _) -> writing ts (i + 1) out
   | (None, _) -> out
 
@@ -592,42 +752,72 @@ def formatCall : Parser Tokens FormatCall =
   | Err failed -> failed
   | Ok (pub, name, grammar, unit, width, rules) ->
       match lookupAs (fst grammar) with
-      | Err _ -> [Fail "no grammar is called ${fst grammar}: `format!` is of a grammar `syntax!` declared" (snd grammar)]
+      | Err _ ->
+          [Fail
+            "no grammar is called ${fst grammar}: `format!` is of a grammar `syntax!` declared"
+            (snd grammar)]
       | Ok l ->
           match l with
           | Lang _ _ sorts _ _ keeping _ ->
               (match keeping with
-               | AsTables -> [Fail "${fst grammar} is kept as tables: a formatter is of a tree" (snd grammar)]
+               | AsTables ->
+                   [Fail
+                     "${fst grammar} is kept as tables: a formatter is of a tree"
+                     (snd grammar)]
                | AsTrees _ trivia tokenFields ->
-                   let prods = V.concatMap (\s -> match s with | Sort _ ps -> ps) sorts in
-                   let done = V.map (\r -> ruleCode sorts prods tokenFields r) rules in
+                   let prods =
+                     V.concatMap (\s -> match s with | Sort _ ps -> ps) sorts
+                   in
+                   let done =
+                     V.map (\r -> ruleCode sorts prods tokenFields r) rules
+                   in
                    match V.find (\d -> match d with | Err _ -> True | Ok _ -> False) done with
-                   | Just (Err failed) -> failed
-                   | _ -> formatCode (if pub then "@pub " else "") name (fst grammar) (M.unwrapOr 2 unit) (M.unwrapOr 0 width) trivia (V.concatMap (\d -> match d with | Ok c -> [c] | Err _ -> []) done))
+                                       | Just (Err failed) -> failed
+                                       | _ ->
+                                           formatCode
+                                             (if pub then "@pub " else "")
+                                             name
+                                             (fst grammar)
+                                             (M.unwrapOr 2 unit)
+                                             (M.unwrapOr 0 width)
+                                             trivia
+                                             (V.concatMap (\d -> match d with | Ok c -> [c] | Err _ -> []) done))
 
 -- A rule as the data `Style` holds: the node's kind, and its elements.
-fun ruleCode sorts prods tokenFields (r : ((String, Loc), [TokenTree])) : Result [TokenTree] String =
+fun ruleCode sorts prods tokenFields (r : ((String, Loc), [TokenTree])) : Result
+    [TokenTree] String =
   match r with
   | ((n, at), body) ->
       match V.find (\p -> match p with | Prod m fs -> m == n and not (isEnumProd sorts p)) prods with
-      | None -> Err [Fail "no rule of the grammar is called ${n} -- or it is a choice of rules, and has no node of its own" at]
-      | Just (Prod _ fs) ->
-          match elemsCode sorts tokenFields n fs (writtenOf body) with
-          | Err failed -> Err failed
-          | Ok code -> Ok "(\"Node${n}\", ${code})"
+                          | None ->
+                              Err
+                                [Fail
+                                  "no rule of the grammar is called ${n} -- or it is a choice of rules, and has no node of its own"
+                                  at]
+                          | Just (Prod _ fs) ->
+                              match elemsCode sorts tokenFields n fs (writtenOf body) with
+                              | Err failed -> Err failed
+                              | Ok code -> Ok "(\"Node${n}\", ${code})"
 
 -- An enum's production holds only the enum's sort, under its own name.
 fun isEnumProd sorts p =
   match p with
-  | Prod n fs -> V.any (\s -> match s with | Sort m _ -> m == n) sorts and V.len fs == 1 and V.any (\f -> match f with | Field _ (TSort m) _ _ -> m == n | _ -> False) fs
+  | Prod n fs ->
+      V.any (\s -> match s with | Sort m _ -> m == n) sorts
+        and V.len fs == 1
+        and V.any (\f -> match f with | Field _ (TSort m) _ _ -> m == n | _ -> False) fs
 
-fun elemsCode sorts tokenFields rule fs (ws : [Written]) : Result [TokenTree] String =
+fun elemsCode sorts tokenFields rule fs (ws : [Written]) : Result
+    [TokenTree] String =
   let each = V.map (\w -> elemCode sorts tokenFields rule fs w) ws in
   match V.find (\d -> match d with | Err _ -> True | Ok _ -> False) each with
-  | Just (Err failed) -> Err failed
-  | _ -> Ok "[${S.join ", " (V.concatMap (\d -> match d with | Ok c -> [c] | Err _ -> []) each)}]"
+                      | Just (Err failed) -> Err failed
+                      | _ ->
+                          Ok
+                            "[${S.join ", " (V.concatMap (\d -> match d with | Ok c -> [c] | Err _ -> []) each)}]"
 
-fun elemCode sorts tokenFields rule fs (w : Written) : Result [TokenTree] String =
+fun elemCode sorts tokenFields rule fs (w : Written) : Result
+    [TokenTree] String =
   match w with
   | WTok t -> Ok "LinguaF.tok ${quote t}"
   | WMark m -> Ok "LinguaF.${m}"
@@ -641,14 +831,29 @@ fun elemCode sorts tokenFields rule fs (w : Written) : Result [TokenTree] String
        | Err failed -> Err failed)
   | WName n at ->
       match V.find (\f -> match f with | Field m _ _ _ -> m == n) fs with
-      | None ->
-          Err [Fail "${rule} has no child called `${n}`: it has ${S.join ", " (V.map (\f -> match f with | Field m _ _ _ -> "`${m}`") fs)} -- and its tokens, each written as it is, in quotes" at]
-      | Just (Field _ ty _ token) ->
-          let many = (match ty with | TMany _ -> True | _ -> False) in
-          let kinds =
-            (if token then V.concatMap (\tf -> match tf with | TokenField r f ks -> if r == rule and f == n then ks else []) tokenFields
-             else V.map (\k -> "Node${k}") (kindsOf sorts (sortOf ty) [])) in
-            Ok "LinguaF.child [${S.join ", " (V.map quote kinds)}] ${if many then "True" else "False"}"
+                          | None ->
+                              Err
+                                [Fail
+                                  "${rule} has no child called `${n}`: it has ${S.join ", " (V.map (\f -> match f with | Field m _ _ _ -> "`${m}`") fs)} -- and its tokens, each written as it is, in quotes"
+                                  at]
+                          | Just (Field _ ty _ token) ->
+                              let many =
+                                (match ty with | TMany _ -> True | _ -> False)
+                              in
+                              let kinds =
+                                (if token
+                                  then
+                                    V.concatMap
+                                    (\tf -> match tf with
+                                            | TokenField r f ks ->
+                                                if r == rule and f == n
+                                                then ks
+                                                else [])
+                                    tokenFields
+                                  else
+                                    V.map (\k -> "Node${k}") (kindsOf sorts (sortOf ty) [])) in
+                                Ok
+                                  "LinguaF.child [${S.join ", " (V.map quote kinds)}] ${if many then "True" else "False"}"
 
 fun sortOf (ty : Ty) : String =
   match ty with
@@ -663,18 +868,27 @@ fun kindsOf sorts (n : String) (seen : [String]) : [String] =
   if V.elem n seen then []
   else
     match V.find (\s -> match s with | Sort m _ -> m == n) sorts with
-    | None -> [n]
-    | Just (Sort _ ps) ->
-        V.concatMap
-          (\p -> match p with
-                 | Prod m _ -> if m != n and V.any (\s -> match s with | Sort k _ -> k == m) sorts then kindsOf sorts m (V.pushBack seen n) else [m])
-          ps
+                        | None -> [n]
+                        | Just (Sort _ ps) ->
+                            V.concatMap
+                            (\p -> match p with
+                                   | Prod m _ ->
+                                       if m != n
+                                       and V.any (\s -> match s with | Sort k _ -> k == m) sorts
+                                       then kindsOf sorts m (V.pushBack seen n)
+                                       else [m])
+                            ps
 
 fun quote (s : String) : String =
-  "\"" ++ S.join "" (V.map (\i -> let c = stringSlice s i (i + 1) in if c == "\"" then "\\\"" else if c == "\\" then "\\\\" else if c == "$" then "\\$" else c) (V.range 0 (stringByteLength s))) ++ "\""
+  "\""
+    ++ S.join "" (V.map (\i -> let c = stringSlice s i (i + 1) in if c == "\"" then "\\\"" else if c == "\\" then "\\\\" else if c == "$" then "\\$" else c) (V.range 0 (stringByteLength s)))
+    ++ "\""
 
-fun formatCode pub name grammar (unit : Int) (width : Int) (trivia : [String]) (rules : [String]) : [TokenTree] =
-  let isTrivia = S.join "" (V.map (\k -> " | ${grammar}.${k} -> True") trivia) in
+fun formatCode pub name grammar (unit : Int) (width : Int) (trivia : [String])
+    (rules : [String]) : [TokenTree] =
+  let isTrivia =
+    S.join "" (V.map (\k -> " | ${grammar}.${k} -> True") trivia)
+  in
   [Code "use Lingua.Format as LinguaF
 
 -- `${name}`: how a ${grammar} tree is set out.

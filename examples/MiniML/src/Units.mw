@@ -29,7 +29,10 @@ make! {
 data Interface = Interface [(String, Type)]
 
 impl Reflect Interface {
-  fun toDatum i = match i with | Interface.Interface xs -> Datum.List (V.map (\x -> Datum.Tag (fst x) [toDatum (snd x)]) xs)
+  fun toDatum i =
+    match i with
+    | Interface.Interface xs ->
+        Datum.List (V.map (\x -> Datum.Tag (fst x) [toDatum (snd x)]) xs)
   fun fromDatum d =
     match d with
     | Datum.List ds ->
@@ -37,7 +40,8 @@ impl Reflect Interface {
           (\acc x -> match (acc, x) with
                      | (Ok (Interface.Interface xs), Datum.Tag n ts) ->
                          (match M.map fromDatum (V.get ts 0) with
-                          | Just (Ok t) -> Ok (Interface.Interface (V.pushBack xs (n, t)))
+                          | Just (Ok t) ->
+                              Ok (Interface.Interface (V.pushBack xs (n, t)))
                           | _ -> Err "an export's type")
                      | (Err e, _) -> Err e
                      | _ -> Err "an export")
@@ -46,14 +50,16 @@ impl Reflect Interface {
     | _ -> Err "not an interface"
 }
 
-fun exports (i : Interface) : [(String, Type)] = match i with | Interface.Interface xs -> xs
+fun exports (i : Interface) : [(String, Type)] =
+  match i with | Interface.Interface xs -> xs
 
 -- The compiler, given a unit. Inside it, it is the compiler's business how
 -- the work is done: here, as a batch -- the unit's files read once and the
 -- passes run straight through, one file after another, with nothing kept for
 -- the next build. Whether a unit is compiled at all is the build's to say,
 -- and it is the build that runs units at once.
-fun compileUnit (u : Given Interface) : Result String Interface ! { Thread, Mut, Fs | e } =
+fun compileUnit (u : Given Interface)
+    : Result String Interface ! { Thread, Mut, Fs | e } =
   match toResult (\() -> compiling u) with
   | Ok r -> r
   | Err why -> Err "${show why}\n"
@@ -62,32 +68,59 @@ fun compiling (u : Given Interface) =
   let sources = unitSources u in
   let files = V.range 1 (V.len sources + 1) in
   let db = batchSession () in
-  let a = setSessionImports db 0 (V.concatMap (\i -> exports (snd i)) (unitImports u)) in
-  let b = V.foldl (\acc i -> setSessionSource db i (snd (V.getOr ("", "") sources (i - 1)))) () files in
+  let a =
+    setSessionImports db 0 (V.concatMap (\i -> exports (snd i)) (unitImports u))
+  in
+  let b =
+    V.foldl
+      (\acc i -> setSessionSource db i (snd (V.getOr ("", "") sources (i - 1))))
+      ()
+      files
+  in
   let exported = sessionExported db files in
-  let named = V.map (\i -> Path.fileStem (fst (V.getOr ("", "") sources i))) (V.range 0 (V.len sources)) in
+  let named =
+    V.map
+      (\i -> Path.fileStem (fst (V.getOr ("", "") sources i)))
+      (V.range 0 (V.len sources))
+  in
   if V.all M.isSome exported then
-    (let interface = V.map (\i -> (V.getOr "" named i, M.unwrapOr Type.Int (V.getOr None exported i))) (V.range 0 (V.len named)) in
-      let e = writeString (Path.join (unitOut u) "types", S.join "" (V.map (\x -> "${fst x} : ${typeName (snd x)}\n") interface)) in
+    (let interface =
+      V.map
+        (\i ->
+          (V.getOr "" named i, M.unwrapOr Type.Int (V.getOr None exported i)))
+        (V.range 0 (V.len named))
+in
+      let e =
+        writeString
+          (
+            Path.join (unitOut u) "types",
+            S.join
+              ""
+              (V.map (\x -> "${fst x} : ${typeName (snd x)}\n") interface)
+          )
+      in
       Ok (Interface.Interface interface))
-  else
-    let linked = sessionLinkedEach db files in
+else
+  let linked = sessionLinkedEach db files in
     Err
       (S.join ""
         (V.map
           (\i -> match (V.get sources i, V.get linked i) with
-                 | (Just (path, text), Just (Err ds)) -> renderToOutput path text ds
+                 | (Just (path, text), Just (Err ds)) ->
+                     renderToOutput path text ds
                  | _ -> "")
           (V.range 0 (V.len sources))))
 
--- --- tests ---------------------------------------------------------------------------------
+-- --- tests -------------------------------------------------------------------
 
 use Std.Test (assertEq)
 use Std.Console (withOutput)
 use Std.Fs (createDirAll, removeDirAll)
 
 -- Build `root` and say, for each unit, how it went.
-fun built root = match withOutput (\() -> buildBuild root) with | (ok, said) -> (ok, V.filter (\l -> S.startsWith "   " l) (S.lines said))
+fun built root =
+  match withOutput (\() -> buildBuild root) with
+  | (ok, said) -> (ok, V.filter (\l -> S.startsWith "   " l) (S.lines said))
 
 fun write dir file text =
   let u = createDirAll dir in
@@ -129,7 +162,10 @@ fun write dir file text =
   let e = write app "main.ml" "bad" in
   match built app with
   | (ok, lines) ->
-      assertEq (ok, V.getOr "" lines 0, V.getOr "" lines (V.len lines - 1)) (False, "   Failed lib", "   Blocked app: lib did not build") "the failure, and what it stopped"
+      assertEq
+        (ok, V.getOr "" lines 0, V.getOr "" lines (V.len lines - 1))
+        (False, "   Failed lib", "   Blocked app: lib did not build")
+        "the failure, and what it stopped"
 
 -- The same build with no thread in it: `| parallel = false`.
 make! {
@@ -150,7 +186,11 @@ make! {
   let d = write (Path.join root "two") "id.ml" "fun x -> x" in
   let e = write (Path.join root "app") "Unit" "../one\n../two\n" in
   let f = write (Path.join root "app") "main.ml" "double (id 21)" in
-  let lines = \r -> match r with | (ok, said) -> (ok, V.filter (\l -> S.startsWith "   " l) (S.lines said)) in
+  let lines =
+    \r -> match r with
+          | (ok, said) ->
+              (ok, V.filter (\l -> S.startsWith "   " l) (S.lines said))
+  in
   let first = lines (withOutput (\() -> buildInTurn (Path.join root "app"))) in
   let second = lines (withOutput (\() -> buildInTurn (Path.join root "app"))) in
   assertEq
@@ -177,7 +217,24 @@ make! {
   let j = write (Path.join root "app") "main.ml" "one + two" in
   match built (Path.join root "app") with
   | (ok, lines) ->
-      let at = \l -> V.foldl (\found i -> if V.getOr "" lines i == l then i else found) (0 - 1) (V.range 0 (V.len lines)) in
+      let at =
+        \l ->
+          V.foldl
+            (\found i -> if V.getOr "" lines i == l then i else found)
+            (0 - 1)
+            (V.range 0 (V.len lines))
+      in
       let k = assertEq (ok, V.len lines) (True, 5) "all five compiled" in
-      let l = assertEq (at "   Compiled quick" < at "   Compiled near", at "   Compiled slow" < at "   Compiled far") (True, True) "each after its own" in
-      assertEq (V.getOr "" lines 4) "   Compiled app" "and the one that needs them all, last"
+      let l =
+        assertEq
+          (
+            at "   Compiled quick" < at "   Compiled near",
+            at "   Compiled slow" < at "   Compiled far"
+          )
+          (True, True)
+          "each after its own"
+      in
+      assertEq
+        (V.getOr "" lines 4)
+        "   Compiled app"
+        "and the one that needs them all, last"

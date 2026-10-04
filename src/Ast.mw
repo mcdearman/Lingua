@@ -16,7 +16,8 @@ use Lingua.Green (isTokenAt, kindAt, firstChild, nextSibling)
 -- ones it hands to `cast` or answers.
 
 -- The `n`th child node, counting only those that cast.
-@pub fun nthChild (cast : Syntax k -> Maybe a) (n : Int) (s : Syntax k) : Maybe a =
+@pub fun nthChild (cast : Syntax k -> Maybe a) (n : Int) (s : Syntax k)
+    : Maybe a =
   match s with
   | Syntax g i -> nthCast cast g i (firstChild g i) n
 
@@ -25,13 +26,15 @@ fun nthCast cast g (p : Int) (c : Int) (m : Int) =
   else if isTokenAt g c then nthCast cast g p (nextSibling g p c) m
   else
     match cast (Syntax g c) with
-    | Just x -> if m == 0 then Just x else nthCast cast g p (nextSibling g p c) (m - 1)
+    | Just x ->
+        if m == 0 then Just x else nthCast cast g p (nextSibling g p c) (m - 1)
     | None -> nthCast cast g p (nextSibling g p c) m
 
 -- The `n`th child node of any kind, if it casts: what tells apart two
 -- children whose types overlap -- `func:Expr arg:Atom`, where an `Atom` is an
 -- `Expr` too -- by where they are rather than by what they are.
-@pub fun nthNodeAs (cast : Syntax k -> Maybe a) (n : Int) (s : Syntax k) : Maybe a =
+@pub fun nthNodeAs (cast : Syntax k -> Maybe a) (n : Int) (s : Syntax k)
+    : Maybe a =
   match s with
   | Syntax g i -> nthNode cast g i (firstChild g i) n
 
@@ -55,20 +58,26 @@ fun castAll cast g (p : Int) (c : Int) acc =
     | None -> castAll cast g p (nextSibling g p c) acc
 
 -- The first child token of one of the kinds `ks`.
-@pub fun tokenOf (ks : [k]) (s : Syntax k) : Maybe (Syntax k) = childWhere (\g c -> isTokenAt g c and V.elem (kindAt g c) ks) s
+@pub fun tokenOf (ks : [k]) (s : Syntax k) : Maybe (Syntax k) =
+  childWhere (\g c -> isTokenAt g c and V.elem (kindAt g c) ks) s
 
 -- Every child token of one of the kinds `ks`.
-@pub fun tokensOf (ks : [k]) (s : Syntax k) : [Syntax k] = childrenWhere (\g c -> isTokenAt g c and V.elem (kindAt g c) ks) s
+@pub fun tokensOf (ks : [k]) (s : Syntax k) : [Syntax k] =
+  childrenWhere (\g c -> isTokenAt g c and V.elem (kindAt g c) ks) s
 
 -- The child token of one of the kinds `ks` after the first `n` of them: the
 -- one a slot is, where `n` slots of the same kinds come before it.
-@pub fun nthTokenOf (ks : [k]) (n : Int) (s : Syntax k) : Maybe (Syntax k) = V.get (tokensOf ks s) n
+@pub fun nthTokenOf (ks : [k]) (n : Int) (s : Syntax k) : Maybe (Syntax k) =
+  V.get (tokensOf ks s) n
 
 -- Every child token of one of the kinds `ks` but the first `n`.
-@pub fun tokensOfFrom (ks : [k]) (n : Int) (s : Syntax k) : [Syntax k] = V.drop (tokensOf ks s) n
+@pub fun tokensOfFrom (ks : [k]) (n : Int) (s : Syntax k) : [Syntax k] =
+  V.drop (tokensOf ks s) n
 
 -- Every child `cast` takes but the first `n`.
-@pub fun childrenOfFrom (cast : Syntax k -> Maybe a) (n : Int) (s : Syntax k) : [a] = V.drop (childrenOf cast s) n
+@pub fun childrenOfFrom (cast : Syntax k -> Maybe a) (n : Int) (s : Syntax k) :
+    [a] =
+  V.drop (childrenOf cast s) n
 
 -- --- tests -------------------------------------------------------------------
 
@@ -77,7 +86,15 @@ use Lingua.Green (node, token)
 use Lingua.Red (root, text)
 use Std.Maybe as M
 
-def sample = root (node "Sum" [node "Num" [token "digit" "1"], token "+" "+", node "Num" [token "digit" "2"]])
+def sample =
+  root
+    (node
+      "Sum"
+      [
+        node "Num" [token "digit" "1"],
+        token "+" "+",
+        node "Num" [token "digit" "2"]
+      ])
 
 fun num s = if kindOf s == "Num" then Just (text s) else None
 
@@ -85,11 +102,26 @@ fun num s = if kindOf s == "Num" then Just (text s) else None
   let a = assertEq (nthChild num 1 sample) (Just "2") "the second number" in
   assertEq (childrenOf num sample) ["1", "2"] "both, in order"
 
-@test fun aTokenIsFoundByKind () = assertEq (M.map text (tokenOf ["+", "-"] sample)) (Just "+") "the operator"
+@test fun aTokenIsFoundByKind () =
+  assertEq (M.map text (tokenOf ["+", "-"] sample)) (Just "+") "the operator"
 
-def pair = root (node "Pair" [token "name" "a", token "=" "=", token "name" "b", token "name" "c"])
+def pair =
+  root
+    (node
+      "Pair"
+      [token "name" "a", token "=" "=", token "name" "b", token "name" "c"])
 
 @test fun aSlotAfterOthersOfItsKindSkipsThem () =
-  let a = assertEq (M.map text (nthTokenOf ["name"] 1 pair)) (Just "b") "the second name" in
-  let b = assertEq (V.map text (tokensOfFrom ["name"] 1 pair)) ["b", "c"] "the names after the first" in
+  let a =
+    assertEq
+      (M.map text (nthTokenOf ["name"] 1 pair))
+      (Just "b")
+      "the second name"
+  in
+  let b =
+    assertEq
+      (V.map text (tokensOfFrom ["name"] 1 pair))
+      ["b", "c"]
+      "the names after the first"
+  in
   assertEq (childrenOfFrom num 1 sample) ["2"] "the numbers after the first"

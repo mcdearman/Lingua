@@ -59,6 +59,11 @@ use Std.Test (assertEq)
 
 @test fun anIdIsItsPlaceInTheTable () =
   assertEq
-    (tabled (\() -> (let a = enter "a" in let b = enter "b" in let u = amend a (\s -> s ++ "!") in (a, b, entry b, entry 7))))
+    (tabled
+      (\() ->
+        (let a = enter "a" in
+          let b = enter "b" in
+          let u = amend a (\s -> s ++ "!") in
+          (a, b, entry b, entry 7))))
     ((0, 1, Just "b", None), ["a!", "b"])
     "entered in order, and one of them amended"

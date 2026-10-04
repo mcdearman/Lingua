@@ -62,13 +62,21 @@ use Std.Macro (TokenTree, Delim, Loc, isPunct, isWord)
 use Std.Macro.TokenTree.*
 use Std.Macro.Loc.*
 use Std.Macro.Delim.*
-use Std.Macro.Parse (Tokens, parseTokens, ident, keyword, punct, group, treesUntil)
+use Std.Macro.Parse (
+  Tokens,
+  parseTokens,
+  ident,
+  keyword,
+  punct,
+  group,
+  treesUntil
+)
 use Std.String.Parse as P
 use Std.String.Parse (Parser)
 use Std.String.Parse (keep, skip)
 use Lingua.Pipe (named)
 
--- --- reading ------------------------------------------------------------------------
+-- --- reading -----------------------------------------------------------------
 
 -- A declaration: whether it is an input, whether it is kept between runs, its
 -- name and where that was written, its parameter, the key's type, the value's
@@ -77,7 +85,6 @@ data Decl = Decl Bool Bool String Loc String [TokenTree] [TokenTree] [TokenTree]
 
 use Decl.*
 use Std.Macro (Expand)
-
 
 def kind : Parser Tokens Bool =
   P.alt (P.mapTo True (keyword "input")) (P.mapTo False (keyword "query"))
@@ -125,7 +132,7 @@ def databaseCall : Parser Tokens (Bool, (String, Loc), [Decl]) =
     |> keep named
     |> keep (P.some decl)
 
--- --- database! ----------------------------------------------------------------------
+-- --- database! ---------------------------------------------------------------
 
 @macro
 @pub fun database (ts : [TokenTree]) : [TokenTree] ! { Expand | e } =
@@ -144,8 +151,13 @@ fun problems (decls : [Decl]) : Maybe [TokenTree] =
     V.concatMap
       (\i -> match V.get decls i with
              | Just (Decl input kept n at _ _ _ _) ->
-                 if V.any (\m -> m == n) (V.take names i) then [Fail "`${n}` is declared twice" at]
-                 else if input and kept then [Fail "`${n}` is an input: it is set every run, so there is nothing of it to keep" at]
+                 if V.any (\m -> m == n) (V.take names i)
+                 then [Fail "`${n}` is declared twice" at]
+                 else if input and kept
+                 then
+                   [Fail
+                     "`${n}` is an input: it is set every run, so there is nothing of it to keep"
+                     at]
                  else []
              | None -> [])
       (V.range 0 (V.len decls)) in
@@ -183,13 +195,20 @@ fun cases (f : Decl -> (String, [TokenTree])) (decls : [Decl]) : [TokenTree] =
   V.concatMap
     (\i ->
       match V.get decls i with
-      | Just d -> (match f d with | (c, ty) -> [Code "${if i > 0 then " | " else ""}${c} ", Group Paren ty Nowhere])
+      | Just d ->
+          (match f d with
+           | (c, ty) ->
+               [
+                 Code "${if i > 0 then " | " else ""}${c} ",
+                 Group Paren ty Nowhere
+               ])
       | None -> [])
     (V.range 0 (V.len decls))
 
 -- What a query's answer is, out of the value type: its own case, since a
 -- key's answer is always its own query's.
-fun unwrap value several n = " with | ${value}.${upperFirst n}Value x -> x${if several then " | _ -> LinguaQ.unreachable ()" else ""}"
+fun unwrap value several n =
+  " with | ${value}.${upperFirst n}Value x -> x${if several then " | _ -> LinguaQ.unreachable ()" else ""}"
 
 -- `\v -> …`: the same, as a function, for a list of answers.
 fun unwrapping value several n = "(\\v -> match v${unwrap value several n})"
@@ -200,12 +219,18 @@ fun accessor pub key value several d =
   match d with
   | Decl _ _ n _ _ _ _ _ ->
       let q = upperFirst n in
-      [Code "\n-- `${n}`, read from within a query.\n${pub}fun query${q} key = match LinguaQ.ask (${key}.${q} key)${unwrap value several n}\n\n-- `${n}` of each of `keys`, read at once.\n${pub}fun query${q}Each keys = LinguaV.map ${unwrapping value several n} (LinguaQ.askAll (LinguaV.map ${key}.${q} keys))\n"]
+      [Code
+        "\n-- `${n}`, read from within a query.\n${pub}fun query${q} key = match LinguaQ.ask (${key}.${q} key)${unwrap value several n}\n\n-- `${n}` of each of `keys`, read at once.\n${pub}fun query${q}Each keys = LinguaV.map ${unwrapping value several n} (LinguaQ.askAll (LinguaV.map ${key}.${q} keys))\n"]
 
 fun computeArm key value d =
   match d with
-  | Decl True _ n _ p _ _ _ -> [Code "\n  | ${key}.${upperFirst n} ${p} -> LinguaQ.notComputed ()"]
-  | Decl False _ n _ p _ _ body -> [Code "\n  | ${key}.${upperFirst n} ${p} -> LinguaQ.computedAs ${value}.${upperFirst n}Value", Group Paren body Nowhere]
+  | Decl True _ n _ p _ _ _ ->
+      [Code "\n  | ${key}.${upperFirst n} ${p} -> LinguaQ.notComputed ()"]
+  | Decl False _ n _ p _ _ body ->
+      [
+        Code "\n  | ${key}.${upperFirst n} ${p} -> LinguaQ.computedAs ${value}.${upperFirst n}Value",
+        Group Paren body Nowhere
+      ]
 
 -- Setting an input and asking a query, from outside.
 fun outside pub db key value several d =
@@ -213,8 +238,13 @@ fun outside pub db key value several d =
   | Decl input _ n _ _ _ _ _ ->
       let q = upperFirst n in
       let asker = "${lowerFirst db}${q}" in
-      let ask = "\n-- `${n}`, asked of a `${db}` database.\n${pub}fun ${asker} db key = match LinguaQ.get db (${key}.${q} key)${unwrap value several n}\n\n-- `${n}` of each of `keys`, asked at once.\n${pub}fun ${asker}Each db keys = LinguaV.map ${unwrapping value several n} (LinguaQ.getAll db (LinguaV.map ${key}.${q} keys))\n" in
-      if input then [Code "\n-- Set input `${n}` for `key`.\n${pub}fun set${db}${q} db key x = LinguaQ.set db (${key}.${q} key) (${value}.${q}Value x)\n${ask}"]
+      let ask =
+        "\n-- `${n}`, asked of a `${db}` database.\n${pub}fun ${asker} db key = match LinguaQ.get db (${key}.${q} key)${unwrap value several n}\n\n-- `${n}` of each of `keys`, asked at once.\n${pub}fun ${asker}Each db keys = LinguaV.map ${unwrapping value several n} (LinguaQ.getAll db (LinguaV.map ${key}.${q} keys))\n"
+      in
+      if input
+      then
+        [Code
+          "\n-- Set input `${n}` for `key`.\n${pub}fun set${db}${q} db key x = LinguaQ.set db (${key}.${q} key) (${value}.${q}Value x)\n${ask}"]
       else [Code ask]
 
 -- How the `persisted` queries' keys and answers, and the inputs' keys, are
@@ -223,10 +253,38 @@ fun codec pub db key value decls =
   let lower = lowerFirst db in
   let written = V.filter (\d -> isInput d or isKept d) decls in
   let kept = V.filter isKept decls in
-  let encodeKey = S.join "" (V.map (\d -> "\n    | ${key}.${upperFirst (declName d)} x -> LinguaQ.tagged \"${declName d}\" x") written) in
-  let encodeValue = S.join "" (V.map (\d -> "\n    | ${value}.${upperFirst (declName d)}Value x -> LinguaQ.tagged \"${declName d}\" x") kept) in
-  let decodeKey = S.join "" (V.map (\d -> "if q == \"${declName d}\" then LinguaQ.readAs ${key}.${upperFirst (declName d)} x else ") written) in
-  let decodeValue = S.join "" (V.map (\d -> "\n    | ${key}.${upperFirst (declName d)} _ -> (if q == \"${declName d}\" then LinguaQ.readAs ${value}.${upperFirst (declName d)}Value x else LinguaQ.notComputed ())") kept) in
+  let encodeKey =
+    S.join
+      ""
+      (V.map
+        (\d ->
+          "\n    | ${key}.${upperFirst (declName d)} x -> LinguaQ.tagged \"${declName d}\" x")
+        written)
+  in
+  let encodeValue =
+    S.join
+      ""
+      (V.map
+        (\d ->
+          "\n    | ${value}.${upperFirst (declName d)}Value x -> LinguaQ.tagged \"${declName d}\" x")
+        kept)
+  in
+  let decodeKey =
+    S.join
+      ""
+      (V.map
+        (\d ->
+          "if q == \"${declName d}\" then LinguaQ.readAs ${key}.${upperFirst (declName d)} x else ")
+        written)
+  in
+  let decodeValue =
+    S.join
+      ""
+      (V.map
+        (\d ->
+          "\n    | ${key}.${upperFirst (declName d)} _ -> (if q == \"${declName d}\" then LinguaQ.readAs ${value}.${upperFirst (declName d)}Value x else LinguaQ.notComputed ())")
+        kept)
+  in
   let every = V.len written == V.len decls in
   let everyValue = V.len kept == V.len decls in
   "
@@ -254,12 +312,17 @@ ${pub}fun save${db} db path = LinguaQ.saveTo lingua${db}_codec db path
 ${pub}fun load${db} db path = LinguaQ.loadFrom lingua${db}_codec db path
 "
 
-fun upperFirst (s : String) : String = caseFirst "ABCDEFGHIJKLMNOPQRSTUVWXYZ" 97 122 s
+fun upperFirst (s : String) : String =
+  caseFirst "ABCDEFGHIJKLMNOPQRSTUVWXYZ" 97 122 s
 
-fun lowerFirst (s : String) : String = caseFirst "abcdefghijklmnopqrstuvwxyz" 65 90 s
+fun lowerFirst (s : String) : String =
+  caseFirst "abcdefghijklmnopqrstuvwxyz" 65 90 s
 
 fun caseFirst (letters : String) (from : Int) (to : Int) (s : String) : String =
   if stringByteLength s == 0 then s
   else
     let b = toInt (stringByteAt s 0) in
-    (if b >= from and b <= to then stringSlice letters (b - from) (b - from + 1) else stringSlice s 0 1) ++ stringSlice s 1 (stringByteLength s)
+    (if b >= from and b <= to
+      then stringSlice letters (b - from) (b - from + 1)
+      else stringSlice s 0 1)
+      ++ stringSlice s 1 (stringByteLength s)

@@ -66,27 +66,35 @@ use Keeping.*
 
 @pub fun langRoot (l : Lang) : String = match l with | Lang _ r _ _ _ _ _ -> r
 
-@pub fun langSorts (l : Lang) : [Sort] = match l with | Lang _ _ ss _ _ _ _ -> ss
+@pub fun langSorts (l : Lang) : [Sort] =
+  match l with | Lang _ _ ss _ _ _ _ -> ss
 
-@pub fun langGrammar (l : Lang) : String = match l with | Lang _ _ _ g _ _ _ -> g
+@pub fun langGrammar (l : Lang) : String =
+  match l with | Lang _ _ _ g _ _ _ -> g
 
-@pub fun langParams (l : Lang) : [String] = match l with | Lang _ _ _ _ ps _ _ -> ps
+@pub fun langParams (l : Lang) : [String] =
+  match l with | Lang _ _ _ _ ps _ _ -> ps
 
-@pub fun langKeeping (l : Lang) : Keeping = match l with | Lang _ _ _ _ _ k _ -> k
+@pub fun langKeeping (l : Lang) : Keeping =
+  match l with | Lang _ _ _ _ _ k _ -> k
 
 -- What a language asked for besides its tables: `In`, its readers again for
 -- a program being written; `set`, a field written again.
 @pub fun langWith (l : Lang) : [String] = match l with | Lang _ _ _ _ _ _ w -> w
 
 -- Whether a language's programs are trees.
-@pub fun isTreeLang (l : Lang) : Bool = match langKeeping l with | AsTrees _ _ _ -> True | AsTables -> False
+@pub fun isTreeLang (l : Lang) : Bool =
+  match langKeeping l with | AsTrees _ _ _ -> True | AsTables -> False
 
 -- A tree language's kinds of token, its trivia's, and its token fields'.
-@pub fun treeTokens (l : Lang) : [String] = match langKeeping l with | AsTrees ts _ _ -> ts | AsTables -> []
+@pub fun treeTokens (l : Lang) : [String] =
+  match langKeeping l with | AsTrees ts _ _ -> ts | AsTables -> []
 
-@pub fun treeTrivia (l : Lang) : [String] = match langKeeping l with | AsTrees _ tv _ -> tv | AsTables -> []
+@pub fun treeTrivia (l : Lang) : [String] =
+  match langKeeping l with | AsTrees _ tv _ -> tv | AsTables -> []
 
-@pub fun tokenFields (l : Lang) : [TokenField] = match langKeeping l with | AsTrees _ _ fs -> fs | AsTables -> []
+@pub fun tokenFields (l : Lang) : [TokenField] =
+  match langKeeping l with | AsTrees _ _ fs -> fs | AsTables -> []
 
 @pub fun sortName (s : Sort) : String = match s with | Sort n _ -> n
 
@@ -108,9 +116,10 @@ use Keeping.*
 @pub fun sortOfProd (l : Lang) (p : String) : Maybe Sort =
   V.find (\s -> V.any (\q -> prodName q == p) (sortProds s)) (langSorts l)
 
-@pub fun findSort (l : Lang) (n : String) : Maybe Sort = V.find (\s -> sortName s == n) (langSorts l)
+@pub fun findSort (l : Lang) (n : String) : Maybe Sort =
+  V.find (\s -> sortName s == n) (langSorts l)
 
--- --- what every node carries ------------------------------------------------------
+-- --- what every node carries -------------------------------------------------
 
 -- Where a node came from: the bytes of the source it was read from.
 @derive(Debug, Display, PartialEq)
@@ -129,7 +138,7 @@ use Keeping.*
 
 @pub fun metaEnd (m : Meta) : Int = match m with | Meta _ b -> b
 
--- --- what a language's tables stand on ----------------------------------------------
+-- --- what a language's tables stand on ---------------------------------------
 --
 -- Every language keeps its programs the same way, so what reads and writes
 -- them is written once, here, and a language's own functions -- `coreLamBody`,
@@ -145,58 +154,85 @@ use Keeping.*
 @pub data LangTables = LangTables #[Int] #[Int] #[Int] #[Int] #[Int]
 
 -- The same, being written.
-@pub data LangWriting s = LangWriting (Buf s Int) (Buf s Int) (Buf s Int) (Buf s Int) (Buf s Int)
+@pub data LangWriting s =
+  LangWriting (Buf s Int) (Buf s Int) (Buf s Int) (Buf s Int) (Buf s Int)
 
 -- Empty rows, to write a program into.
-@pub fun writing () : LangWriting s ! { St s | e } = LangWriting (B.buffer ()) (B.buffer ()) (B.buffer ()) (B.buffer ()) (B.buffer ())
+@pub fun writing () : LangWriting s ! { St s | e } =
+  LangWriting
+    (B.buffer ())
+    (B.buffer ())
+    (B.buffer ())
+    (B.buffer ())
+    (B.buffer ())
 
 -- What has been written, as a program's.
 @pub fun frozen (w : LangWriting s) : LangTables ! { St s | e } =
   match w with
-  | LangWriting ks ss es fs xs -> LangTables (B.freeze ks) (B.freeze ss) (B.freeze es) (B.freeze fs) (B.freeze xs)
+  | LangWriting ks ss es fs xs ->
+      LangTables
+        (B.freeze ks)
+        (B.freeze ss)
+        (B.freeze es)
+        (B.freeze fs)
+        (B.freeze xs)
 
 -- Reading a program.
 
-@pub fun tag (t : LangTables) (e : Int) : Int = match t with | LangTables ks _ _ _ _ -> arrayGet ks e
+@pub fun tag (t : LangTables) (e : Int) : Int =
+  match t with | LangTables ks _ _ _ _ -> arrayGet ks e
 
-@pub fun startOf (t : LangTables) (e : Int) : Int = match t with | LangTables _ ss _ _ _ -> arrayGet ss e
+@pub fun startOf (t : LangTables) (e : Int) : Int =
+  match t with | LangTables _ ss _ _ _ -> arrayGet ss e
 
-@pub fun endOf (t : LangTables) (e : Int) : Int = match t with | LangTables _ _ es _ _ -> arrayGet es e
+@pub fun endOf (t : LangTables) (e : Int) : Int =
+  match t with | LangTables _ _ es _ _ -> arrayGet es e
 
-@pub fun metaAt (t : LangTables) (e : Int) : Meta = match t with | LangTables _ ss es _ _ -> Meta (arrayGet ss e) (arrayGet es e)
+@pub fun metaAt (t : LangTables) (e : Int) : Meta =
+  match t with | LangTables _ ss es _ _ -> Meta (arrayGet ss e) (arrayGet es e)
 
 -- Field `i` of node `e`: its slot.
-@pub fun slot (t : LangTables) (e : Int) (i : Int) : Int = match t with | LangTables _ _ _ fs xs -> arrayGet xs (arrayGet fs e + i)
+@pub fun slot (t : LangTables) (e : Int) (i : Int) : Int =
+  match t with | LangTables _ _ _ fs xs -> arrayGet xs (arrayGet fs e + i)
 
 -- The slots of the list that starts at slot `at`.
 @pub fun listFrom (t : LangTables) (at : Int) : [Int] =
   match t with
-  | LangTables _ _ _ _ xs -> V.map (\i -> arrayGet xs (at + 1 + i)) (V.range 0 (arrayGet xs at))
+  | LangTables _ _ _ _ xs ->
+      V.map (\i -> arrayGet xs (at + 1 + i)) (V.range 0 (arrayGet xs at))
 
 -- The slot of the `Maybe` that starts at slot `at`, if it has one.
 @pub fun maybeFrom (t : LangTables) (at : Int) : Maybe Int =
   match t with
-  | LangTables _ _ _ _ xs -> if arrayGet xs at == 0 then None else Just (arrayGet xs (at + 1))
+  | LangTables _ _ _ _ xs ->
+      if arrayGet xs at == 0 then None else Just (arrayGet xs (at + 1))
 
 -- Reading a program being written.
 
-@pub fun tagIn (w : LangWriting s) (e : Int) : Int ! { St s | e } = match w with | LangWriting ks _ _ _ _ -> B.at ks e
+@pub fun tagIn (w : LangWriting s) (e : Int) : Int ! { St s | e } =
+  match w with | LangWriting ks _ _ _ _ -> B.at ks e
 
-@pub fun startIn (w : LangWriting s) (e : Int) : Int ! { St s | e } = match w with | LangWriting _ ss _ _ _ -> B.at ss e
+@pub fun startIn (w : LangWriting s) (e : Int) : Int ! { St s | e } =
+  match w with | LangWriting _ ss _ _ _ -> B.at ss e
 
-@pub fun endIn (w : LangWriting s) (e : Int) : Int ! { St s | e } = match w with | LangWriting _ _ es _ _ -> B.at es e
+@pub fun endIn (w : LangWriting s) (e : Int) : Int ! { St s | e } =
+  match w with | LangWriting _ _ es _ _ -> B.at es e
 
-@pub fun metaIn (w : LangWriting s) (e : Int) : Meta ! { St s | e } = match w with | LangWriting _ ss es _ _ -> Meta (B.at ss e) (B.at es e)
+@pub fun metaIn (w : LangWriting s) (e : Int) : Meta ! { St s | e } =
+  match w with | LangWriting _ ss es _ _ -> Meta (B.at ss e) (B.at es e)
 
-@pub fun slotIn (w : LangWriting s) (e : Int) (i : Int) : Int ! { St s | e } = match w with | LangWriting _ _ _ fs xs -> B.at xs (B.at fs e + i)
+@pub fun slotIn (w : LangWriting s) (e : Int) (i : Int) : Int ! { St s | e } =
+  match w with | LangWriting _ _ _ fs xs -> B.at xs (B.at fs e + i)
 
 @pub fun listFromIn (w : LangWriting s) (at : Int) : [Int] ! { St s | e } =
   match w with
-  | LangWriting _ _ _ _ xs -> V.map (\i -> B.at xs (at + 1 + i)) (V.range 0 (B.at xs at))
+  | LangWriting _ _ _ _ xs ->
+      V.map (\i -> B.at xs (at + 1 + i)) (V.range 0 (B.at xs at))
 
 @pub fun maybeFromIn (w : LangWriting s) (at : Int) : Maybe Int ! { St s | e } =
   match w with
-  | LangWriting _ _ _ _ xs -> if B.at xs at == 0 then None else Just (B.at xs (at + 1))
+  | LangWriting _ _ _ _ xs ->
+      if B.at xs at == 0 then None else Just (B.at xs (at + 1))
 
 -- Writing one.
 
@@ -210,14 +246,17 @@ use Keeping.*
       at
 
 -- Where the next node's fields will start.
-@pub fun mark (w : LangWriting s) : Int ! { St s | e } = match w with | LangWriting _ _ _ _ xs -> B.len xs
+@pub fun mark (w : LangWriting s) : Int ! { St s | e } =
+  match w with | LangWriting _ _ _ _ xs -> B.len xs
 
 -- The next field of the node being written.
-@pub fun field (w : LangWriting s) (v : Int) : () ! { St s | e } = match w with | LangWriting _ _ _ _ xs -> (let _ = B.push xs v in ())
+@pub fun field (w : LangWriting s) (v : Int) : () ! { St s | e } =
+  match w with | LangWriting _ _ _ _ xs -> (let _ = B.push xs v in ())
 
 -- A node of production `k`, from byte `from` to `to`, whose fields start at
 -- `first`: its row.
-@pub fun node (w : LangWriting s) (k : Int) (from : Int) (to : Int) (first : Int) : Int ! { St s | e } =
+@pub fun node (w : LangWriting s) (k : Int) (from : Int) (to : Int)
+    (first : Int) : Int ! { St s | e } =
   match w with
   | LangWriting ks ss es fs _ ->
       let _ = B.push ss from in
@@ -227,34 +266,57 @@ use Keeping.*
 
 -- A node and its fields at once, for the productions that have few: one call
 -- where there would be one a field.
-@pub fun node0 (w : LangWriting s) (k : Int) (from : Int) (to : Int) : Int ! { St s | e } = node w k from to (mark w)
+@pub fun node0 (w : LangWriting s) (k : Int) (from : Int) (to : Int)
+    : Int ! { St s | e } =
+  node w k from to (mark w)
 
-@pub fun node1 (w : LangWriting s) (k : Int) (from : Int) (to : Int) (a : Int) : Int ! { St s | e } =
+@pub fun node1 (w : LangWriting s) (k : Int) (from : Int) (to : Int) (a : Int)
+    : Int ! { St s | e } =
   match w with
-  | LangWriting _ _ _ _ xs -> (let first = B.push xs a in node w k from to first)
+  | LangWriting _ _ _ _ xs ->
+      (let first = B.push xs a in node w k from to first)
 
-@pub fun node2 (w : LangWriting s) (k : Int) (from : Int) (to : Int) (a : Int) (b : Int) : Int ! { St s | e } =
+@pub fun node2 (w : LangWriting s) (k : Int) (from : Int) (to : Int) (a : Int)
+    (b : Int) : Int ! { St s | e } =
   match w with
-  | LangWriting _ _ _ _ xs -> (let first = B.push xs a in let _ = B.push xs b in node w k from to first)
+  | LangWriting _ _ _ _ xs ->
+      (let first = B.push xs a in let _ = B.push xs b in node w k from to first)
 
-@pub fun node3 (w : LangWriting s) (k : Int) (from : Int) (to : Int) (a : Int) (b : Int) (c : Int) : Int ! { St s | e } =
+@pub fun node3 (w : LangWriting s) (k : Int) (from : Int) (to : Int) (a : Int)
+    (b : Int) (c : Int) : Int ! { St s | e } =
   match w with
-  | LangWriting _ _ _ _ xs -> (let first = B.push xs a in let _ = B.push xs b in let _ = B.push xs c in node w k from to first)
+  | LangWriting _ _ _ _ xs ->
+      (let first = B.push xs a in
+        let _ = B.push xs b in
+        let _ = B.push xs c in
+        node w k from to first)
 
-@pub fun node4 (w : LangWriting s) (k : Int) (from : Int) (to : Int) (a : Int) (b : Int) (c : Int) (d : Int) : Int ! { St s | e } =
+@pub fun node4 (w : LangWriting s) (k : Int) (from : Int) (to : Int) (a : Int)
+    (b : Int) (c : Int) (d : Int) : Int ! { St s | e } =
   match w with
-  | LangWriting _ _ _ _ xs -> (let first = B.push xs a in let _ = B.push xs b in let _ = B.push xs c in let _ = B.push xs d in node w k from to first)
+  | LangWriting _ _ _ _ xs ->
+      (let first = B.push xs a in
+        let _ = B.push xs b in
+        let _ = B.push xs c in
+        let _ = B.push xs d in
+        node w k from to first)
 
 -- Field `i` of node `e`, written again.
-@pub fun setSlot (w : LangWriting s) (e : Int) (i : Int) (v : Int) : () ! { St s | e } =
+@pub fun setSlot (w : LangWriting s) (e : Int) (i : Int) (v : Int) :
+    () ! { St s | e } =
   match w with
   | LangWriting _ _ _ fs xs -> B.put xs (B.at fs e + i) v
 
--- --- what a conversion from the typed AST stands on -------------------------------
+-- --- what a conversion from the typed AST stands on --------------------------
 
 -- Every element converted, or `None` if any could not be.
 @pub fun allOf (xs : [Maybe a]) : Maybe [a] =
-  V.foldl (\acc x -> match (acc, x) with | (Just ys, Just y) -> Just (V.pushBack ys y) | _ -> None) (Just []) xs
+  V.foldl
+    (\acc x -> match (acc, x) with
+               | (Just ys, Just y) -> Just (V.pushBack ys y)
+               | _ -> None)
+    (Just [])
+    xs
 
 -- An optional child converted: `Just None` when it is not there, `None` when
 -- it is and could not be.
@@ -268,7 +330,19 @@ use Keeping.*
 use Std.Test (assertEq)
 
 @test fun aLanguageSurvivesItsTripThroughADatum () =
-  let l = Lang "Core" "File" [Sort "Expr" [Prod "Lit" [Field "value" (TPrim "String") "" False]]] "Core" ["s"] (AsTrees ["TokenInt"] ["TokenSpace"] [TokenField.TokenField "Lit" "value" ["TokenInt"]]) ["In"] in
+  let l =
+    Lang
+      "Core"
+      "File"
+      [Sort "Expr" [Prod "Lit" [Field "value" (TPrim "String") "" False]]]
+      "Core"
+      ["s"]
+      (AsTrees
+        ["TokenInt"]
+        ["TokenSpace"]
+        [TokenField.TokenField "Lit" "value" ["TokenInt"]])
+      ["In"]
+  in
   assertEq (fromDatum (toDatum l)) (Ok l) "the same language back"
 
 @test fun allOfIsNoneIfAnyIs () =

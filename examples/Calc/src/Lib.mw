@@ -104,36 +104,68 @@ fun lines (s : String) : [String] = S.split "\n" s
   match parseCalc "f(1)(2);" with
   | (g, errs) ->
       let a = assertEq errs [] "no errors" in
-      assertEq (V.len (V.filter (\l -> l == "    Call") (lines (dump display g)))) 1 "one call at the top, holding the other"
+      assertEq
+        (V.len (V.filter (\l -> l == "    Call") (lines (dump display g))))
+        1
+        "one call at the top, holding the other"
 
 @test fun aMissingPieceIsSaidWhereItWouldBe () =
   match parseCalc "let x = ;\nlet y = 2;" with
   | (g, errs) ->
       let a = assertEq (text g) "let x = ;\nlet y = 2;" "still every byte" in
-      assertEq errs [(8, "expected Expr")] "at the `;`, and the next statement still parses"
+      assertEq
+        errs
+        [(8, "expected Expr")]
+        "at the `;`, and the next statement still parses"
 
 -- `x + 1;` as a macro might write it: the `x` and the `1` from its call, the
 -- rest from its template, standing where the call is.
 def given : [(Token, Int, Int, String)] =
-  [(Token.Ident "x", 3, 4, "x"), (Token.Plus, 0, 20, "+"), (Token.Number "1", 9, 10, "1"), (Token.Semi, 0, 20, ";")]
+  [
+    (Token.Ident "x", 3, 4, "x"),
+    (Token.Plus, 0, 20, "+"),
+    (Token.Number "1", 9, 10, "1"),
+    (Token.Semi, 0, 20, ";")
+  ]
 
 @test fun givenTokensAreParsedWhereTheyStand () =
   match parseCalcTokens given with
   | (g, errs) ->
       let a = assertEq errs [] "no errors" in
       let b = assertEq (text g) "x + 1 ;" "their texts, a space apart" in
-      let bin = V.getOr (R.root g) (V.filter (\s -> R.kindOf s == Calc.NodeBin) (R.nodes (V.getOr (R.root g) (R.nodes (R.root g)) 0))) 0 in
-      assertEq (R.range bin, V.map R.range (R.tokens bin)) ((3, 10), [(1, 2), (0, 20), (3, 4)]) "the sum from the `x` to the `1`; its `+` where the call is, the spaces where they are"
+      let bin =
+        V.getOr
+          (R.root g)
+          (V.filter
+            (\s -> R.kindOf s == Calc.NodeBin)
+            (R.nodes (V.getOr (R.root g) (R.nodes (R.root g)) 0)))
+          0
+      in
+      assertEq
+        (R.range bin, V.map R.range (R.tokens bin))
+        ((3, 10), [(1, 2), (0, 20), (3, 4)])
+        "the sum from the `x` to the `1`; its `+` where the call is, the spaces where they are"
 
 @test fun anErrorInGivenTokensIsWhereTheyStand () =
-  match parseCalcTokens [(Token.Let, 0, 20, "let"), (Token.Equals, 0, 20, "="), (Token.Semi, 30, 31, ";")] with
-  | (g, errs) -> assertEq errs [(0, "expected `ident`"), (30, "expected Expr")] "at the `=`, which stands where the call is, and at the `;`"
+  match parseCalcTokens [
+    (Token.Let, 0, 20, "let"),
+    (Token.Equals, 0, 20, "="),
+    (Token.Semi, 30, 31, ";")
+  ] with
+  | (g, errs) ->
+      assertEq
+        errs
+        [(0, "expected `ident`"), (30, "expected Expr")]
+        "at the `=`, which stands where the call is, and at the `;`"
 
 @test fun aStrayTokenIsAnErrorAndTheRestParses () =
   match parseCalc ") 1;" with
   | (g, errs) ->
       let a = assertEq (V.len errs) 1 "one error" in
-      assertEq (V.any (\l -> l == "  ExprStmt") (lines (dump display g))) True "the `1;` after it"
+      assertEq
+        (V.any (\l -> l == "  ExprStmt") (lines (dump display g)))
+        True
+        "the `1;` after it"
 
 -- --- the typed AST -----------------------------------------------------------
 
@@ -151,24 +183,41 @@ fun step env s =
   match s with
   | CalcStmt.Let l ->
       (match (calcLetName l, calcLetValue l) with
-       | (Just n, Just v) -> V.pushBack env (R.text (syntaxCalcName n), value env v)
+       | (Just n, Just v) ->
+           V.pushBack env (R.text (syntaxCalcName n), value env v)
        | _ -> env)
   | CalcStmt.ExprStmt _ -> env
 
 fun value env (e : CalcExpr) : Int =
   match e with
-  | CalcExpr.Literal l -> (match calcLiteralNumberToken l with | Just t -> (match S.toInt (R.text t) with | Just n -> n | None -> 0) | None -> 0)
-  | CalcExpr.NameRef n -> (match calcNameRefIdentToken n with | Just t -> lookup env (R.text t) | None -> 0)
-  | CalcExpr.Paren p -> (match calcParenExpr p with | Just x -> value env x | None -> 0)
+  | CalcExpr.Literal l ->
+      (match calcLiteralNumberToken l with
+       | Just t -> (match S.toInt (R.text t) with | Just n -> n | None -> 0)
+       | None -> 0)
+  | CalcExpr.NameRef n ->
+      (match calcNameRefIdentToken n with
+       | Just t -> lookup env (R.text t)
+       | None -> 0)
+  | CalcExpr.Paren p ->
+      (match calcParenExpr p with | Just x -> value env x | None -> 0)
   | CalcExpr.Bin b ->
       (match (calcBinLhs b, calcBinOp b, calcBinRhs b) with
-       | (Just l, Just op, Just r) -> apply (R.text op) (value env l) (value env r)
+       | (Just l, Just op, Just r) ->
+           apply (R.text op) (value env l) (value env r)
        | _ -> 0)
   | CalcExpr.Call c -> 0
 
-fun lookup env name = match V.find (\p -> fst p == name) env with | Just p -> snd p | None -> 0
+fun lookup env name =
+  match V.find (\p -> fst p == name) env with | Just p -> snd p | None -> 0
 
-fun apply op a b = if op == "+" then a + b else if op == "-" then a - b else if op == "*" then a * b else a / b
+fun apply op a b =
+  if op == "+"
+  then a + b
+  else if op == "-"
+  then a - b
+  else if op == "*"
+  then a * b
+  else a / b
 
 @test fun theTypedTreeIsReadByLabel () =
   assertEq
@@ -186,13 +235,14 @@ fun apply op a b = if op == "+" then a + b else if op == "-" then a - b else if 
                (match calcExprStmtExpr s with
                 | Just (CalcExpr.Call c) ->
                     (match calcCallArgList c with
-                     | Just args -> assertEq (V.len (calcArgListArgs args)) 3 "three"
+                     | Just args ->
+                         assertEq (V.len (calcArgListArgs args)) 3 "three"
                      | None -> assertEq 0 1 "an argument list")
                 | _ -> assertEq 0 1 "a call")
            | _ -> assertEq 0 1 "a statement")
       | None -> assertEq 0 1 "a file"
 
--- --- languages and a pass ------------------------------------------------------
+-- --- languages and a pass ----------------------------------------------------
 
 -- The language the grammar implies, and one without binary expressions: an
 -- operator is a primitive applied to its arguments.
@@ -233,23 +283,29 @@ fun bindingsOf (p : CoreProgram) : [(String, Int)] =
 
 fun stepCore a env s =
   match viewCoreStmt a s with
-  | CoreStmtView.Let r -> V.pushBack env (coreNameIdent a r.name, evalCore a env r.value)
+  | CoreStmtView.Let r ->
+      V.pushBack env (coreNameIdent a r.name, evalCore a env r.value)
   | CoreStmtView.ExprStmt _ -> env
 
 fun evalCore (a : CoreArena) env (e : CoreExpr) : Int =
   match kindCoreExpr a e with
-  | CoreExprKind.Literal -> (match S.toInt (coreLiteralNumber a e) with | Just n -> n | None -> 0)
+  | CoreExprKind.Literal ->
+      (match S.toInt (coreLiteralNumber a e) with | Just n -> n | None -> 0)
   | CoreExprKind.NameRef -> lookup env (coreNameRefIdent a e)
   | CoreExprKind.Paren -> evalCore a env (coreParenExpr a e)
   | CoreExprKind.Prim ->
       (let args = corePrimArgs a e in
         match (V.get args 0, V.get args 1) with
-        | (Just x, Just y) -> apply (corePrimOp a e) (evalCore a env x) (evalCore a env y)
+        | (Just x, Just y) ->
+            apply (corePrimOp a e) (evalCore a env x) (evalCore a env y)
         | _ -> 0)
   | CoreExprKind.Call -> 0
 
 @test fun aPassRewritesWhatChangedAndCopiesTheRest () =
-  assertEq (runCore "let x = 2 * (3 + 4);\nlet y = x - 10 - 1;") [("x", 14), ("y", 3)] "lowered, and the same answers"
+  assertEq
+    (runCore "let x = 2 * (3 + 4);\nlet y = x - 10 - 1;")
+    [("x", 14), ("y", 3)]
+    "lowered, and the same answers"
 
 @test fun aRewrittenNodeKeepsWhereItCameFrom () =
   match core "let x = 1 + 2;" with
@@ -258,7 +314,11 @@ fun evalCore (a : CoreArena) env (e : CoreExpr) : Int =
         match viewCoreFile a (coreRoot p) with
         | CoreFileView.File r ->
             (match M.map (viewCoreStmt a) (V.get r.stmts 0) with
-             | Just (CoreStmtView.Let l) -> assertEq (metaCoreExpr a l.value) (Meta.Meta 8 13) "the bytes of `1 + 2`"
+             | Just (CoreStmtView.Let l) ->
+                 assertEq
+                   (metaCoreExpr a l.value)
+                   (Meta.Meta 8 13)
+                   "the bytes of `1 + 2`"
              | _ -> assertEq 0 1 "a let"))
   | None -> assertEq 0 1 "a program"
 
@@ -268,7 +328,10 @@ fun evalCore (a : CoreArena) env (e : CoreExpr) : Int =
 pass! {
   pub lowerFolding : Surface -> Core
     | Bin { raw lhs, op, rhs } ->
-        (if kindSurfaceExpr src lhs == SurfaceExprKind.Literal and surfaceLiteralNumber src lhs == "0" and op == "+" then rhs
+        (if kindSurfaceExpr src lhs == SurfaceExprKind.Literal
+          and surfaceLiteralNumber src lhs == "0"
+          and op == "+"
+          then rhs
           else Prim { op = op, args = [lowerFoldingExpr src out lhs, rhs] })
 }
 
@@ -276,10 +339,20 @@ pass! {
   match M.map lowerFolding (surfaceFromCalc (fst (parseCalc "let x = 0 + 2 * 3;\nlet y = 1 + x;"))) with
   | Just p ->
       let a = coreArena p in
-      let top = (match viewCoreFile a (coreRoot p) with | CoreFileView.File r -> M.map (viewCoreStmt a) (V.get r.stmts 0)) in
-      let folded = (match top with | Just (CoreStmtView.Let l) -> corePrimOp a l.value | _ -> "") in
+      let top =
+        (match viewCoreFile a (coreRoot p) with
+         | CoreFileView.File r -> M.map (viewCoreStmt a) (V.get r.stmts 0))
+      in
+      let folded =
+        (match top with
+         | Just (CoreStmtView.Let l) -> corePrimOp a l.value
+         | _ -> "")
+      in
       let u = assertEq folded "*" "`0 +` is gone" in
-      assertEq (bindingsOf p) [("x", 6), ("y", 7)] "and the rest lowered as before"
+      assertEq
+        (bindingsOf p)
+        [("x", 6), ("y", 7)]
+        "and the rest lowered as before"
   | None -> assertEq 0 1 "a program"
 
 -- The same, read straight off the tree: no `Surface` tables in between.
@@ -290,7 +363,11 @@ pass! {
 
 @test fun aPassReadsATreeAsItIs () =
   match parseCalc "let x = 2 * (3 + 4);\nlet y = x - 10 - 1;" with
-  | (g, _) -> assertEq (bindingsOf (lowerTree (R.root g))) [("x", 14), ("y", 3)] "the same answers as from tables"
+  | (g, _) ->
+      assertEq
+        (bindingsOf (lowerTree (R.root g)))
+        [("x", 14), ("y", 3)]
+        "the same answers as from tables"
 
 -- A language of trees, as the parser's is, with a node of its own: two
 -- expressions side by side.
@@ -304,7 +381,10 @@ lang! {
 -- the `+` -- so the text is the text it was.
 pass! {
   pub pairUp : Calc -> Paired
-    | Bin { lhs, raw op, rhs } -> (if R.text op == "+" then Pair { left = lhs, right = rhs } else Bin { lhs = lhs, op = LinguaW.kept op, rhs = rhs })
+    | Bin { lhs, raw op, rhs } ->
+        (if R.text op == "+"
+          then Pair { left = lhs, right = rhs }
+          else Bin { lhs = lhs, op = LinguaW.kept op, rhs = rhs })
 }
 
 @test fun aPassWritesATreeKeepingEveryByte () =
@@ -317,7 +397,8 @@ pass! {
         (V.map
           (\s ->
             match s with
-            | PairedLet n (PairedPair l (PairedBin x op y)) -> "${R.text n} = ${R.text l} and ${R.text x} ${R.text op} ${R.text y}"
+            | PairedLet n (PairedPair l (PairedBin x op y)) ->
+                "${R.text n} = ${R.text l} and ${R.text x} ${R.text op} ${R.text y}"
             | PairedLet n v -> "${R.text n} = ${R.text v}"
             | _ -> "?")
           (R.nodes (R.root h)))
@@ -326,7 +407,11 @@ pass! {
 
 @test fun aProgramWithSomethingMissingHasNoSurface () =
   match parseCalc "let x = ;" with
-  | (g, _) -> assertEq (M.isSome (surfaceFromCalc g)) False "the tree has an error in it"
+  | (g, _) ->
+      assertEq
+        (M.isSome (surfaceFromCalc g))
+        False
+        "the tree has an error in it"
 
 -- A pass may do anything an ordinary function may: this one counts the
 -- operators it lowers, with `Std.State`.
@@ -336,17 +421,20 @@ fun tick () = put (get () + 1)
 
 pass! {
   pub lowerCounting : Surface -> Core
-    | Bin { lhs, op, rhs } -> (let u = tick () in Prim { op = op, args = [lhs, rhs] })
+    | Bin { lhs, op, rhs } ->
+        (let u = tick () in Prim { op = op, args = [lhs, rhs] })
 }
 
 @test fun aPassMayPerformEffects () =
   match parseCalc "let x = 1 + 2 * 3;" with
   | (g, _) ->
       match surfaceFromCalc g with
-      | Just s -> (match runState 0 (\() -> lowerCounting s) with | (_, n) -> assertEq n 2 "two operators")
+      | Just s ->
+          (match runState 0 (\() -> lowerCounting s) with
+           | (_, n) -> assertEq n 2 "two operators")
       | None -> assertEq 0 1 "a program"
 
--- --- queries ------------------------------------------------------------------------
+-- --- queries -----------------------------------------------------------------
 
 -- The calculator as a compiler of several files, each step a query: a file's
 -- text is an input, and everything else is worked out from it and remembered
@@ -379,23 +467,43 @@ fun twoFiles () =
   let a = setSessionSource db 1 "let x = 2 * 3;" in
   let b = setSessionSource db 2 "let y = 10 - 1;" in
   let c = assertEq (toResult (\() -> sessionSum db [1, 2])) (Ok 15) "6 + 9" in
-  let d = assertEq (V.len (Q.takeLog db)) 7 "tree, program and bindings for each file, and the sum" in
-  let e = assertEq (toResult (\() -> sessionSum db [1, 2])) (Ok 15) "asked again" in
+  let d =
+    assertEq
+      (V.len (Q.takeLog db))
+      7
+      "tree, program and bindings for each file, and the sum"
+  in
+  let e =
+    assertEq (toResult (\() -> sessionSum db [1, 2])) (Ok 15) "asked again"
+  in
   assertEq (Q.takeLog db) [] "and nothing run for it"
 
 @test fun anEditReRunsOnlyTheFileItIsIn () =
   let db = twoFiles () in
   let a = setSessionSource db 2 "let y = 10 - 2;" in
   let b = assertEq (toResult (\() -> sessionSum db [1, 2])) (Ok 14) "6 + 8" in
-  assertEq (Q.takeLog db) [SessionKey.Tree 2, SessionKey.Program 2, SessionKey.Bindings 2, SessionKey.Sum [1, 2]] "the first file untouched"
+  assertEq
+    (Q.takeLog db)
+    [
+      SessionKey.Tree 2,
+      SessionKey.Program 2,
+      SessionKey.Bindings 2,
+      SessionKey.Sum [1, 2]
+    ]
+    "the first file untouched"
 
 @test fun aCommentStopsWhereTheAnswersAreTheSame () =
   -- The comment is in the tree, and the program's `meta` covers it, so both
   -- change; what the file binds does not, so the sum is not run again.
   let db = twoFiles () in
   let a = setSessionSource db 1 "let x = 2 * 3; // six" in
-  let b = assertEq (toResult (\() -> sessionSum db [1, 2])) (Ok 15) "still 15" in
-  assertEq (Q.takeLog db) [SessionKey.Tree 1, SessionKey.Program 1, SessionKey.Bindings 1] "cut off at the bindings"
+  let b =
+    assertEq (toResult (\() -> sessionSum db [1, 2])) (Ok 15) "still 15"
+  in
+  assertEq
+    (Q.takeLog db)
+    [SessionKey.Tree 1, SessionKey.Program 1, SessionKey.Bindings 1]
+    "cut off at the bindings"
 
 @test fun aSessionIsKeptBetweenRuns () =
   -- The sum is `persisted`: written with the files it read and a fingerprint
@@ -408,20 +516,28 @@ fun twoFiles () =
   let b = setSessionSource db2 1 "let x = 2 * 3;" in
   let c = setSessionSource db2 2 "let y = 10 - 1;" in
   let d = assertEq (loadSession db2 path) (Ok 1) "the sum, read back" in
-  let e = assertEq (toResult (\() -> sessionSum db2 [1, 2])) (Ok 15) "the same answer" in
+  let e =
+    assertEq (toResult (\() -> sessionSum db2 [1, 2])) (Ok 15) "the same answer"
+  in
   let f = assertEq (Q.takeLog db2) [] "and nothing run for it" in
   -- A file that changed since is worked out again, as far as it has to be.
   let db3 = newSession () in
   let g = setSessionSource db3 1 "let x = 2 * 4;" in
   let h = setSessionSource db3 2 "let y = 10 - 1;" in
   let i = loadSession db3 path in
-  assertEq (toResult (\() -> sessionSum db3 [1, 2])) (Ok 17) "8 + 9, from the new file"
+  assertEq
+    (toResult (\() -> sessionSum db3 [1, 2]))
+    (Ok 17)
+    "8 + 9, from the new file"
 
 @test fun aFileNobodySetIsSaidToBe () =
   let db = twoFiles () in
-  assertEq (toResult (\() -> sessionSum db [1, 3])) (Err (Unset (SessionKey.Source 3))) "file 3"
+  assertEq
+    (toResult (\() -> sessionSum db [1, 3]))
+    (Err (Unset (SessionKey.Source 3)))
+    "file 3"
 
--- --- the abstract syntax, as patterns ------------------------------------------
+-- --- the abstract syntax, as patterns ----------------------------------------
 
 -- Each node rule is a pattern over the tree: `CalcLet name value` matches a
 -- `let` and binds its children, which the patterns match in their turn --
@@ -433,7 +549,8 @@ fun twoFiles () =
         (V.map
           (\s ->
             match s with
-            | CalcLet n (CalcBin l op r) -> "${R.text n} = ${R.text l} ${R.text op} ${R.text r}"
+            | CalcLet n (CalcBin l op r) ->
+                "${R.text n} = ${R.text l} ${R.text op} ${R.text r}"
             | CalcLet n v -> "${R.text n} = ${R.text v}"
             | _ -> "?")
           (R.nodes (R.root g)))

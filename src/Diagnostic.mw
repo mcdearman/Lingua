@@ -40,16 +40,20 @@ use Nettle.Write (render)
 @derive(Debug, PartialEq)
 @pub data Diagnostic = Diagnostic Severity String Meta [(Meta, String)] [String]
 
--- --- making them ---------------------------------------------------------------------
+-- --- making them -------------------------------------------------------------
 
-@pub fun errorAt (at : Meta) (message : String) : Diagnostic = Diagnostic Severity.Error message at [] []
+@pub fun errorAt (at : Meta) (message : String) : Diagnostic =
+  Diagnostic Severity.Error message at [] []
 
-@pub fun warningAt (at : Meta) (message : String) : Diagnostic = Diagnostic Severity.Warning message at [] []
+@pub fun warningAt (at : Meta) (message : String) : Diagnostic =
+  Diagnostic Severity.Warning message at [] []
 
-@pub fun adviceAt (at : Meta) (message : String) : Diagnostic = Diagnostic Severity.Advice message at [] []
+@pub fun adviceAt (at : Meta) (message : String) : Diagnostic =
+  Diagnostic Severity.Advice message at [] []
 
 -- `d`, pointing at `at` as well, with `message` beside it.
-@pub fun withLabel (at : Meta) (message : String) (d : Diagnostic) : Diagnostic =
+@pub fun withLabel (at : Meta) (message : String) (d : Diagnostic)
+    : Diagnostic =
   match d with
   | Diagnostic s m w ls ns -> Diagnostic s m w (V.pushBack ls (at, message)) ns
 
@@ -58,15 +62,18 @@ use Nettle.Write (render)
   match d with
   | Diagnostic s m w ls ns -> Diagnostic s m w ls (V.pushBack ns note)
 
-@pub fun severity (d : Diagnostic) : Severity = match d with | Diagnostic s _ _ _ _ -> s
+@pub fun severity (d : Diagnostic) : Severity =
+  match d with | Diagnostic s _ _ _ _ -> s
 
-@pub fun message (d : Diagnostic) : String = match d with | Diagnostic _ m _ _ _ -> m
+@pub fun message (d : Diagnostic) : String =
+  match d with | Diagnostic _ m _ _ _ -> m
 
-@pub fun whereAt (d : Diagnostic) : Meta = match d with | Diagnostic _ _ w _ _ -> w
+@pub fun whereAt (d : Diagnostic) : Meta =
+  match d with | Diagnostic _ _ w _ _ -> w
 
 @pub fun isError (d : Diagnostic) : Bool = severity d == Severity.Error
 
--- --- from a parse --------------------------------------------------------------------
+-- --- from a parse ------------------------------------------------------------
 
 -- A parse's errors, each at the token it was found at -- the one that was
 -- wrong, or that something was missing before -- or, at the end of the
@@ -76,11 +83,15 @@ use Nettle.Write (render)
     (\e ->
       match e with
       | (at, msg) ->
-          let span = (match R.tokenAt at (R.root g) with | Just t -> R.range t | None -> (at, at)) in
+          let span =
+            (match R.tokenAt at (R.root g) with
+             | Just t -> R.range t
+             | None -> (at, at))
+          in
           errorAt (Meta (fst span) (snd span)) msg)
     errs
 
--- --- from a pass ---------------------------------------------------------------------
+-- --- from a pass -------------------------------------------------------------
 
 -- What a pass says as it goes. A handler decides what becomes of it; `collect`
 -- keeps it.
@@ -98,25 +109,37 @@ use Nettle.Write (render)
     return x -> \acc -> (x, acc)
   } []
 
--- --- drawing -------------------------------------------------------------------------
+-- --- drawing -----------------------------------------------------------------
 
 -- Every diagnostic about `text`, the source called `path`, drawn one after
 -- another -- without colour, as a test or a log wants them.
-@pub fun renderAll (path : String) (text : String) (ds : [Diagnostic]) : String = drawn False path text ds
+@pub fun renderAll (path : String) (text : String) (ds : [Diagnostic])
+    : String =
+  drawn False path text ds
 
 -- The same, in colour, for a terminal.
-@pub fun renderColored (path : String) (text : String) (ds : [Diagnostic]) : String = drawn True path text ds
+@pub fun renderColored (path : String) (text : String) (ds : [Diagnostic])
+    : String =
+  drawn True path text ds
 
 -- The same, for standard output: in colour if it is a terminal and `NO_COLOR`
 -- (https://no-color.org) is not set, and plainly into a file or a pipe.
-@pub fun renderToOutput (path : String) (text : String) (ds : [Diagnostic]) : String ! { Process | e } =
+@pub fun renderToOutput (path : String) (text : String) (ds : [Diagnostic])
+    : String ! { Process | e } =
   drawn (coloured ()) path text ds
 
 -- Whether what goes to standard output should be coloured.
 @pub fun coloured () : Bool ! { Process | e } =
-  isTerminal 1 and (match getEnv "NO_COLOR" with | Just v -> v == "" | None -> True)
+  isTerminal 1
+    and (match getEnv "NO_COLOR" with | Just v -> v == "" | None -> True)
 
-fun drawn color path text ds = S.join "" (V.map (\d -> render (nettle color path d) (NS.namedSource path (NS.source text))) ds)
+fun drawn color path text ds =
+  S.join
+    ""
+    (V.map
+      (\d ->
+        render (nettle color path d) (NS.namedSource path (NS.source text)))
+      ds)
 
 -- The Nettle report for `d`: its message at the top, its span underlined --
 -- with the message beside it too when nothing else is labelled, since Nettle,
@@ -127,8 +150,14 @@ fun nettle color path d =
   match d with
   | Diagnostic s msg at labels notes ->
       let span = \m -> (match m with | Meta a b -> NS.spanIn path a b) in
-      let primary = if V.isEmpty labels then N.labelMessage msg (N.label (span at)) else N.label (span at) in
-      let others = V.map (\l -> N.labelMessage (snd l) (N.label (span (fst l)))) labels in
+      let primary =
+        if V.isEmpty labels
+        then N.labelMessage msg (N.label (span at))
+        else N.label (span at)
+      in
+      let others =
+        V.map (\l -> N.labelMessage (snd l) (N.label (span (fst l)))) labels
+      in
       N.build (kindOf s) (span at)
         |> N.withConfig (N.config |> N.withColor color |> N.withIndexType IndexType.Byte)
         |> N.withMessage msg
@@ -148,14 +177,30 @@ use Std.Test (assertEq)
 
 @test fun aDiagnosticIsDrawnWhereItIs () =
   assertEq
-    (renderAll "main.ml" "let x = 1 + true in x" [errorAt (Meta 12 16) "cannot unify Bool with Int" |> withLabel (Meta 8 9) "this is an `Int`"])
+    (renderAll
+      "main.ml"
+      "let x = 1 + true in x"
+      [errorAt (Meta 12 16) "cannot unify Bool with Int"
+        |> withLabel (Meta 8 9) "this is an `Int`"])
     "Error: cannot unify Bool with Int\n   ╭─[ main.ml:1:13 ]\n   │\n 1 │ let x = 1 + true in x\n   │         ┬   ────  \n   │         ╰───────── this is an `Int`\n───╯\n"
     "the span, and the label beside it"
 
 @test fun collectKeepsWhatWasReported () =
-  let got = collect (\() -> let a = say (errorAt noMeta "one") in let b = say (warningAt noMeta "two") in 3) in
-  assertEq (match got with | (x, ds) -> (x, V.map message ds)) (3, ["one", "two"]) "the answer, and both, in order"
+  let got =
+    collect
+      (\() ->
+        let a = say (errorAt noMeta "one") in
+        let b = say (warningAt noMeta "two") in
+        3)
+  in
+  assertEq
+    (match got with | (x, ds) -> (x, V.map message ds))
+    (3, ["one", "two"])
+    "the answer, and both, in order"
 
 @test fun aTerminalGetsColour () =
   let d = [errorAt (Meta 12 16) "cannot unify Bool with Int"] in
-  assertEq (renderColored "main.ml" "let x = 1 + true in x" d == renderAll "main.ml" "let x = 1 + true in x" d) False "escapes, around the same drawing"
+  assertEq
+    (renderColored "main.ml" "let x = 1 + true in x" d == renderAll "main.ml" "let x = 1 + true in x" d)
+    False
+    "escapes, around the same drawing"

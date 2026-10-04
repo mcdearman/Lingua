@@ -88,7 +88,8 @@ fun failed (e : QueryError k) = let u = writeOutput (failure e) in exit 1
 fun failure (e : QueryError k) : String =
   match e with
   | QueryError.Unset _ -> "miniml: a query was read before it was set\n"
-  | QueryError.Cycle ks -> "miniml: ${show (V.len ks)} queries need each other\n"
+  | QueryError.Cycle ks ->
+      "miniml: ${show (V.len ks)} queries need each other\n"
 
 fun command (cli : Cli) =
   match cli with
@@ -107,7 +108,8 @@ fun command (cli : Cli) =
 fun finish (ok : Bool) = if ok then () else exit 1
 
 -- Each of `paths` read into `db` -- as file 1, 2, … -- or why one could not be.
-fun load db (paths : [String]) : Result String [(Int, String, String)] ! { Fs, Thread, Mut | e } =
+fun load db (paths : [String]) : Result String
+    [(Int, String, String)] ! { Fs, Thread, Mut | e } =
   V.foldl
     (\acc p -> match acc with
                | Err why -> Err why
@@ -130,11 +132,15 @@ fun checkFiles (paths : [String]) =
   match load db paths with
   | Err why -> (let u = println why in False)
   | Ok files ->
-      let typed = sessionTypedEach db (V.map (\f -> match f with | (i, _, _) -> i) files) in
+      let typed =
+        sessionTypedEach db (V.map (\f -> match f with | (i, _, _) -> i) files)
+      in
       V.foldl
         (\ok i -> match (V.get files i, V.get typed i) with
-                  | (Just (_, p, _), Just (Ok ty)) -> (let u = println "${p}: ${ty}" in ok)
-                  | (Just (_, p, text), Just (Err ds)) -> (let u = writeOutput (renderToOutput p text ds) in False)
+                  | (Just (_, p, _), Just (Ok ty)) ->
+                      (let u = println "${p}: ${ty}" in ok)
+                  | (Just (_, p, text), Just (Err ds)) ->
+                      (let u = writeOutput (renderToOutput p text ds) in False)
                   | _ -> ok)
         True
         (V.range 0 (V.len files))
@@ -147,7 +153,9 @@ fun runFile (path : String) =
   | Ok files ->
       match sessionResult db 1 with
       | Ok out -> (let u = println out in True)
-      | Err ds -> (let u = writeOutput (renderToOutput path (sessionSource db 1) ds) in False)
+      | Err ds ->
+          (let u = writeOutput (renderToOutput path (sessionSource db 1) ds) in
+            False)
 
 -- What the REPL prints for a line: `replLine`, its diagnostics in colour
 -- where `renderToOutput` says so.
@@ -172,7 +180,7 @@ fun demo () =
       "let x = in 1",
       "let rec loop = loop in loop" ]
 
--- --- tests ---------------------------------------------------------------------------------
+-- --- tests -------------------------------------------------------------------
 
 use Std.Test (assertEq)
 use Std.String as S
@@ -195,7 +203,9 @@ fun asked args =
 
 @test fun aCommandIsReadIntoItsConstructor () =
   assertEq
-    (V.map asked [["check", "a.ml", "b.ml"], ["run", "a.ml"], ["repl"], ["check"]])
+    (V.map
+      asked
+      [["check", "a.ml", "b.ml"], ["run", "a.ml"], ["repl"], ["check"]])
     ["check a.ml b.ml", "run a.ml", "repl", "check "]
     "each command, its fields filled"
 
@@ -211,7 +221,15 @@ fun asked args =
 
 @test fun aMistakeIsSaidWhereItIs () =
   let a = assertEq
-  (V.map asked [["chek", "a.ml"], ["run"], ["run", "a.ml", "b.ml"], ["run", "--fast", "a.ml"], ["completions", "fish"]])
+  (V.map
+    asked
+    [
+      ["chek", "a.ml"],
+      ["run"],
+      ["run", "a.ml", "b.ml"],
+      ["run", "--fast", "a.ml"],
+      ["completions", "fish"]
+    ])
     [ "there is no command `chek`",
       "`run` needs <file>",
       "`run` takes nothing more",
@@ -229,5 +247,10 @@ fun asked args =
 @test fun aCompletionScriptNamesTheCommands () =
   match askCli ["completions", "bash"] with
   | Err (Complete script) ->
-      assertEq (S.contains "compgen -W \"check run repl demo build lsp bench help completions\"" script) True script
+      assertEq
+        (S.contains
+          "compgen -W \"check run repl demo build lsp bench help completions\""
+          script)
+        True
+        script
   | _ -> assertEq True False "a script"

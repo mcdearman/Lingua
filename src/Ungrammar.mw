@@ -50,23 +50,30 @@ use Piece.*
 
 @pub fun defBody (d : Def) : Rule = match d with | Def _ _ b -> b
 
--- --- the lexer -----------------------------------------------------------------
+-- --- the lexer ---------------------------------------------------------------
 
 data Piece
   = LName String Int
   | LTok String Int
   | LPunct String Int
 
-fun lexAt l = match l with | LName _ at -> at | LTok _ at -> at | LPunct _ at -> at
+fun lexAt l =
+  match l with | LName _ at -> at | LTok _ at -> at | LPunct _ at -> at
 
-fun byteAt (s : String) (i : Int) : Int = if i < stringByteLength s then toInt (stringByteAt s i) else 0 - 1
+fun byteAt (s : String) (i : Int) : Int =
+  if i < stringByteLength s then toInt (stringByteAt s i) else 0 - 1
 
-fun isNameByte b = (b >= 97 and b <= 122) or (b >= 65 and b <= 90) or (b >= 48 and b <= 57) or b == 95
+fun isNameByte b =
+  (b >= 97 and b <= 122)
+    or (b >= 65 and b <= 90)
+    or (b >= 48 and b <= 57)
+    or b == 95
 
 fun isSpace b = b == 32 or b == 9 or b == 10 or b == 13
 
 -- The grammar's tokens, or the byte where one could not be read.
-fun lexAll (s : String) (i : Int) (acc : [Piece]) : Result (Int, String) [Piece] =
+fun lexAll (s : String) (i : Int) (acc : [Piece]) : Result (Int, String)
+    [Piece] =
   let b = byteAt s i in
   if b < 0 then Ok acc
   else if isSpace b then lexAll s (i + 1) acc
@@ -78,22 +85,26 @@ fun lexAll (s : String) (i : Int) (acc : [Piece]) : Result (Int, String) [Piece]
     (match quotedEnd s (i + 1) "" with
      | Ok (text, j) -> lexAll s j (V.pushBack acc (LTok text i))
      | Err e -> Err e)
-  else if V.elem b [61, 124, 42, 63, 40, 41, 58] then lexAll s (i + 1) (V.pushBack acc (LPunct (stringSlice s i (i + 1)) i))
+  else if V.elem b [61, 124, 42, 63, 40, 41, 58]
+  then lexAll s (i + 1) (V.pushBack acc (LPunct (stringSlice s i (i + 1)) i))
   else Err (i, "`${stringSlice s i (i + 1)}` is not ungrammar")
 
-fun lineEnd s i = if byteAt s i < 0 or byteAt s i == 10 then i else lineEnd s (i + 1)
+fun lineEnd s i =
+  if byteAt s i < 0 or byteAt s i == 10 then i else lineEnd s (i + 1)
 
 fun nameEnd s i = if isNameByte (byteAt s i) then nameEnd s (i + 1) else i
 
 -- The text of a quoted token from just past its `'`, and the byte after it.
-fun quotedEnd (s : String) (i : Int) (acc : String) : Result (Int, String) (String, Int) =
+fun quotedEnd (s : String) (i : Int) (acc : String) : Result (Int, String)
+    (String, Int) =
   let b = byteAt s i in
   if b < 0 then Err (i, "a token with no closing `'`")
   else if b == 39 then Ok (acc, i + 1)
-  else if b == 92 then quotedEnd s (i + 2) (acc ++ stringSlice s (i + 1) (i + 2))
+  else if b == 92
+  then quotedEnd s (i + 2) (acc ++ stringSlice s (i + 1) (i + 2))
   else quotedEnd s (i + 1) (acc ++ stringSlice s i (i + 1))
 
--- --- tokens, in braces -------------------------------------------------------------
+-- --- tokens, in braces -------------------------------------------------------
 
 -- The grammar written as Meadow tokens, as the lexer's pieces: a name, a
 -- string literal for a token, and the punctuation -- which Meadow reads as
@@ -116,15 +127,25 @@ fun piecesOf (ts : [TokenTree]) : Result (Int, String) [Piece] =
                   | Err e -> Err e
                   | Ok xs ->
                       let c = stringSlice p i (i + 1) in
-                      if V.elem c ["=", "|", "*", "?", ":"] then Ok (V.pushBack xs (LPunct c (a + i)))
+                      if V.elem c ["=", "|", "*", "?", ":"]
+                      then Ok (V.pushBack xs (LPunct c (a + i)))
                       else Err (a + i, "`${c}` is not ungrammar"))
                 (Ok done)
                 (V.range 0 (stringByteLength p))
           | Group Paren inner at ->
               (match piecesOf inner with
-               | Ok xs -> Ok (V.append (V.pushBack done (LPunct "(" (startOf at))) (V.pushBack xs (LPunct ")" (endOf at - 1))))
+               | Ok xs ->
+                   Ok
+                     (V.append
+                       (V.pushBack done (LPunct "(" (startOf at)))
+                       (V.pushBack xs (LPunct ")" (endOf at - 1))))
                | Err e -> Err e)
-          | other -> Err (startOf (locOf other), "not ungrammar: a rule, a string, `|`, `*`, `?`, `:` or `( )`"))
+          | other ->
+              Err
+                (
+                  startOf (locOf other),
+                  "not ungrammar: a rule, a string, `|`, `*`, `?`, `:` or `( )`"
+                ))
     (Ok [])
     ts
 
@@ -142,12 +163,13 @@ fun locOf (t : TokenTree) : Loc =
 
 -- Every rule of a grammar written in braces, or the byte of the file where it
 -- went wrong and why; `stop` is where the braces close.
-@pub fun parseGrammarTrees (ts : [TokenTree]) (stop : Int) : Result (Int, String) [Def] =
+@pub fun parseGrammarTrees (ts : [TokenTree]) (stop : Int) : Result
+    (Int, String) [Def] =
   match piecesOf ts with
   | Err e -> Err e
   | Ok ls -> defs ls 0 [] stop
 
--- --- the parser ------------------------------------------------------------------
+-- --- the parser --------------------------------------------------------------
 
 -- Every rule of `text`, or the byte where it went wrong and why.
 @pub fun parseGrammar (text : String) : Result (Int, String) [Def] =
@@ -183,13 +205,16 @@ fun altLoop ls i stop acc =
       let acc2 = V.pushBack acc s in
       (match V.get ls j with
        | Just (LPunct "|" _) -> altLoop ls (j + 1) stop acc2
-       | _ -> Ok (if V.len acc2 == 1 then (V.getOr (Seq []) acc2 0, j) else (Alt acc2, j)))
+       | _ ->
+           Ok
+             (if V.len acc2 == 1 then (V.getOr (Seq []) acc2 0, j) else (Alt acc2, j)))
 
 fun sq ls i stop = seqLoop ls i stop []
 
 fun seqLoop ls i stop acc =
   let bar = match V.get ls i with | Just (LPunct "|" _) -> True | _ -> False in
-  if stops ls i or bar then Ok (if V.len acc == 1 then (V.getOr (Seq []) acc 0, i) else (Seq acc, i))
+  if stops ls i or bar
+  then Ok (if V.len acc == 1 then (V.getOr (Seq []) acc 0, i) else (Seq acc, i))
   else
     match atom ls i stop with
     | Err e -> Err e
@@ -237,20 +262,44 @@ use Std.Test (assertEq)
       let a = assertEq (V.map defName ds) ["LetStmt", "List"] "two rules" in
       assertEq
         (V.map defBody ds)
-        [Seq [Tok "let" 10, Label "name" 16 (Ref "Name" 21), Opt (Seq [Tok "=" 27, Ref "Expr" 31]), Tok ";" 38], Rep (Ref "Item" 49)]
+        [
+          Seq [
+            Tok "let" 10,
+            Label "name" 16 (Ref "Name" 21),
+            Opt (Seq [Tok "=" 27, Ref "Expr" 31]),
+            Tok ";" 38
+          ],
+          Rep (Ref "Item" 49)
+        ]
         "each with where it was written"
   | Err e -> assertEq e (0, "") "it reads"
 
 @test fun anAlternationWithALeadingBar () =
   match parseGrammar "Expr =\n  | Lit // a number\n  | Name" with
-  | Ok ds -> assertEq (V.map defBody ds) [Alt [Ref "Lit" 11, Ref "Name" 31]] "the comment is nothing"
+  | Ok ds ->
+      assertEq
+        (V.map defBody ds)
+        [Alt [Ref "Lit" 11, Ref "Name" 31]]
+        "the comment is nothing"
   | Err e -> assertEq e (0, "") "it reads"
 
 @test fun aTokenMayEscapeItsQuote () =
   match parseGrammar "Q = '\\'' '\\\\'" with
-  | Ok ds -> assertEq (V.map defBody ds) [Seq [Tok "'" 4, Tok "\\" 9]] "a quote and a backslash"
+  | Ok ds ->
+      assertEq
+        (V.map defBody ds)
+        [Seq [Tok "'" 4, Tok "\\" 9]]
+        "a quote and a backslash"
   | Err e -> assertEq e (0, "") "it reads"
 
 @test fun aMistakeIsSaidWhereItIs () =
-  let a = assertEq (parseGrammar "A = (B") (Err (6, "expected `)`, not the end")) "at the end" in
-  assertEq (parseGrammar "A = B ; C") (Err (6, "`;` is not ungrammar")) "at the `;`"
+  let a =
+    assertEq
+      (parseGrammar "A = (B")
+      (Err (6, "expected `)`, not the end"))
+      "at the end"
+  in
+  assertEq
+    (parseGrammar "A = B ; C")
+    (Err (6, "`;` is not ungrammar"))
+    "at the `;`"

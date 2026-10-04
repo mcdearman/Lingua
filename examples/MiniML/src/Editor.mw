@@ -52,28 +52,40 @@ repl! {
 fun shownIn db file =
   match toResult (\() -> sessionResult db file) with
   | Ok (Ok out) -> out
-  | Ok (Err ds) -> renderToOutput "input.ml" (answered "" (\() -> sessionSource db file)) ds
+  | Ok (Err ds) ->
+      renderToOutput "input.ml" (answered "" (\() -> sessionSource db file)) ds
   | Err e -> "miniml: a query could not be answered"
 
 -- Where the parser found something wrong.
-fun errorsOf db file = answered [] (\() -> V.map fst (snd (sessionParsed db file)))
+fun errorsOf db file =
+  answered [] (\() -> V.map fst (snd (sessionParsed db file)))
 
 -- What there is to find: everything the entry binds, and what kind of thing
 -- each is.
 fun declarationsOf db file =
-  V.concatMap (\(b : Binder) -> if b.kind == "import" then [] else [(b.name, b.kind, "Bound in what is being typed.")]) (bindersOf db file)
+  V.concatMap
+    (\(b : Binder) -> if b.kind == "import"
+      then []
+      else [(b.name, b.kind, "Bound in what is being typed.")])
+    (bindersOf db file)
 
 -- The file as MiniML's formatter sets it out (`format!`, in `Syntax`).
 fun formattedOf db file = formatStyle (treeOf db file)
 
 -- A query's answer, or `fallback` if it has none -- an input never set.
-fun answered fallback act = match toResult act with | Ok x -> x | Err _ -> fallback
+fun answered fallback act =
+  match toResult act with | Ok x -> x | Err _ -> fallback
 
-fun diagnosticsOf db file = answered [] (\() -> match sessionTyped db file with | Ok _ -> [] | Err ds -> ds)
+fun diagnosticsOf db file =
+  answered
+    []
+    (\() -> match sessionTyped db file with | Ok _ -> [] | Err ds -> ds)
 
-fun treeOf db file = answered (fst (parseMini "")) (\() -> fst (sessionParsed db file))
+fun treeOf db file =
+  answered (fst (parseMini "")) (\() -> fst (sessionParsed db file))
 
-fun contains (m : Meta) (at : Int) = match m with | Meta a b -> a <= at and at <= b
+fun contains (m : Meta) (at : Int) =
+  match m with | Meta a b -> a <= at and at <= b
 
 -- The type of the innermost expression the editor is on.
 fun hoverAt db file at =
@@ -82,9 +94,14 @@ fun hoverAt db file at =
     | Err _ -> None
     | Ok t ->
         let a = typedArena t in
-        let around = V.filter (\x -> contains (metaTypedExpr a x) at) (subexpressions a (typedExpr t)) in
+        let around =
+          V.filter
+            (\x -> contains (metaTypedExpr a x) at)
+            (subexpressions a (typedExpr t))
+        in
         match V.get around (V.len around - 1) with
-        | Just x -> Just (metaTypedExpr a x, "```\n${typeName (tyTypedExpr a x)}\n```")
+        | Just x ->
+            Just (metaTypedExpr a x, "```\n${typeName (tyTypedExpr a x)}\n```")
         | None -> None)
 
 -- The binders of a file: the side table name resolution filled.
@@ -92,7 +109,11 @@ fun bindersOf db file = answered [] (\() -> sessionNames db file)
 
 -- The binder the editor is on, or the one the name it is on is a use of.
 fun binderAt (bs : [Binder]) (at : Int) : Maybe Binder =
-  V.find (\(b : Binder) -> b.kind != "import" and (contains b.at at or V.any (\u -> contains u at) b.uses)) bs
+  V.find
+    (\(b : Binder) ->
+      b.kind != "import"
+        and (contains b.at at or V.any (\u -> contains u at) b.uses))
+    bs
 
 fun definitionAt db file at =
   match binderAt (bindersOf db file) at with
@@ -108,15 +129,34 @@ fun referencesAt db file at =
 -- The names that can be seen where the editor is, innermost first, and the
 -- keywords.
 fun completionAt db file at =
-  let seen = V.filter (\(b : Binder) -> V.any (\s -> contains s at) b.scopes) (bindersOf db file) in
-  let named = V.foldr (\(b : Binder) acc -> if V.any (\x -> fst x == b.name) acc then acc else V.pushBack acc (b.name, b.kind)) [] seen in
-  V.append named (V.map (\k -> (k, "keyword")) ["let", "rec", "in", "fun", "if", "then", "else", "true", "false"])
+  let seen =
+    V.filter
+      (\(b : Binder) -> V.any (\s -> contains s at) b.scopes)
+      (bindersOf db file)
+  in
+  let named =
+    V.foldr
+      (\(b : Binder) acc -> if V.any (\x -> fst x == b.name) acc
+        then acc
+        else V.pushBack acc (b.name, b.kind))
+      []
+      seen
+  in
+  V.append
+    named
+    (V.map
+      (\k -> (k, "keyword"))
+      ["let", "rec", "in", "fun", "if", "then", "else", "true", "false"])
 
 -- Everything a `let` binds.
 fun symbolsOf db file =
-  V.concatMap (\(b : Binder) -> if b.kind == "parameter" or b.kind == "import" then [] else [(b.name, b.kind, b.at)]) (bindersOf db file)
+  V.concatMap
+    (\(b : Binder) -> if b.kind == "parameter" or b.kind == "import"
+      then []
+      else [(b.name, b.kind, b.at)])
+    (bindersOf db file)
 
--- --- tests ---------------------------------------------------------------------------------
+-- --- tests -------------------------------------------------------------------
 --
 -- What the server answers, asked of a session directly.
 
@@ -129,46 +169,76 @@ fun editing src =
   let u = setSessionSource db 1 src in
   db
 
-fun spelled src (ps : [(Int, Meta)]) = V.map (\p -> match snd p with | Meta a b -> "${stringSlice src a b}@${show a}") ps
+fun spelled src (ps : [(Int, Meta)]) =
+  V.map
+    (\p -> match snd p with | Meta a b -> "${stringSlice src a b}@${show a}")
+    ps
 
 @test fun aNameGoesToItsBinder () =
   let src = "let x = 1 in let x = x + 1 in x" in
   let db = editing src in
   -- The `x` in `x + 1` is the outer one: a `let` is not recursive.
-  let a = assertEq (spelled src (definitionAt db 1 21)) ["x@4"] "the value's `x`" in
+  let a =
+    assertEq (spelled src (definitionAt db 1 21)) ["x@4"] "the value's `x`"
+  in
   assertEq (spelled src (definitionAt db 1 30)) ["x@17"] "the body's `x`"
 
 @test fun aBinderIsFoundWithEveryUse () =
   let src = "let rec f n = if n < 2 then 1 else f (n - 1) in f 3" in
   let db = editing src in
-  let a = assertEq (spelled src (referencesAt db 1 17)) ["n@10", "n@17", "n@38"] "a parameter" in
-  assertEq (spelled src (referencesAt db 1 49)) ["f@8", "f@35", "f@48"] "a recursive function, from a use"
+  let a =
+    assertEq
+      (spelled src (referencesAt db 1 17))
+      ["n@10", "n@17", "n@38"]
+      "a parameter"
+  in
+  assertEq
+    (spelled src (referencesAt db 1 49))
+    ["f@8", "f@35", "f@48"]
+    "a recursive function, from a use"
 
 @test fun completionOffersWhatCanBeSeen () =
   let src = "let id = fun x -> x in id 1" in
   let db = editing src in
-  let names = \at -> V.filter (\n -> V.elem n ["id", "x"]) (V.map fst (completionAt db 1 at)) in
+  let names =
+    \at ->
+      V.filter (\n -> V.elem n ["id", "x"]) (V.map fst (completionAt db 1 at))
+  in
   -- Inside the function its parameter can be seen, and `id` cannot yet.
   let a = assertEq (names 18) ["x"] "in the lambda" in
   assertEq (names 23) ["id"] "in the body"
 
 @test fun hoverSaysTheTypeWhereItIs () =
   let db = editing "let id = fun x -> x in id 1" in
-  assertEq (hoverAt db 1 23) (Just (Meta 23 25, "```\n(Int -> Int)\n```")) "`id` at its use"
+  assertEq
+    (hoverAt db 1 23)
+    (Just (Meta 23 25, "```\n(Int -> Int)\n```"))
+    "`id` at its use"
 
 @test fun theSymbolsAreWhatLetsBind () =
   let db = editing "let id = fun x -> x in let one = id 1 in one" in
-  assertEq (symbolsOf db 1) [("id", "function", Meta 4 6), ("one", "variable", Meta 27 30)] "not the parameter"
+  assertEq
+    (symbolsOf db 1)
+    [("id", "function", Meta 4 6), ("one", "variable", Meta 27 30)]
+    "not the parameter"
 
 @test fun aFileIsFormattedAsOneEdit () =
   let src = "let x =\n1\nin x" in
   let db = editing src in
-  let a = assertEq (formattedOf db 1) "let x = 1 in\nx" "the value after its `=`, and the body on its own line" in
+  let a =
+    assertEq
+      (formattedOf db 1)
+      "let x = 1 in\nx"
+      "the value after its `=`, and the body on its own line"
+  in
   let b = assertEq
-    (J.render (formatReply src (formattedOf db 1)))
+  (J.render (formatReply src (formattedOf db 1)))
     "[{\"range\":{\"start\":{\"line\":0,\"character\":0},\"end\":{\"line\":2,\"character\":4}},\"newText\":\"let x = 1 in\\nx\"}]"
     "the whole file, replaced" in
-  assertEq (J.render (formatReply "1" "1")) "[]" "and nothing to do for one already set out"
+  assertEq
+    (J.render (formatReply "1" "1"))
+    "[]"
+    "and nothing to do for one already set out"
 
 -- The prompt, given keys.
 
@@ -180,32 +250,74 @@ use Std.Char as C
 use Std.String as S
 use Std.Fs (removeFile)
 
-fun typing (text : String) : [Key] = V.map (\c -> T.key (Character (C.toString c))) (S.chars text)
+fun typing (text : String) : [Key] =
+  V.map (\c -> T.key (Character (C.toString c))) (S.chars text)
 
 -- What the prompt writes, given `keys` and then no more: the last lines of
 -- it that are not what it drew of the entries.
 fun prompted (keys : [Key]) =
-  let out = snd (withOutput (\() -> T.withEvents (V.map (\k -> Event.Pressed k) keys) (\() -> runPrompt ()))) in
+  let out =
+    snd
+      (withOutput
+        (\() ->
+          T.withEvents
+            (V.map (\k -> Event.Pressed k) keys)
+            (\() -> runPrompt ())))
+  in
   let u = removeFile ".miniml_history" in
   out
 
 @test fun anEntryIsEvaluatedWhenItIsEntered () =
-  assertEq (S.contains "\n\r3 : Int\n" (prompted (V.append (typing "1 + 2") [T.key Enter]))) True "its value and type, on a line of their own"
+  assertEq
+    (S.contains
+      "\n\r3 : Int\n"
+      (prompted (V.append (typing "1 + 2") [T.key Enter])))
+    True
+    "its value and type, on a line of their own"
 
 @test fun anUnfinishedEntryGoesOnIndented () =
   -- `let x =` is right as far as it goes: Enter starts a new line, a level
   -- in, and the entry is entered when it is whole.
-  let out = prompted (V.concat [typing "let x =", [T.key Enter], typing "41 + 1 in x", [T.key Enter]]) in
-  let a = assertEq (S.contains "42 : Int" out) True "the whole of it, evaluated" in
-  assertEq (S.contains "\n\r    \u{1b}[33m41" out) True "its second line after the prompt's width and a level in, the number coloured"
+  let out =
+    prompted
+      (V.concat
+        [typing "let x =", [T.key Enter], typing "41 + 1 in x", [T.key Enter]])
+  in
+  let a =
+    assertEq (S.contains "42 : Int" out) True "the whole of it, evaluated"
+  in
+  assertEq
+    (S.contains "\n\r    \u{1b}[33m41" out)
+    True
+    "its second line after the prompt's width and a level in, the number coloured"
 
 @test fun aWrongEntryIsEnteredAndSaidToBeWrong () =
-  assertEq (S.contains "cannot unify" (prompted (V.append (typing "1 + true") [T.key Enter]))) True "an error inside it is not something to go on from"
+  assertEq
+    (S.contains
+      "cannot unify"
+      (prompted (V.append (typing "1 + true") [T.key Enter])))
+    True
+    "an error inside it is not something to go on from"
 
 @test fun aNameIsFoundAndPutWhereTheCursorWas () =
   -- Ctrl-F, `tot` to find `total`, Enter to take it, Enter to enter the entry.
-  let out = prompted (V.concat [typing "let total = 7 in to", [T.ctrl "f"], typing "tot", [T.key Enter, T.key Enter]]) in
+  let out =
+    prompted
+      (V.concat
+        [
+          typing "let total = 7 in to",
+          [T.ctrl "f"],
+          typing "tot",
+          [T.key Enter, T.key Enter]
+        ])
+  in
   assertEq (S.contains "7 : Int" out) True "`to` became `total`"
 
 @test fun tabCompletesANameThatCanBeSeen () =
-  assertEq (S.contains "7 : Int" (prompted (V.concat [typing "let total = 7 in tot", [T.key Tab, T.key Enter]]))) True "the one way it could go on"
+  assertEq
+    (S.contains
+      "7 : Int"
+      (prompted
+        (V.concat [typing "let total = 7 in tot", [T.key Tab, T.key Enter]])))
+    True
+    "the one way it could go on"

@@ -39,7 +39,9 @@ database! {
 -- table name resolution filled; and what was said making it: the parse's
 -- errors, each at its token, or what the passes reported. A program with
 -- errors in it goes no further.
-@pub(pkg) fun compile (imports : [String]) (parsed : (Green Mini, [(Int, String)])) : (Maybe CoreProgram, [Binder], [Diagnostic]) =
+@pub(pkg) fun compile (imports : [String])
+    (parsed : (Green Mini, [(Int, String)])) :
+    (Maybe CoreProgram, [Binder], [Diagnostic]) =
   match parsed with
   | (g, []) ->
       (match surfaceFromMini g with
@@ -52,26 +54,34 @@ database! {
 -- A file's type, with what the units it depends on export in scope.
 fun linkedOf (imports : [(String, Type)]) parsed : Result [Diagnostic] Type =
   match compile (V.map fst imports) parsed with
-  | (Just f, _, _) -> (match typedIn (V.map snd imports) f with | Ok t -> Ok (programType t) | Err d -> Err [d])
+  | (Just f, _, _) ->
+      (match typedIn (V.map snd imports) f with
+       | Ok t -> Ok (programType t)
+       | Err d -> Err [d])
   | (None, _, ds) -> Err ds
 
-fun elaboratedOf (p : (Maybe CoreProgram, [Binder], [Diagnostic])) : Result [Diagnostic] TypedProgram =
+fun elaboratedOf (p : (Maybe CoreProgram, [Binder], [Diagnostic])) : Result
+    [Diagnostic] TypedProgram =
   match p with
   | (Just f, _, _) -> (match typed f with | Ok t -> Ok t | Err d -> Err [d])
   | (None, _, ds) -> Err ds
 
 -- The program's type, read off its elaboration: a change that moves nothing
 -- but where things are -- a comment -- stops here.
-fun typeNameOf (e : Result [Diagnostic] TypedProgram) : Result [Diagnostic] String =
+fun typeNameOf (e : Result [Diagnostic] TypedProgram) : Result
+    [Diagnostic] String =
   match e with
   | Ok t -> Ok (typeName (programType t))
   | Err ds -> Err ds
 
 -- The value and its type, or everything that went wrong on the way.
-fun resultOf (typed : Result [Diagnostic] String) (p : (Maybe CoreProgram, [Binder], [Diagnostic])) : Result [Diagnostic] String =
+fun resultOf (typed : Result [Diagnostic] String)
+    (p : (Maybe CoreProgram, [Binder], [Diagnostic])) : Result
+    [Diagnostic] String =
   match (typed, p) with
   | (Err ds, _) -> Err ds
-  | (Ok ty, (Just f, _, _)) -> (match run f with | Ok v -> Ok "${v} : ${ty}" | Err d -> Err [d])
+  | (Ok ty, (Just f, _, _)) ->
+      (match run f with | Ok v -> Ok "${v} : ${ty}" | Err d -> Err [d])
   | (Ok _, (None, _, ds)) -> Err ds
 
 -- What MiniML's REPL prints for a program: its value and type, or its
@@ -81,7 +91,8 @@ fun shownOf (text : String) (r : Result [Diagnostic] String) : String =
   | Ok out -> out
   | Err ds -> renderAll "input.ml" text ds
 
-fun signature (t : Result [Diagnostic] String) : String = match t with | Ok ty -> ty | Err _ -> "?"
+fun signature (t : Result [Diagnostic] String) : String =
+  match t with | Ok ty -> ty | Err _ -> "?"
 
 -- One program through the whole compiler: what MiniML's REPL prints for a line.
 @pub fun replLine (src : String) : String ! { Thread, Mut | e } =
@@ -91,12 +102,13 @@ fun signature (t : Result [Diagnostic] String) : String = match t with | Ok ty -
   | Ok out -> out
   | Err e -> show e
 
--- --- for the tests -------------------------------------------------------------------------
+-- --- for the tests -----------------------------------------------------------
 
 -- A program's type, or the message of the first thing wrong with it.
 @pub(pkg) fun typeOfSource (src : String) : Result String String =
   match compile [] (parseMini src) with
-  | (Just f, _, _) -> (match typeOf f with | Ok t -> Ok t | Err d -> Err (message d))
+  | (Just f, _, _) ->
+      (match typeOf f with | Ok t -> Ok t | Err d -> Err (message d))
   | (None, _, ds) -> Err (S.join "; " (V.map message ds))
 
 -- A program's value, or the message of the first thing wrong with it.
@@ -111,10 +123,11 @@ fun signature (t : Result [Diagnostic] String) : String = match t with | Ok ty -
 -- Each expression of a program with its type, outermost first.
 @pub(pkg) fun annotatedSource (src : String) : [String] =
   match compile [] (parseMini src) with
-  | (Just f, _, _) -> (match typed f with | Ok t -> annotated src t | Err d -> [message d])
+  | (Just f, _, _) ->
+      (match typed f with | Ok t -> annotated src t | Err d -> [message d])
   | (None, _, ds) -> V.map message ds
 
--- --- tests ---------------------------------------------------------------------------------
+-- --- tests -------------------------------------------------------------------
 
 use Std.Test (assertEq)
 use Lingua.Query as Q
@@ -122,12 +135,23 @@ use Lingua.Query as Q
 -- The whole compiler, as MiniML's REPL reports it.
 
 @test fun replReportsTypeAndValue () =
-  assertEq (replLine "let rec fact n = if n < 2 then 1 else n * fact (n - 1) in fact 5") "120 : Int" "value and type"
+  assertEq
+    (replLine
+      "let rec fact n = if n < 2 then 1 else n * fact (n - 1) in fact 5")
+    "120 : Int"
+    "value and type"
 
 @test fun replReportsEachKindOfFailure () =
   assertEq
-    (V.map (\src -> V.getOr "" (S.split "\n" (replLine src)) 0) ["1 +", "1 + true", "1 / 0", "let rec loop = loop in loop"])
-    ["Error: expected Expr", "Error: cannot unify Bool with Int", "Error: division by zero", "Error: `let rec` needs an argument"]
+    (V.map
+      (\src -> V.getOr "" (S.split "\n" (replLine src)) 0)
+      ["1 +", "1 + true", "1 / 0", "let rec loop = loop in loop"])
+    [
+      "Error: expected Expr",
+      "Error: cannot unify Bool with Int",
+      "Error: division by zero",
+      "Error: `let rec` needs an argument"
+    ]
     "all four, a diagnostic each"
 
 @test fun aTypeErrorIsDrawnAtWhatIsWrong () =
@@ -149,7 +173,12 @@ use Lingua.Query as Q
 fun twoFiles () =
   let db = newSession () in
   let a = setSessionSource db 1 "let id = fun x -> x in id" in
-  let b = setSessionSource db 2 "let rec fact n = if n < 2 then 1 else n * fact (n - 1) in fact 5" in
+  let b =
+    setSessionSource
+      db
+      2
+      "let rec fact n = if n < 2 then 1 else n * fact (n - 1) in fact 5"
+  in
   let c = toResult (\() -> sessionSignatures db [1, 2]) in
   let d = toResult (\() -> sessionResult db 2) in
   let e = Q.takeLog db in
@@ -157,17 +186,43 @@ fun twoFiles () =
 
 @test fun eachFileIsCompiledOnce () =
   let db = twoFiles () in
-  let a = assertEq (toResult (\() -> sessionSignatures db [1, 2])) (Ok ["(t0 -> t0)", "Int"]) "both typed" in
-  let b = assertEq (toResult (\() -> sessionResult db 2)) (Ok (Ok "120 : Int")) "and the second run" in
+  let a =
+    assertEq
+      (toResult (\() -> sessionSignatures db [1, 2]))
+      (Ok ["(t0 -> t0)", "Int"])
+      "both typed"
+  in
+  let b =
+    assertEq
+      (toResult (\() -> sessionResult db 2))
+      (Ok (Ok "120 : Int"))
+      "and the second run"
+  in
   assertEq (Q.takeLog db) [] "nothing ran again"
 
 @test fun anEditReCompilesOnlyItsFile () =
   let db = twoFiles () in
-  let a = setSessionSource db 2 "let rec fact n = if n < 2 then 1 else n * fact (n - 1) in fact 6" in
-  let b = assertEq (toResult (\() -> sessionResult db 2)) (Ok (Ok "720 : Int")) "the new answer" in
+  let a =
+    setSessionSource
+      db
+      2
+      "let rec fact n = if n < 2 then 1 else n * fact (n - 1) in fact 6"
+  in
+  let b =
+    assertEq
+      (toResult (\() -> sessionResult db 2))
+      (Ok (Ok "720 : Int"))
+      "the new answer"
+  in
   assertEq
     (Q.takeLog db)
-    [SessionKey.Parsed 2, SessionKey.Program 2, SessionKey.Elaborated 2, SessionKey.Typed 2, SessionKey.Result 2]
+    [
+      SessionKey.Parsed 2,
+      SessionKey.Program 2,
+      SessionKey.Elaborated 2,
+      SessionKey.Typed 2,
+      SessionKey.Result 2
+    ]
     "file 1 untouched, and its type too"
 
 @test fun aCommentStopsAtTheElaboration () =
@@ -177,5 +232,13 @@ fun twoFiles () =
   -- reads it -- the type, the signatures -- runs again.
   let db = twoFiles () in
   let a = setSessionSource db 1 "let id = fun x -> x in id -- the identity" in
-  let b = assertEq (toResult (\() -> sessionSignatures db [1, 2])) (Ok ["(t0 -> t0)", "Int"]) "the same types" in
-  assertEq (Q.takeLog db) [SessionKey.Parsed 1, SessionKey.Program 1, SessionKey.Elaborated 1] "cut off at the elaboration"
+  let b =
+    assertEq
+      (toResult (\() -> sessionSignatures db [1, 2]))
+      (Ok ["(t0 -> t0)", "Int"])
+      "the same types"
+  in
+  assertEq
+    (Q.takeLog db)
+    [SessionKey.Parsed 1, SessionKey.Program 1, SessionKey.Elaborated 1]
+    "cut off at the elaboration"

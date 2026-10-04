@@ -34,7 +34,10 @@
 --                                                  formatter (`format!`) makes
 --                                                  of its tree
 --
--- Only `text` is needed; the server says it can do what it was given. Where
+-- Only `text` is needed; the server says it can do what it was given. A
+-- server with a `tree` also writes `tokensServer db file` -- each coloured
+-- token's bytes and class -- which a prompt over the same database
+-- (`repl!`) colours what is typed with. Where
 -- a feature answers places, each is a file and a `Meta` in it. What is
 -- written is `serveServer ()`, the server, on standard input and output.
 --
@@ -540,23 +543,32 @@ fun allNodes s =
   then []
   else V.pushFront (V.concatMap allNodes (R.children s)) s
 
--- Every token of the tree coloured, as the protocol encodes them: each
--- line by line, from where the last one was.
-@pub fun tokensReply (t : String) (g : Green k) (kindName : k -> String)
-    : Json =
+-- The tokens of a tree that are coloured, in order: the bytes each is from
+-- and to, and which of `tokenTypes` it is. What an editor is told, and what
+-- a prompt colours an entry with (`Lingua.Repl`): one answer to what a
+-- token is, wherever it is shown.
+@pub fun classified (kindName : k -> String) (g : Green k)
+    : [(Int, Int, Int)] =
+  V.concatMap
+    (\tok ->
+      match tokenClass (kindName (R.kindOf tok)) (R.text tok) with
+      | None -> []
+      | Just c -> (match R.range tok with | (a, b) -> [(a, b, c)]))
+    (allTokens (R.root g))
+
+-- Those tokens, as the protocol encodes them: each line by line, from where
+-- the last one was.
+@pub fun tokensReply (t : String) (classes : [(Int, Int, Int)]) : Json =
   let starts = lineStarts t in
   let pieces =
     V.concatMap
-      (\tok ->
-        match tokenClass (kindName (R.kindOf tok)) (R.text tok) with
-        | None -> []
-        | Just c ->
-            (match R.range tok with
-             | (a, b) ->
-                 V.map
-                   (\seg -> (fst seg, snd seg, c))
-                   (lineSegments t starts a b)))
-      (allTokens (R.root g)) in
+      (\x ->
+        match x with
+        | (a, b, c) ->
+            V.map
+              (\seg -> (fst seg, snd seg, c))
+              (lineSegments t starts a b))
+      classes in
     J.jObject [("data", J.jArray (V.map J.jInt (encode pieces)))]
 
 fun encode pieces =
@@ -657,7 +669,7 @@ fun lineSegments t starts a b =
 
 -- --- lsp! --------------------------------------------------------------------
 
-use Std.Macro (TokenTree, Loc, isPunct)
+use Std.Macro (TokenTree, Loc, isPunct, defineAs)
 use Std.Macro.TokenTree.*
 use Std.Macro.Loc.*
 use Std.Macro.Parse (Tokens, parseTokens, ident, keyword, punct, stringLit)
@@ -717,7 +729,18 @@ def lspCall : Parser Tokens (Bool, String, String, String, [LspFeature]) =
             [Fail
               "a server needs `text`: how the editor's text is given to the compiler"
               Nowhere]
-          else [Code (lspCode (if pub then "@pub " else "") name lang db fs)]
+          else
+            -- A server that has the tree says so, for a prompt over the same
+            -- database to colour what is typed as the editor would.
+            let u =
+              if V.any (\f -> fst (fst f) == "tree") fs
+              then defineAs (serverOf db) name
+              else ()
+            in
+            [Code (lspCode (if pub then "@pub " else "") name lang db fs)]
+
+-- What the server of database `db` is recorded under, for `repl!` to find.
+@pub fun serverOf (db : String) : String = "LinguaLspFor${db}"
 
 fun lspCode pub name lang db fs =
   let fn =
@@ -734,7 +757,7 @@ fun lspCode pub name lang db fs =
   let refs = "(${fn "references"} db file offset)" in
   "use Lingua.Lsp as LinguaLsp
 use Std.Collections.Vector as LinguaV
-
+${if has "tree" then "\n-- What ${lang}'s editor colours in a file: each token's bytes, and its class.\n${pub}fun tokens${name} db file = LinguaLsp.classified display (${fn "tree"} db file)\n" else ""}
 -- A language server for ${lang}, on standard input and output, until the
 -- editor says `exit`.
 ${pub}fun serve${name} () =
@@ -746,7 +769,7 @@ ${pub}fun serve${name} () =
     (\\file -> ${if has "diagnostics" then "${fn "diagnostics"} db file" else "[]"})
     (\\docs method file t offset params ->
     if False then None
-${arm "hover" "textDocument/hover" "LinguaLsp.hoverReply t (${fn "hover"} db file offset)"}${arm "tree" "textDocument/semanticTokens/full" "LinguaLsp.tokensReply t ${tree} display"}${arm "tree" "textDocument/foldingRange" "LinguaLsp.foldingReply t ${tree}"}${arm "tree" "textDocument/selectionRange" "LinguaLsp.selectionReply t ${tree} params"}${arm "definition" "textDocument/definition" "LinguaLsp.locationsReply docs (${fn "definition"} db file offset)"}${arm "references" "textDocument/references" "LinguaLsp.locationsReply docs ${refs}"}${arm "references" "textDocument/documentHighlight" "LinguaLsp.highlightsReply t file ${refs}"}${arm "references" "textDocument/prepareRename" "LinguaLsp.prepareRenameReply t file offset ${refs}"}${arm "references" "textDocument/rename" "LinguaLsp.renameReply docs ${refs} (LinguaLsp.newName params)"}${arm "completion" "textDocument/completion" "LinguaLsp.completionReply (${fn "completion"} db file offset)"}${arm "symbols" "textDocument/documentSymbol" "LinguaLsp.symbolsReply t (${fn "symbols"} db file)"}${arm "format" "textDocument/formatting" "LinguaLsp.formatReply t (${fn "format"} db file)"}    else None)
+${arm "hover" "textDocument/hover" "LinguaLsp.hoverReply t (${fn "hover"} db file offset)"}${arm "tree" "textDocument/semanticTokens/full" "LinguaLsp.tokensReply t (tokens${name} db file)"}${arm "tree" "textDocument/foldingRange" "LinguaLsp.foldingReply t ${tree}"}${arm "tree" "textDocument/selectionRange" "LinguaLsp.selectionReply t ${tree} params"}${arm "definition" "textDocument/definition" "LinguaLsp.locationsReply docs (${fn "definition"} db file offset)"}${arm "references" "textDocument/references" "LinguaLsp.locationsReply docs ${refs}"}${arm "references" "textDocument/documentHighlight" "LinguaLsp.highlightsReply t file ${refs}"}${arm "references" "textDocument/prepareRename" "LinguaLsp.prepareRenameReply t file offset ${refs}"}${arm "references" "textDocument/rename" "LinguaLsp.renameReply docs ${refs} (LinguaLsp.newName params)"}${arm "completion" "textDocument/completion" "LinguaLsp.completionReply (${fn "completion"} db file offset)"}${arm "symbols" "textDocument/documentSymbol" "LinguaLsp.symbolsReply t (${fn "symbols"} db file)"}${arm "format" "textDocument/formatting" "LinguaLsp.formatReply t (${fn "format"} db file)"}    else None)
 "
 
 -- --- tests -------------------------------------------------------------------

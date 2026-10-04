@@ -21,7 +21,9 @@
 --   text          db -> Int -> String -> ()        set the file's text
 --   eval          db -> Int -> String              what entering it prints
 --   tree          db -> Int -> Green k             its lossless tree: how it
---                                                  is coloured as it is typed
+--                                                  is coloured as it is typed,
+--                                                  unless the database has a
+--                                                  server -- see below
 --   errors        db -> Int -> [Int]               where the parser's errors
 --                                                  are: an entry whose only
 --                                                  ones are at its end is not
@@ -37,6 +39,13 @@
 --                                                  (`format!`) `indent<Name>`
 --   prompt        what a line starts with; `history`, the file entries are
 --                 kept in between runs
+--
+-- **Colour.** A database that has a language server (`lsp!`, declared before
+-- the prompt) is coloured by it: what is typed is given to the server's
+-- `tokens<Server>` -- each token's place and class, which is what it answers
+-- an editor's semantic tokens with -- and shown in those classes' colours.
+-- So a file and an entry are coloured by one answer. With no server, the
+-- prompt asks the tree the same question itself.
 --
 -- Only `text` and `eval` are needed. What is written is `runRepl ()`: entries
 -- read, each printed as `eval` says, until there are no more.
@@ -63,7 +72,7 @@ use Std.Terminal (Key, Event)
 use Std.Terminal.Code.*
 use Lingua.Green (Green)
 use Lingua.Green as G
-use Lingua.Lsp (tokenClass)
+use Lingua.Lsp (classified, serverOf)
 use LineEditor as LE
 use LineEditor (Editor, Outcome, Bound)
 use Doodle as D
@@ -78,23 +87,36 @@ use Fuzzy as F
   let last = stringByteLength (S.trimEnd text) in
   not (V.isEmpty errors) and V.all (\at -> at >= last) errors
 
--- The tree's text, its tokens coloured by what they are -- as an editor
--- colours them (`Lingua.Lsp`'s classes), a line at a time, so that a token
--- over several lines does not colour what starts the next.
+-- The tree's text, its tokens coloured by what they are: as an editor
+-- colours them, the classes being the server's (`Lingua.Lsp`).
 @pub fun coloured (name : k -> String) (g : Green k) : String =
-  S.join ""
-    (V.map
-      (\i ->
-        if not (G.isTokenAt g i) then ""
+  painted (G.text g) (classified name g)
+
+-- `text` with each of `classes` -- the bytes a token is from and to, and its
+-- class -- in its class's colour: what a language server answers for a
+-- file's tokens, shown at a prompt. A line at a time, so that a token over
+-- several lines does not colour what starts the next.
+@pub fun painted (text : String) (classes : [(Int, Int, Int)]) : String =
+  let step = \acc x ->
+    match (acc, x) with
+    | ((out, at), (from, to, class)) ->
+        if from < at then (out, at)
         else
-          let t = G.textAt g i in
-          match M.andThen colourOf (tokenClass (name (G.kindAt g i)) t) with
-          | None -> t
-          | Just on ->
-              S.join
-                "\n"
-                (V.map (\l -> if S.isEmpty l then l else on ++ l ++ "\u{1b}[0m") (S.split "\n" t)))
-      (V.range 0 (G.slots g)))
+          let piece = stringSlice text from to in
+          let shown =
+            (match colourOf class with
+             | None -> piece
+             | Just on ->
+                 S.join
+                   "\n"
+                   (V.map
+                     (\l -> if S.isEmpty l then l else on ++ l ++ "\u{1b}[0m")
+                     (S.split "\n" piece)))
+          in
+          (out ++ stringSlice text at from ++ shown, to)
+  in
+  match V.foldl step ("", 0) classes with
+  | (out, at) -> out ++ stringSlice text at (stringByteLength text)
 
 -- A class of token's colour: keywords bold, numbers and strings a colour
 -- each, comments dim; names and operators as they are.
@@ -257,7 +279,7 @@ fun finding (f : Finder) : Maybe String ! { Console | e } =
 -- with, what could be written at a byte of it, and what there is to find --
 -- none, for a prompt with no finder.
 @pub fun editorOf
-    (prompt : String) treeOf errorsOf name indentOf completionsOf declsOf =
+    (prompt : String) paint treeOf errorsOf name indentOf completionsOf declsOf =
   let found = \text at ->
     match find (declsOf text) with
     | Just n ->
@@ -270,7 +292,11 @@ fun finding (f : Finder) : Maybe String ! { Console | e } =
     { LE.editor |
       prompt = prompt,
       continued = S.repeat " " (S.charLength prompt),
-      highlight = \t -> coloured name (treeOf t),
+      highlight =
+        \t ->
+          match paint with
+          | Just shown -> shown t
+          | None -> coloured name (treeOf t),
       finished = \t -> not (unfinished t (errorsOf t)),
       indent = \t -> indentOf (treeOf t),
       complete = \t at -> candidates t at (completionsOf t (byteAt t at)),
@@ -298,7 +324,7 @@ fun entering editor (history : String) eval (before : [String]) =
 
 -- --- repl! -------------------------------------------------------------------
 
-use Std.Macro (TokenTree, Loc, isPunct)
+use Std.Macro (TokenTree, Loc, isPunct, lookupAs)
 use Std.Macro.TokenTree.*
 use Std.Macro.Loc.*
 use Std.Macro.Parse (Tokens, parseTokens, ident, keyword, punct, stringLit)
@@ -375,10 +401,23 @@ def replWritten : [String] = ["prompt", "history"]
                     "a prompt needs `${k}`: ${if k == "text" then "how what is typed is given to the compiler" else "what entering it prints"}"
                     Nowhere]
               | None ->
+                  -- The database's language server, if one is declared: a
+                  -- prompt colours what is typed as it colours a file.
+                  let server =
+                    (match lookupAs (serverOf db) with
+                     | Ok s -> Just s
+                     | Err _ -> None)
+                  in
                   [Code
-                    (replCode (if pub then "@pub " else "") name lang db fs)]
+                    (replCode
+                      (if pub then "@pub " else "")
+                      name
+                      lang
+                      db
+                      server
+                      fs)]
 
-fun replCode pub name lang db fs =
+fun replCode pub name lang db (server : Maybe String) fs =
   let given =
     \k -> M.map (\f -> fst (snd f)) (V.find (\f -> fst (fst f) == k) fs)
   in
@@ -388,6 +427,14 @@ fun replCode pub name lang db fs =
   let tree =
     (match given "tree" with
      | Just f -> "(Just (\\t -> ${setting "t"}${f} db 0)))"
+     | None -> "None")
+  in
+  -- What is typed, coloured: by the server's tokens when the database has a
+  -- server, and otherwise -- by the editor it is given -- from the tree.
+  let paint =
+    (match server with
+     | Just s ->
+         "(Just (\\t -> LinguaRepl.painted t (${setting "t"}tokens${s} db 0))))"
      | None -> "None")
   in
   let errors =
@@ -416,7 +463,7 @@ fun replCode pub name lang db fs =
 ${pub}fun run${name} () =
   let db = new${db} () in
   LinguaRepl.run
-    (LinguaRepl.editorFor ${quoted (M.unwrapOr "> " (given "prompt"))} ${tree} ${errors} (\\k -> display k) ${indent} ${completion} ${decls})
+    (LinguaRepl.editorFor ${quoted (M.unwrapOr "> " (given "prompt"))} ${paint} ${tree} ${errors} (\\k -> display k) ${indent} ${completion} ${decls})
     ${quoted (fn "history")}
     (\\t -> ${setting "t"}${fn "eval"} db 0))
 "
@@ -429,14 +476,15 @@ fun quoted (s : String) : String =
 -- The editor a prompt is given: `editorOf`, or -- with no tree to ask -- one
 -- that colours nothing and takes every entry as finished.
 @pub fun editorFor
-    (prompt : String) treeOf errorsOf name indentOf completionsOf declsOf =
+    (prompt : String) paint treeOf errorsOf name indentOf completionsOf declsOf =
   match treeOf with
   | Just tree ->
-      editorOf prompt tree errorsOf name indentOf completionsOf declsOf
+      editorOf prompt paint tree errorsOf name indentOf completionsOf declsOf
   | None ->
       {
         LE.editor | prompt = prompt,
-        continued = S.repeat " " (S.charLength prompt)
+        continued = S.repeat " " (S.charLength prompt),
+        highlight = \t -> match paint with | Just shown -> shown t | None -> t
       }
 
 -- --- tests -------------------------------------------------------------------
@@ -592,3 +640,14 @@ fun after (ks : [Key]) : (Finder, Found) =
   in
   let got = withOutput (\() -> T.withEvents events (\() -> find things)) in
   assertEq (fst got) (Just "map") "what was chosen"
+
+@test fun whatAServerClassifiesIsPaintedWhereItIs () =
+  -- Classes 0 and 2 are a keyword and a number; 1, a name, has no colour.
+  let a = assertEq
+  (painted "let x = 12" [(0, 3, 0), (4, 5, 1), (8, 10, 2)])
+    "\u{1b}[1;35mlet\u{1b}[0m x = \u{1b}[33m12\u{1b}[0m"
+    "each token in its class's colour, and what is between them as it was" in
+  assertEq
+    (painted "a -- one\nb" [(2, 8, 4)])
+    "a \u{1b}[2m-- one\u{1b}[0m\nb"
+    "and nothing of a line's colour on the next"

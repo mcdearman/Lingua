@@ -826,8 +826,10 @@ indented as it is typed the way it would be formatted. `declarations` is
 what Ctrl-F finds among -- each a name, what it is, and what is said of it --
 in a finder under the line: what is typed there narrows them to what it is
 found in, the likeliest first, and Enter puts the chosen name where the
-cursor was. The tree colours what is typed, as an editor would. What is
-written is `runRepl ()`.
+cursor was. What is typed is coloured as an editor colours a file: where the
+database has a server (`lsp!`), by the server's own answer to what each token
+is -- `tokensServer`, which is also what it tells the editor -- and where it
+has none, from the tree. What is written is `runRepl ()`.
 
 The line, the finder's matching and its drawing are packages of their own,
 which a compiler not written with Lingua can use as well:

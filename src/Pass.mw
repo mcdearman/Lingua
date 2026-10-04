@@ -269,7 +269,8 @@ def typeParam : Parser Tokens String =
 
 -- `with In, set`: what a language is written with besides its tables --
 -- `In`, each reading function again for a program being written; `set`, a
--- field written again on a node already written.
+-- field written again on a node already written; `modules`, its names by
+-- module.
 def asked : Parser Tokens [(String, Loc)] =
   P.map
     (\o -> M.unwrapOr [] o)
@@ -308,10 +309,10 @@ def langCall : Parser Tokens (Bool, String, [String], Source, [(String, Loc)]) =
   match parseTokens langCall ts with
   | Err failed -> failed
   | Ok (pub, name, params, src, extras) ->
-      match V.find (\w -> not (V.elem (fst w) ["In", "set"])) extras with
+      match V.find (\w -> not (V.elem (fst w) ["In", "set", "modules"])) extras with
       | Just w ->
           [Fail
-            "a language is written `with In` -- its readers again, for a program being written -- or `with set` -- a field written again -- or both; not `${fst w}`"
+            "a language is written `with In` -- its readers again, for a program being written -- `with set` -- a field written again -- `with modules` -- its names by module, `${name}.Expr.Lam` -- or several of them; not `${fst w}`"
             (snd w)]
       | None ->
           match baseOf src with
@@ -759,14 +760,15 @@ fun langCode pub (l : Lang) : String =
           (\s -> V.map (\p -> prodCode pub l s p) (sortProds s))
           (langSorts l),
         [if langGrammar l == "" then "" else fromCode pub l],
-        [dotted pub l] ])
+        [if V.elem "modules" (langWith l) then dotted pub l else ""] ])
 
 -- --- a language's names, by module -------------------------------------------
 --
 -- Everything above is named in one flat namespace -- `CoreExprLam`,
 -- `newCoreExprLam`, `coreExprLamBody` -- which is what a pass's code is
--- written in. What a program is written in is the same things by module:
--- the language's, and in it one a sort,
+-- written in. A language written `with modules` has the same things by
+-- module as well, for a program to be written in: the language's, and in it
+-- one a sort,
 --
 --   mod Core { newBuilder, freeze, arena, root, startOf, endOf
 --     mod Expr { kind, meta, view, sub

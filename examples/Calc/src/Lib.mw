@@ -565,7 +565,7 @@ fun twoFiles () =
 use Lingua.Lang (noMeta)
 
 lang! {
-  Shapes
+  Shapes with modules
   Expr + Var { name : String }
   Expr + Lam { param : Pat, body : Expr }
   Pat + Var { name : String }
@@ -573,7 +573,7 @@ lang! {
 }
 
 lang! {
-  Depths extends Shapes
+  Depths extends Shapes with modules
   Expr - Var
   Expr + Var { name : String, depth : Int }
 }

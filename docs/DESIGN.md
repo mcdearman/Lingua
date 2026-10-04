@@ -427,7 +427,8 @@ the language, `[T]`, `Maybe T`, or any other type by name.
 A production is one of its **sort's**, and two sorts may each have one of a
 name: a variable is an expression and a variable is a pattern, `Expr + Var`
 and `Pat + Var`, with no prefix on either to tell them apart. A program names
-what a language has **by module** -- the language's, and in it one a sort:
+what a language written `with modules` has **by module** -- the language's,
+and in it one a sort:
 
 ```meadow
 match (a, e) with
@@ -492,7 +493,9 @@ node, a number, a truth, a text -- written again on a node already written,
 `setCoreExprLamParam b e v`: what a pass that fixes up what it wrote needs, such
 as taking the hygiene marks off the names a macro's expansion wrote once it
 is clear which names are locals. Most languages want neither, and between
-them they were a third of what a language's declaration wrote.
+them they were a third of what a language's declaration wrote. `with modules`
+is its names by module, above: a third again on what is written, for a
+language a program names things of by hand.
 
 Every language keeps its rows the same way, so what reads and writes them is
 written once, in `Lingua.Lang` -- a node's tag and where it came from, a

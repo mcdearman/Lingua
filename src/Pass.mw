@@ -111,7 +111,8 @@ use Std.Macro.Delim.*
 use Std.Macro.Parse (Tokens, parseTokens, ident, keyword, punct, group, treesUntil)
 use Std.String.Parse as P
 use Std.String.Parse (Parser)
-use Lingua.Pipe (keep, skip, named)
+use Std.String.Parse (keep, skip)
+use Lingua.Pipe (named)
 use Lingua.Lang (Lang, Sort, Prod, Field, Ty, Keeping, TokenField, reservedSorts, langName, langRoot, langSorts, langGrammar, langParams, langKeeping, langWith, isTreeLang, treeTokens, treeTrivia, tokenFields, sortName, sortProds, prodName, prodFields, fieldName, fieldTy, fieldAccessor, fieldIsToken, sortOfProd, findSort)
 use Lingua.Lang.Keeping.*
 use Lingua.Lang.TokenField.*

@@ -1,4 +1,8 @@
--- Lingua.Pipe: a parser written as what it reads, in order.
+-- Lingua.Pipe: what Lingua's macros read their calls with, besides
+-- `Std.String.Parse`.
+--
+-- A macro's parser is written as what it reads, in order, with that module's
+-- `keep` and `skip`:
 --
 --   def setting : Parser Tokens ((String, Loc), String) =
 --     P.pure (\k v -> (k, v))
@@ -7,28 +11,16 @@
 --       |> skip (punct "=")
 --       |> keep (P.alt stringLit ident)
 --
--- A parser of several things one after another is a function of what they
--- are, and then each of them: `keep` what the function takes next, `skip`
--- what is only there to be read. It reads down the page in the order the
--- input is read, with the function that makes the answer at the top naming
--- each thing kept -- where the same parser as `bind`s is a lambda inside a
--- lambda for each, and its answer at the bottom of them all.
---
--- This is all a parser needs unless what it reads next depends on what it
--- read before; and then one `bind`, for that step alone.
+-- the function of what it reads, and then each thing: kept, when the function
+-- takes it next, or skipped, when it is only there to be read. It reads down
+-- the page in the order the input is read, with a `bind` only where what is
+-- read next depends on what was read before.
 
 use Std.String.Parse as P
 use Std.String.Parse (Parser)
 use Std.Macro (TokenTree, Loc)
 use Std.Macro.TokenTree.*
 use Std.Macro.Parse (Tokens)
-
--- What `p` reads is the function's next argument.
-@pub fun keep (p : Parser s a) (pf : Parser s (a -> b)) : Parser s b =
-  P.apply pf p
-
--- `p` is read, and nothing kept of it.
-@pub fun skip (p : Parser s a) (pf : Parser s b) : Parser s b = P.thenSkip pf p
 
 -- A name among a macro's tokens, and where it was written: what an error
 -- about it points at.

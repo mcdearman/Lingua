@@ -395,7 +395,8 @@ use Std.Macro.Loc.*
 use Std.Macro.Parse (Tokens, parseTokens, ident, keyword, punct, stringLit)
 use Std.String.Parse as P
 use Std.String.Parse (Parser)
-use Lingua.Pipe (keep, skip, named)
+use Std.String.Parse (keep, skip)
+use Lingua.Pipe (named)
 use Std.Macro (Expand)
 use Std.Collections.HashMap (HashMap)
 

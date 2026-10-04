@@ -420,7 +420,8 @@ use Std.Macro.Loc.*
 use Std.Macro.Parse (Tokens, parseTokens, ident, keyword, punct, stringLit)
 use Std.String.Parse as P
 use Std.String.Parse (Parser)
-use Lingua.Pipe (keep, skip, named)
+use Std.String.Parse (keep, skip)
+use Lingua.Pipe (named)
 
 -- The features a server can be given, and what each does.
 def features : [String] = ["text", "diagnostics", "tree", "hover", "definition", "references", "completion", "symbols", "format"]

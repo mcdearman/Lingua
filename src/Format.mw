@@ -524,7 +524,8 @@ use Std.Macro.Delim.*
 use Std.Macro.Parse (Tokens, parseTokens, ident, keyword, punct, number, treesUntil)
 use Std.String.Parse as P
 use Std.String.Parse (Parser)
-use Lingua.Pipe (keep, skip, named)
+use Std.String.Parse (keep, skip)
+use Lingua.Pipe (named)
 use Std.Macro (Expand)
 use Std.Result.Result.*
 use Lingua.Lang (Lang, Sort, Prod, Field, Ty, Keeping, TokenField)

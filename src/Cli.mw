@@ -303,7 +303,8 @@ use Std.Macro.Delim.*
 use Std.Macro.Parse (Tokens, parseTokens, ident, keyword, punct, group, stringLit)
 use Std.String.Parse as P
 use Std.String.Parse (Parser)
-use Lingua.Pipe (keep, skip, named)
+use Std.String.Parse (keep, skip)
+use Lingua.Pipe (named)
 
 -- A command as written: its name and where, what help says, its fields.
 data Declared = Declared String Loc String [(String, Loc, Kind, String)]

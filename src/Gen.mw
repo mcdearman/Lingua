@@ -53,7 +53,7 @@ use Std.Macro.Delim.*
 use Std.Macro.Parse (Tokens, parseTokens, ident, keyword, punct, group, treesUntil, number)
 use Std.String.Parse as P
 use Std.String.Parse (Parser)
-use Lingua.Pipe (keep, skip)
+use Std.String.Parse (keep, skip)
 use Lingua.Ungrammar (Rule, Def, parseGrammar, parseGrammarTrees, defName, defAt, defBody)
 use Lingua.Ungrammar.Rule.*
 use Lingua.Look (Grammar, Config, Tree, decide, clashIn, treeCode, spelled, endOfInput, whole, grammar, stepsTaken, firstPair)

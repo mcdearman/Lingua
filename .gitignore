@@ -1,1 +1,4 @@
 target/
+
+# What a prompt (`repl!`) keeps between runs.
+.*_history

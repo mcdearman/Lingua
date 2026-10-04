@@ -42,8 +42,9 @@
 -- and a copy of each production the target language kept as it was. In a
 -- case, the target's reading functions -- `metaCoreExpr`, `tyTypedExpr` --
 -- read the nodes written so far, and `out` is the target being written, for
--- a function the case calls to write nodes into or read them from. A production the target dropped or changed with no case is reported
--- where the pass is. In a case, a production of the target written with a
+-- a function the case calls to write nodes into or read them from. A
+-- production the target dropped or changed with no case is reported where the
+-- pass is. In a case, a production of the target written with a
 -- record -- `Prim { … }` -- is that language's, and gets the `meta` of the
 -- node it replaces. A case's body is ordinary Meadow: it may call anything,
 -- effects and all, and a `match` in it is parenthesised, since `|` starts the
@@ -56,7 +57,8 @@
 --   pass! {
 --     pub elaborate : Core -> Typed with env
 --     | Lam { param, later body } -> (let a = fresh () in
---         let b = body ((param, a) :: env) in Lam { param = param, body = b, ty = … })
+--         let b = body ((param, a) :: env) in
+--         Lam { param = param, body = b, ty = … })
 --   }
 --
 -- Every function the pass is made of then takes `env` first, and hands it on
@@ -559,7 +561,7 @@ fun resolve l w =
 --
 --   type CoreExpr = Int                   a node of a sort, by its row
 --   data CoreProgram                      the tables, and the root's row
---   data CoreArena, CoreBuilder lst       the tables, and the same being written
+--   data CoreArena, CoreBuilder lst       the tables, and those being written
 --   newCoreBuilder, freezeCore            to start writing one, and to finish
 --   newCoreLam b meta param body          a node, written: its row
 --   data CoreExprKind, kindCoreExpr a e   which production a node is
@@ -1124,10 +1126,13 @@ fun convert lower f i rest =
 -- kind says which production it is, and its fields are its children. For a
 -- language `Grouped` the code has
 --
---   data Grouped                            its kinds: `Grouped.NodeInfix`, its
---                                           grammar's tokens, `Grouped.Unknown`, …
---   GroupedInfix lhs op rhs                 a production as a pattern over `Syntax Grouped`
---   groupedIsTrivia, groupedIsToken         what a node's fields pass over, and a token
+--   data Grouped                            its kinds: `Grouped.NodeInfix`,
+--                                           its grammar's tokens,
+--                                           `Grouped.Unknown`, …
+--   GroupedInfix lhs op rhs                 a production as a pattern over
+--                                           `Syntax Grouped`
+--   groupedIsTrivia, groupedIsToken         what a node's fields pass over,
+--                                           and a token
 --
 -- and a pass writes one with `Lingua.Rewrite`.
 
@@ -1396,7 +1401,8 @@ fun passProblems name from to cases =
                 [Fail "`${langName to}` has no `${prodName p}` as `${langName from}` has it: `${fst name}` needs a case for it" (snd name)])
             (sortProds s))
           (if isTree to then [] else translated from to cases) in
-          -- To a tree: a node no case is for is kept, as the node of its name in the
+          -- To a tree: a node no case is for is kept, as the node of its name
+          -- in the
           -- target -- which the target has to have.
           let unkept =
             if not (isTree to) then []
@@ -1883,7 +1889,8 @@ fun placed to readers ts i w at done =
             ))
       else (V.pushBack done (Word w at), False)
 
--- `Prod { f = …, … }`: the node written, its fields in the production's order.
+-- `Prod { f = …, … }`: the node written, its fields in the production's
+-- order.
 fun construct to readers w prod inner at : [TokenTree] =
   let fields = fieldsGiven inner in
   let missing =

@@ -127,7 +127,8 @@ data Live k v
       (Live k v -> Chain k -> [k] -> Result (QueryError k) [(v, Int)] ! { Thread, Mut })
 
 -- A batch: the inputs, the answers so far, the inputs as a compact region
--- once a `shared` batch's thread has needed them, the keys computed since the log was last
+-- once a `shared` batch's thread has needed them, the keys computed since the
+-- log was last
 -- taken, the queries, and how several keys asked at once are worked out --
 -- given the keys being computed, outermost first.
 data Once k v

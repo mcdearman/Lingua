@@ -27,7 +27,7 @@
 --                                                  off it here
 --   hover         db -> Int -> Int -> Maybe (Meta, String)
 --   definition    db -> Int -> Int -> [(Int, Meta)]
---   references    db -> Int -> Int -> [(Int, Meta)]  -- highlights and rename too
+--   references    db -> Int -> Int -> [(Int, Meta)]  -- highlights, rename too
 --   completion    db -> Int -> Int -> [(String, String)]
 --   symbols       db -> Int -> [(String, String, Meta)]
 --   format        db -> Int -> String              its text, set out: what a

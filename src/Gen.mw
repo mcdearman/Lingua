@@ -4,7 +4,9 @@
 --     pub Calc
 --     lexer Token
 --     trivia { Whitespace, Comment }
---     tokens { "let" = Let, "ident" = Ident _, "self" as SelfWord = Ident "self", … }
+--     tokens {
+--       "let" = Let, "ident" = Ident _, "self" as SelfWord = Ident "self", …
+--     }
 --     context { "label" = Ident _ before Colon, … }
 --     precedence Expr { left "+" "-", left "*" "/", postfix Call }
 --     grammar {
@@ -657,7 +659,8 @@ fun ctorOf (pat : [TokenTree]) : String =
 -- makes can be a name of the program's own, or of another `syntax!`'s:
 --
 --   Mini                 the kinds: `Mini.Node<Rule>` for each node rule,
---                        `Mini.Token<Token>` for each of the lexer's tokens, and
+--                        `Mini.Token<Token>` for each of the lexer's tokens,
+--                        and
 --                        `Mini.ErrorNode`, `Mini.Eof` and `Mini.Unknown`. A
 --                        rule and a token of one name are two kinds, and none
 --                        of them is one of the three.
@@ -926,7 +929,8 @@ impl Display ${kindType spec} {
 ${S.join "\n" (V.map (\c -> "    | ${kx spec (fst c)} -> \"${snd c}\"") (kinds spec))}
 }
 
--- How a kind is named in a message: a token as it is written, a node by its rule.
+-- How a kind is named in a message: a token as it is written, a node by its
+-- rule.
 fun ${fn spec "name"} (x : ${kindType spec}) : String =
   match x with
 ${S.join "\n" (V.map (\e -> "  | ${kt spec (entryKind spec e)} -> \"`${escape (tokName e)}`\"") spec.tokens)}

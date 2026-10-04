@@ -4,7 +4,8 @@
 --     pub Style for Mini
 --     indent 2
 --     width 80
---     | Let   = "let" recursive name params "=" group(indent(line value) line "in") newline body
+--     | Let   = "let" recursive name params "="
+--                 group(indent(line value) line "in") newline body
 --     | Lam   = "fun" params "->" indent(line body)
 --     | If    = "if" cond indent(line "then" yes) indent(line "else" no)
 --     | Paren = "(" indent(cut expr) cut ")"
@@ -413,8 +414,9 @@ fun insideToken (g : Green k) (from : Int) : Bool =
                    V.concatMap
                      (\p -> match p with
                             | (r, later) ->
-                                -- There, and running to the end; or not there, with
-                                -- nothing after it, in a node that runs to the end.
+                                -- There, and running to the end; or not
+                                -- there, with nothing after it, in a node
+                                -- that runs to the end.
                                 if present r
                                 then
                                   (if snd r >= last
@@ -649,7 +651,8 @@ fun assemble (st : Style k) (items : [Item]) : Doc () =
                        )))
           (PP.nil, 0 - 1, 0, True)
           items with
-          -- A parting with nothing after it parts nothing -- unless it is a break
+          -- A parting with nothing after it parts nothing -- unless it is a
+          -- break
           -- that was asked for.
           | (doc, pending, level, _) ->
               if pending == breaking

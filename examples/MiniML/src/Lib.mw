@@ -107,7 +107,8 @@ fun command (cli : Cli) =
 -- End with status 1 when something went wrong.
 fun finish (ok : Bool) = if ok then () else exit 1
 
--- Each of `paths` read into `db` -- as file 1, 2, … -- or why one could not be.
+-- Each of `paths` read into `db` -- as file 1, 2, … -- or why one could not
+-- be.
 fun load db (paths : [String]) : Result String
     [(Int, String, String)] ! { Fs, Thread, Mut | e } =
   V.foldl

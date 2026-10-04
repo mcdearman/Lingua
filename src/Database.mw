@@ -3,9 +3,12 @@
 --   database! {
 --     pub Session
 --     | input source (file : Int) : String
---     | query tree (file : Int) : Green Calc = fst (parseCalc (querySource file))
---     | query program (file : Int) : Maybe CoreProgram = M.map lower (surfaceFromCalc (queryTree file))
---     | persisted query sum (files : [Int]) : Int = V.sum (queryCountEach files)
+--     | query tree (file : Int) : Green Calc =
+--         fst (parseCalc (querySource file))
+--     | query program (file : Int) : Maybe CoreProgram =
+--         M.map lower (surfaceFromCalc (queryTree file))
+--     | persisted query sum (files : [Int]) : Int =
+--         V.sum (queryCountEach files)
 --   }
 --
 -- Each declaration is a query: an **input**, set from outside, or a derived
@@ -47,7 +50,8 @@
 --   a runtime that counts references, it is not;
 -- - `setSessionSource db file text` for each input;
 -- - `sessionTree db file` and `sessionTreeEach db files` for each query, to
---   ask from outside, in turn or on threads as the database is -- which raise `QueryError` (`Lingua.Query`) for an input
+--   ask from outside, in turn or on threads as the database is -- which
+--   raise `QueryError` (`Lingua.Query`) for an input
 --   that was never set or queries that read each other in a circle;
 -- - when a query is `persisted`, `saveSession db path` and `loadSession db
 --   path`.

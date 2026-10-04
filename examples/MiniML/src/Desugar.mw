@@ -31,7 +31,8 @@ use Std.Maybe as M
   Expr + LetRec { id : Int, param : Int, value : Expr, body : Expr }
 }
 
--- `fun x y -> e` is `fun x -> fun y -> e`, and `let f x = e` binds `fun x -> e`;
+-- `fun x y -> e` is `fun x -> fun y -> e`, and `let f x = e` binds
+-- `fun x -> e`;
 -- `let rec f x y = e` is recursive in `f`, taking `x`. `if` is copied. A
 -- `let rec` with nothing to take is reported where it is -- `here` -- and
 -- read as a `let`, so the rest of the program is still checked.

@@ -4,6 +4,7 @@
 
 use Lingua.Diagnostic (Diagnostic, errorAt)
 use MiniML.Desugar
+use MiniML.Desugar.Core.Expr as Expr
 use Std.Exn (raise, toResult)
 use Std.Collections.Vector as V
 use Std.Collections.List as L
@@ -22,34 +23,35 @@ fun showValue v =
 
 -- The program's tables are `a`, and a node the row it is in them. Its
 -- production and fields are matched as if they were a constructor's: each
--- `Core…` pattern is a synonym `lang!` made, which reads the node's kind and
--- the fields the arm binds from the tables -- nothing is built to match on.
+-- `Expr.…` pattern is a synonym `lang!` made, in the module of `Core`'s
+-- `Expr` sort, which reads the node's kind and the fields the arm binds from
+-- the tables -- nothing is built to match on.
 fun eval (a : CoreArena) env (e : CoreExpr) =
   match (a, e) with
-  | CoreExprInt n -> Value.Int n
-  | CoreExprBool b -> Value.Bool b
-  | CoreExprVar id ->
+  | Expr.Int n -> Value.Int n
+  | Expr.Bool b -> Value.Bool b
+  | Expr.Var id ->
       (match L.lookupAssoc id env with
        | Just v -> v
        | None ->
-           raise (errorAt (metaCoreExpr a e) "binder ${show id} has no value"))
-  | CoreExprLam param body -> Value.Closure param body env
-  | CoreExprApp func arg ->
-      apply a (metaCoreExpr a e) (eval a env func) (eval a env arg)
-  | CoreExprLet id value body -> eval a ((id, eval a env value) :: env) body
-  | CoreExprLetRec id param value body ->
+           raise (errorAt (Expr.meta a e) "binder ${show id} has no value"))
+  | Expr.Lam param body -> Value.Closure param body env
+  | Expr.App func arg ->
+      apply a (Expr.meta a e) (eval a env func) (eval a env arg)
+  | Expr.Let id value body -> eval a ((id, eval a env value) :: env) body
+  | Expr.LetRec id param value body ->
       eval a ((id, Value.Rec id param value env) :: env) body
-  | CoreExprIf cond yes no ->
+  | Expr.If cond yes no ->
       (match eval a env cond with
        | Value.Bool True -> eval a env yes
        | _ -> eval a env no)
-  | CoreExprPrim op args -> operate a env e op args
+  | Expr.Prim op args -> operate a env e op args
 
 fun operate a env e op args =
   match (V.get args 0, V.get args 1) with
   | (Just x, Just y) ->
-      primitive (metaCoreExpr a e) op (eval a env x) (eval a env y)
-  | _ -> raise (errorAt (metaCoreExpr a e) "`${op}` wants two operands")
+      primitive (Expr.meta a e) op (eval a env x) (eval a env y)
+  | _ -> raise (errorAt (Expr.meta a e) "`${op}` wants two operands")
 
 fun apply a at f x =
   match f with

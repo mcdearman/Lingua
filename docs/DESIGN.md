@@ -426,20 +426,40 @@ the language, `[T]`, `Maybe T`, or any other type by name.
 
 A production is one of its **sort's**, and two sorts may each have one of a
 name: a variable is an expression and a variable is a pattern, `Expr + Var`
-and `Pat + Var`, with no prefix on either to tell them apart. What is written
-for a production is named for its language, its sort and itself --
-`newCoreExprLam`, `corePatVarName`, the pattern `CoreExprLam` -- so the names
-say which, always, and adding a `Var` to another sort renames nothing. The
-one production of a sort of its own name is that name once: `newCoreName`. A
-tree language keeps one production of a name, since a node's kind is its
-rule's.
+and `Pat + Var`, with no prefix on either to tell them apart. A program names
+what a language has **by module** -- the language's, and in it one a sort:
 
-In a `pass!` none of those names is written. A case is its production's
-name and a node is too -- `| Lam { … } -> Lam { … }` -- the node being the
-one of the sort that is being written, if that sort has one of the name.
-Where two sorts have a production of the name, the sort says which, as a
-constructor is said of its type: `| Pat.Var { … }`, `Pat.Var { … }`; a bare
-name two sorts have is an error saying both.
+```meadow
+match (a, e) with
+| Core.Expr.Lam param body -> …          -- a production, as a pattern
+| Core.Expr.Var id -> …
+
+Core.Expr.newLam b meta param body       -- a node of it, written
+Core.Expr.lamBody a e                    -- a field of it, read
+Core.Pat.varName a p                     -- and a pattern's `Var`, not this one
+Core.Expr.kind a e, Core.newBuilder ()   -- the sort's, and the language's
+```
+
+From another module a sort's is brought in as any module is -- `use
+MiniML.Desugar.Core.Expr as Expr`, and then `Expr.Lam param body`. The types
+are named flat, `CoreArena` and `CoreExpr`, since a type is not yet written by
+a path.
+
+Underneath, everything is also written in one flat namespace, named for its
+language, its sort and itself -- `newCoreExprLam`, `corePatVarName`, the
+pattern `CoreExprLam` -- always, so adding a `Var` to another sort renames
+nothing; the one production of a sort of its own name is that name once,
+`newCoreName`. Those are what a pass's code is written in, and each name in a
+module is the flat one's other spelling: a synonym of the synonym, a function
+that calls the function, which costs nothing once inlined. A tree language
+keeps one production of a name, since a node's kind is its rule's.
+
+In a `pass!` neither is written. A case is its production's name and a node
+is too -- `| Lam { … } -> Lam { … }` -- the node being the one of the sort
+that is being written, if that sort has one of the name. Where two sorts have
+a production of the name, the sort says which, as a constructor is said of
+its type: `| Pat.Var { … }`, `Pat.Var { … }`; a bare name two sorts have is an
+error saying both.
 
 Each language is written out as **tables**, not as a type of node. A program
 is a handful of arrays: for each node its production, the bytes of the source
@@ -488,9 +508,9 @@ together cover it, so the tables are matched as if they were a data type:
 ```meadow
 fun eval (a : CoreArena) env (e : CoreExpr) =
   match (a, e) with
-  | CoreExprInt n -> Value.Int n
-  | CoreExprLam param body -> Value.Closure param body env
-  | CoreExprApp func arg -> apply a (eval a env func) (eval a env arg)
+  | Core.Expr.Int n -> Value.Int n
+  | Core.Expr.Lam param body -> Value.Closure param body env
+  | Core.Expr.App func arg -> apply a (eval a env func) (eval a env arg)
   …
 ```
 

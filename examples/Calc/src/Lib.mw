@@ -588,16 +588,51 @@ pass! {
         Lam { param = param, body = body (depth + 1) }
 }
 
--- `fun x -> fun _ -> x`.
+-- `fun x -> fun _ -> x`, written with the language's names by module:
+-- `Shapes.Pat.newVar` is the pattern's variable, `Shapes.Expr.newVar` the
+-- expression's.
 fun nested () : ShapesProgram =
   runSt (\() ->
-    let b = newShapesBuilder () in
-    let x = newShapesPatVar b noMeta "x" in
-    let wild = newShapesPatWild b noMeta in
-    let seen = newShapesExprVar b noMeta "x" in
-    let inner = newShapesExprLam b noMeta wild seen in
-    let root = newShapesExprLam b noMeta x inner in
-    ShapesProgram (freezeShapes b) root)
+    let b = Shapes.newBuilder () in
+    let x = Shapes.Pat.newVar b noMeta "x" in
+    let wild = Shapes.Pat.newWild b noMeta in
+    let seen = Shapes.Expr.newVar b noMeta "x" in
+    let inner = Shapes.Expr.newLam b noMeta wild seen in
+    let root = Shapes.Expr.newLam b noMeta x inner in
+    ShapesProgram (Shapes.freeze b) root)
+
+-- Every name an expression binds or uses, outermost first: a `match` with an
+-- arm for each production of a sort, each by its sort's name and its own, is
+-- all of them.
+fun names (a : ShapesArena) (e : ShapesExpr) : [String] =
+  match (a, e) with
+  | Shapes.Expr.Var name -> [name]
+  | Shapes.Expr.Lam param body -> V.append (bound a param) (names a body)
+
+fun bound (a : ShapesArena) (p : ShapesPat) : [String] =
+  match (a, p) with
+  | Shapes.Pat.Var name -> [name]
+  | Shapes.Pat.Wild -> ["_"]
+
+@test fun aProductionIsNamedByItsSortsModule () =
+  let p = nested () in
+  let a =
+    assertEq
+      (names (Shapes.arena p) (Shapes.root p))
+      ["x", "_", "x"]
+      "the patterns' and the expressions', each by its own"
+  in
+  -- The same things by their flat names.
+  match (shapesArena p, shapesRoot p) with
+  | ShapesExprLam param _ ->
+      assertEq
+        (
+          Shapes.Pat.varName (shapesArena p) param,
+          shapesPatVarName (shapesArena p) param
+        )
+        ("x", "x")
+        "a field, read either way"
+  | _ -> assertEq "a lam" "" "the root"
 
 @test fun twoSortsEachHaveAProductionOfOneName () =
   let p = nested () in
@@ -605,13 +640,12 @@ fun nested () : ShapesProgram =
   match (a, shapesRoot p) with
   | ShapesExprLam param body ->
       let k =
-        assertEq (kindShapesPat a param) ShapesPatKind.Var "the pattern's"
+        assertEq (Shapes.Pat.kind a param) ShapesPatKind.Var "the pattern's"
       in
-      let n = assertEq (shapesPatVarName a param) "x" "and its name" in
       (match (a, body) with
        | ShapesExprLam _ inner ->
            assertEq
-             (kindShapesExpr a inner)
+             (Shapes.Expr.kind a inner)
              ShapesExprKind.Var
              "the expression's"
        | _ -> assertEq "a lam" "" "the inner function")
@@ -619,16 +653,16 @@ fun nested () : ShapesProgram =
 
 @test fun aCaseSaysWhichSortsProductionItIsFor () =
   let q = deepen 0 (nested ()) in
-  let a = depthsArena q in
-  match (a, depthsRoot q) with
-  | DepthsExprLam param body ->
+  let a = Depths.arena q in
+  match (a, Depths.root q) with
+  | Depths.Expr.Lam param body ->
       -- The pattern's `Var` was copied as it was; the expression's, two
       -- functions down, was written by the case.
-      let n = assertEq (depthsPatVarName a param) "x" "the pattern, copied" in
+      let n = assertEq (Depths.Pat.varName a param) "x" "the pattern, copied" in
       (match (a, body) with
-       | DepthsExprLam _ inner ->
+       | Depths.Expr.Lam _ inner ->
            assertEq
-             (depthsExprVarName a inner, depthsExprVarDepth a inner)
+             (Depths.Expr.varName a inner, Depths.Expr.varDepth a inner)
              ("x", 2)
              "the variable, and how deep"
        | _ -> assertEq "a lam" "" "the inner function")

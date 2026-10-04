@@ -758,7 +758,134 @@ fun langCode pub (l : Lang) : String =
         V.concatMap
           (\s -> V.map (\p -> prodCode pub l s p) (sortProds s))
           (langSorts l),
-        [if langGrammar l == "" then "" else fromCode pub l] ])
+        [if langGrammar l == "" then "" else fromCode pub l],
+        [dotted pub l] ])
+
+-- --- a language's names, by module -------------------------------------------
+--
+-- Everything above is named in one flat namespace -- `CoreExprLam`,
+-- `newCoreExprLam`, `coreExprLamBody` -- which is what a pass's code is
+-- written in. What a program is written in is the same things by module:
+-- the language's, and in it one a sort,
+--
+--   mod Core { newBuilder, freeze, arena, root, startOf, endOf
+--     mod Expr { kind, meta, view, sub
+--                Lam param body              the production, as a pattern
+--                newLam, newLamSpan          a node of it, written
+--                lamBody, lamParam           its fields, read
+--                setLamParam                 and written again (`with set`)
+--     } }
+--
+-- so `Core.Expr.Lam p b` is a pattern, `Core.Expr.newLam b m p body` a node
+-- and `Core.Expr.lamBody a e` a field, with no prefix anywhere. Each is the
+-- flat name's other spelling: a synonym of the synonym, a function that calls
+-- the function. The types stay as they are -- `CoreArena`, `CoreExpr` --
+-- since a type is not yet written by a path.
+fun dotted pub l : String =
+  let n = langName l in
+  let lower = lowerOf l in
+  let reading = readsWriting l in
+  let own =
+    V.concat
+      [ [ ("newBuilder", "new${n}Builder", " ()"),
+          ("freeze", "freeze${n}", " b"),
+          ("arena", "${lower}Arena", " p"),
+          ("root", "${lower}Root", " p"),
+          ("startOf", "${lower}Start", " a e"),
+          ("endOf", "${lower}End", " a e") ],
+        if reading
+        then
+          [ ("startIn", "${lower}StartIn", " b e"),
+            ("endIn", "${lower}EndIn", " b e") ]
+        else [] ]
+  in
+  let sorts = V.filter (\s -> not (V.isEmpty (sortProds s))) (langSorts l) in
+  "
+-- `${n}`, by module: what is written above, each by its sort's name and its
+-- own.
+${pub}mod ${n} {
+  use super (${S.join ", " (V.map flatOf own)})
+${S.join "" (V.map wrapper own)}
+${S.join "" (V.map (\s -> dottedSort l s) sorts)}}
+"
+
+-- A name in a module, the flat name it is another spelling of, and what it
+-- takes.
+fun flatOf (w : (String, String, String)) : String =
+  match w with | (_, flat, _) -> flat
+
+fun wrapper (w : (String, String, String)) : String =
+  match w with
+  | (name, flat, args) -> "  @pub fun ${name}${args} = ${flat}${args}\n"
+
+-- A sort's module: its own functions, and each production's pattern, writers
+-- and fields.
+fun dottedSort l s : String =
+  let n = langName l in
+  let lower = lowerOf l in
+  let t = "${n}${sortName s}" in
+  let reading = readsWriting l in
+  let prods = sortProds s in
+  let both = \name flat ->
+    V.append
+      [(name, flat, " a e")]
+      (if reading then [("${name}In", "${flat}In", " b e")] else [])
+  in
+  let ofSort =
+    V.concat
+      [ both "kind" "kind${t}",
+        both "meta" "meta${t}",
+        both "view" "view${t}",
+        [("sub", "sub${t}", " a e")],
+        V.concatMap
+          (\f -> both (fieldName f) "${fieldName f}${t}")
+          (common prods) ]
+  in
+  let ofProd = \p ->
+    let id = prodId s p in
+    let fs = prodFields p in
+    let given =
+      S.join "" (V.map (\i -> " f${show i}") (V.range 0 (V.len fs)))
+    in
+    V.concat
+      [ [ ("new${prodName p}", "new${n}${id}", " b m${given}"),
+          ("new${prodName p}Span", "new${n}${id}Span", " b s t${given}") ],
+        V.concatMap
+          (\f ->
+            let field = upperFirst (fieldName f) in
+            V.append
+              (both
+                "${lowerFirst (prodName p)}${field}"
+                "${lower}${id}${field}")
+              (if rewrites l and settable (fieldTy f)
+                then
+                  [ ( "set${prodName p}${field}",
+                      "set${n}${id}${field}",
+                      " b e v" ) ]
+                else []))
+          fs ]
+  in
+  let funs = V.append ofSort (V.concatMap ofProd prods) in
+  let synonym = \p ->
+    let params =
+      S.join "" (V.map (\f -> " f${upperFirst (fieldName f)}") (prodFields p))
+    in
+    "    @pub pattern ${prodName p}${params} <- ${n}${prodId s p}${params}\n"
+  in
+  "
+  @pub mod ${sortName s} {
+    use super.super (${S.join ", " (V.append (V.map flatOf funs) (V.map (\p -> "${n}${prodId s p}") prods))})
+${S.join "" (V.map (\w -> "  " ++ wrapper w) funs)}${S.join "" (V.map synonym prods)}    @pub pattern ${S.join " | " (V.map prodName prods)}
+  }
+"
+
+-- Whether a field of type `t` can be written again: one thing, not several
+-- or maybe one.
+fun settable (t : Ty) : Bool =
+  match t with
+  | TMany _ -> False
+  | TOpt _ -> False
+  | _ -> True
 
 -- What only a language written `with In` has.
 fun whenReading l (code : String) : String = if readsWriting l then code else ""

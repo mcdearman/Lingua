@@ -303,7 +303,7 @@ use Std.Macro.Delim.*
 use Std.Macro.Parse (Tokens, parseTokens, ident, keyword, punct, group, stringLit)
 use Std.String.Parse as P
 use Std.String.Parse (Parser)
-use Lingua.Pipe (keep, skip)
+use Lingua.Pipe (keep, skip, named)
 
 -- A command as written: its name and where, what help says, its fields.
 data Declared = Declared String Loc String [(String, Loc, Kind, String)]
@@ -311,7 +311,6 @@ data Declared = Declared String Loc String [(String, Loc, Kind, String)]
 use Declared.*
 use Std.Macro (Expand)
 
-def named : Parser Tokens (String, Loc) = P.label "a name" (P.token (\t -> match t with | Word w at -> Just (w, at) | _ -> None) [])
 
 def kindP : Parser Tokens Kind =
   P.choice

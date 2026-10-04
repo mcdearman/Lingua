@@ -420,22 +420,25 @@ use Std.Macro.Loc.*
 use Std.Macro.Parse (Tokens, parseTokens, ident, keyword, punct, stringLit)
 use Std.String.Parse as P
 use Std.String.Parse (Parser)
-use Lingua.Pipe (keep, skip)
+use Lingua.Pipe (keep, skip, named)
 
 -- The features a server can be given, and what each does.
 def features : [String] = ["text", "diagnostics", "tree", "hover", "definition", "references", "completion", "symbols", "format"]
 
-def namedP : Parser Tokens (String, Loc) = P.label "a name" (P.token (\t -> match t with | Word w at -> Just (w, at) | _ -> None) [])
 
 -- `| hover = hoverAt`: a feature, where it was written, and the function.
 def featureP : Parser Tokens ((String, Loc), String) =
   P.pure (\f fn -> (f, fn))
     |> skip (punct "|")
-    |> keep namedP
+    |> keep named
     |> skip (punct "=")
     |> keep ident
 
-def lspCall : Parser Tokens (Bool, String, String, String, [((String, Loc), String)]) =
+-- A feature as it is read: its name, where that was written, and the
+-- function it is.
+type LspFeature = ((String, Loc), String)
+
+def lspCall : Parser Tokens (Bool, String, String, String, [LspFeature]) =
   P.pure (\pub name lang db fs -> (M.isSome pub, name, lang, db, fs))
     |> keep (P.optional (keyword "pub"))
     |> keep ident

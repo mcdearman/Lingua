@@ -395,22 +395,24 @@ use Std.Macro.Loc.*
 use Std.Macro.Parse (Tokens, parseTokens, ident, keyword, punct, stringLit)
 use Std.String.Parse as P
 use Std.String.Parse (Parser)
-use Lingua.Pipe (keep, skip)
+use Lingua.Pipe (keep, skip, named)
 use Std.Macro (Expand)
 use Std.Collections.HashMap (HashMap)
 
-def buildNamed : Parser Tokens (String, Loc) = P.label "a name" (P.token (\t -> match t with | Word w at -> Just (w, at) | _ -> None) [])
 
 -- `| sources = ".ml"` or `| compile = compileUnit`: a setting, where it was
 -- written, and what it is.
 def setting : Parser Tokens ((String, Loc), String) =
   P.pure (\k v -> (k, v))
     |> skip (punct "|")
-    |> keep buildNamed
+    |> keep named
     |> skip (punct "=")
     |> keep (P.alt stringLit ident)
 
-def buildCall : Parser Tokens (Bool, String, String, [((String, Loc), String)]) =
+-- A setting as it is read: its name, where that was written, and its value.
+type BuildSetting = ((String, Loc), String)
+
+def buildCall : Parser Tokens (Bool, String, String, [BuildSetting]) =
   P.pure (\pub name lang ss -> (M.isSome pub, name, lang, ss))
     |> keep (P.optional (keyword "pub"))
     |> keep ident

@@ -524,7 +524,7 @@ use Std.Macro.Delim.*
 use Std.Macro.Parse (Tokens, parseTokens, ident, keyword, punct, number, treesUntil)
 use Std.String.Parse as P
 use Std.String.Parse (Parser)
-use Lingua.Pipe (keep, skip)
+use Lingua.Pipe (keep, skip, named)
 use Std.Macro (Expand)
 use Std.Result.Result.*
 use Lingua.Lang (Lang, Sort, Prod, Field, Ty, Keeping, TokenField)
@@ -542,7 +542,6 @@ data Written = WTok String | WName String Loc | WIndent [Written] | WGroup [Writ
 
 use Written.*
 
-def formatNamed : Parser Tokens (String, Loc) = P.label "a name" (P.token (\t -> match t with | Word w at -> Just (w, at) | _ -> None) [])
 
 -- `indent` and `group` before parentheses are what they say; anywhere else
 -- they are a child's name. The partings are words of their own.
@@ -562,16 +561,26 @@ fun writing (ts : [TokenTree]) (i : Int) (out : [Written]) : [Written] =
 def formatRule : Parser Tokens ((String, Loc), [TokenTree]) =
   P.pure (\r body -> (r, body))
     |> skip (punct "|")
-    |> keep formatNamed
+    |> keep named
     |> skip (punct "=")
     |> keep (treesUntil (isPunct "|"))
 
-def formatCall : Parser Tokens (Bool, String, (String, Loc), Maybe Int, Maybe Int, [((String, Loc), [TokenTree])]) =
-  P.pure (\pub name grammar unit width rules -> (M.isSome pub, name, grammar, unit, width, rules))
+-- A rule as it is read: its name, where that was written, and its body.
+type FormatRule = ((String, Loc), [TokenTree])
+
+-- A call: whether it is public, its name, the grammar's, how wide a level
+-- and a line are, and the rules.
+type FormatCall =
+  (Bool, String, (String, Loc), Maybe Int, Maybe Int, [FormatRule])
+
+def formatCall : Parser Tokens FormatCall =
+  P.pure
+    (\pub name grammar unit width rules ->
+      (M.isSome pub, name, grammar, unit, width, rules))
     |> keep (P.optional (keyword "pub"))
     |> keep ident
     |> skip (keyword "for")
-    |> keep formatNamed
+    |> keep named
     |> keep (P.optional (P.skipThen (keyword "indent") number))
     |> keep (P.optional (P.skipThen (keyword "width") number))
     |> keep (P.many formatRule)

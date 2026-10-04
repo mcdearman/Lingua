@@ -102,27 +102,45 @@ def literal : Parser Tokens (String, Loc, Int) =
         | _ -> None)
       [])
 
-def stringOnly : Parser Tokens String = P.map (\l -> match l with | (s, _, _) -> s) literal
+def stringOnly : Parser Tokens String =
+  P.map (\l -> match l with | (s, _, _) -> s) literal
 
 fun comma p = P.thenSkip p (P.optional (punct ","))
 
 -- A pattern of the lexer's type, up to the next comma or the end of its braces.
 def pattern : Parser Tokens [TokenTree] =
-  comma (P.bind (treesUntil (isPunct ",")) (\ts -> if V.isEmpty ts then P.fail "expected a pattern" else P.pure ts))
+  comma
+    (P.bind
+      (treesUntil (isPunct ","))
+      (\ts ->
+        if V.isEmpty ts then P.fail "expected a pattern" else P.pure ts))
 
 def section : Parser Tokens Section =
   P.choice
     [ P.skipThen (keyword "lexer") (P.map Lexer ident),
-      P.skipThen (keyword "trivia") (P.map Trivia (group Brace (P.many pattern))),
-      P.skipThen (keyword "tokens") (P.map Table (group Brace (P.many tokenEntry))),
-      P.skipThen (keyword "context") (P.map Context (group Brace (P.many tokenEntry))),
-      P.pure (\e ls -> Precedence e ls) |> skip (keyword "precedence") |> keep ident |> keep (group Brace (P.many level)),
+      P.pure Trivia
+        |> skip (keyword "trivia")
+        |> keep (group Brace (P.many pattern)),
+      P.pure Table
+        |> skip (keyword "tokens")
+        |> keep (group Brace (P.many tokenEntry)),
+      P.pure Context
+        |> skip (keyword "context")
+        |> keep (group Brace (P.many tokenEntry)),
+      P.pure (\e ls -> Precedence e ls)
+        |> skip (keyword "precedence")
+        |> keep ident
+        |> keep (group Brace (P.many level)),
       P.skipThen (keyword "lookahead") (P.map Lookahead number),
       P.skipThen
         (keyword "grammar")
         (P.choice
-          [ P.map (\l -> match l with | (s, at, start) -> Grammar s at start) literal,
-            P.map (\ts -> GrammarTrees ts (lastEnd ts)) (group Brace (treesUntil (\t -> False))) ]) ]
+          [ P.map
+              (\l -> match l with | (s, at, start) -> Grammar s at start)
+              literal,
+            P.map
+              (\ts -> GrammarTrees ts (lastEnd ts))
+              (group Brace (treesUntil (\t -> False))) ]) ]
 
 -- Where the last of `ts` ends: what a grammar in braces is said to stop at.
 fun lastEnd (ts : [TokenTree]) : Int =
@@ -141,12 +159,32 @@ def tokenEntry : Parser Tokens (String, Loc, [TokenTree], Maybe String) =
 def level : Parser Tokens (String, [String]) =
   comma
     (P.choice
-      [ P.skipThen (keyword "left") (P.map (\ops -> ("left", ops)) (P.some stringOnly)),
-        P.skipThen (keyword "right") (P.map (\ops -> ("right", ops)) (P.some stringOnly)),
-        P.skipThen (keyword "postfix") (P.map (\rs -> ("postfix", rs)) (P.some (P.label "a rule" (P.token (\t -> match t with | Word w _ -> (if V.elem w ["left", "right", "postfix"] then None else Just w) | _ -> None) [])))) ])
+      [ P.pure (\ops -> ("left", ops))
+          |> skip (keyword "left")
+          |> keep (P.some stringOnly),
+        P.pure (\ops -> ("right", ops))
+          |> skip (keyword "right")
+          |> keep (P.some stringOnly),
+        P.pure (\rs -> ("postfix", rs))
+          |> skip (keyword "postfix")
+          |> keep (P.some postfixRule) ])
+
+-- A rule a postfix level names: any word but the ones a level starts with.
+def postfixRule : Parser Tokens String =
+  P.label
+    "a rule"
+    (P.token
+      (\t ->
+        match t with
+        | Word w _ ->
+            (if V.elem w ["left", "right", "postfix"] then None else Just w)
+        | _ -> None)
+      [])
 
 def call : Parser Tokens (String, [Section]) =
-  P.pure (\pub name ss -> (name, match pub with | Just _ -> V.pushBack ss Public | None -> ss))
+  P.pure
+    (\pub name ss ->
+      (name, if M.isSome pub then V.pushBack ss Public else ss))
     |> keep (P.optional (keyword "pub"))
     |> keep ident
     |> keep (P.many section)

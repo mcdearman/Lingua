@@ -19,9 +19,25 @@
 
 use Std.String.Parse as P
 use Std.String.Parse (Parser)
+use Std.Macro (TokenTree, Loc)
+use Std.Macro.TokenTree.*
+use Std.Macro.Parse (Tokens)
 
 -- What `p` reads is the function's next argument.
-@pub fun keep (p : Parser s a) (pf : Parser s (a -> b)) : Parser s b = P.apply pf p
+@pub fun keep (p : Parser s a) (pf : Parser s (a -> b)) : Parser s b =
+  P.apply pf p
 
 -- `p` is read, and nothing kept of it.
 @pub fun skip (p : Parser s a) (pf : Parser s b) : Parser s b = P.thenSkip pf p
+
+-- A name among a macro's tokens, and where it was written: what an error
+-- about it points at.
+@pub def named : Parser Tokens (String, Loc) =
+  P.label
+    "a name"
+    (P.token
+      (\t ->
+        match t with
+        | Word w at -> Just (w, at)
+        | _ -> None)
+      [])

@@ -248,22 +248,28 @@ use Std.Macro.Loc.*
 use Std.Macro.Parse (Tokens, parseTokens, ident, keyword, punct, stringLit)
 use Std.String.Parse as P
 use Std.String.Parse (Parser)
-use Lingua.Pipe (keep, skip)
+use Lingua.Pipe (keep, skip, named)
 use Std.Macro (Expand)
 use Std.Result.Result.*
 
-def replNamed : Parser Tokens (String, Loc) = P.label "a name" (P.token (\t -> match t with | Word w at -> Just (w, at) | _ -> None) [])
 
 -- `| eval = shownOf` or `| prompt = "> "`: a feature, where it was written,
 -- and what it is -- and whether that was written in quotes.
 def replFeature : Parser Tokens ((String, Loc), (String, Bool)) =
   P.pure (\k v -> (k, v))
     |> skip (punct "|")
-    |> keep replNamed
+    |> keep named
     |> skip (punct "=")
-    |> keep (P.alt (P.map (\s -> (s, True)) stringLit) (P.map (\w -> (w, False)) ident))
+    |> keep
+         (P.alt
+           (P.map (\s -> (s, True)) stringLit)
+           (P.map (\w -> (w, False)) ident))
 
-def replCall : Parser Tokens (Bool, String, String, String, [((String, Loc), (String, Bool))]) =
+-- A feature as it is read: its name, where that was written, what it is,
+-- and whether that was in quotes.
+type ReplFeature = ((String, Loc), (String, Bool))
+
+def replCall : Parser Tokens (Bool, String, String, String, [ReplFeature]) =
   P.pure (\pub name lang db fs -> (M.isSome pub, name, lang, db, fs))
     |> keep (P.optional (keyword "pub"))
     |> keep ident

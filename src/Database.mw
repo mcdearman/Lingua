@@ -65,7 +65,7 @@ use Std.Macro.Delim.*
 use Std.Macro.Parse (Tokens, parseTokens, ident, keyword, punct, group, treesUntil)
 use Std.String.Parse as P
 use Std.String.Parse (Parser)
-use Lingua.Pipe (keep, skip)
+use Lingua.Pipe (keep, skip, named)
 
 -- --- reading ------------------------------------------------------------------------
 
@@ -77,20 +77,30 @@ data Decl = Decl Bool Bool String Loc String [TokenTree] [TokenTree] [TokenTree]
 use Decl.*
 use Std.Macro (Expand)
 
-def named : Parser Tokens (String, Loc) = P.label "a name" (P.token (\t -> match t with | Word w at -> Just (w, at) | _ -> None) [])
 
-def kind : Parser Tokens Bool = P.alt (P.map (\u -> True) (keyword "input")) (P.map (\u -> False) (keyword "query"))
+def kind : Parser Tokens Bool =
+  P.alt (P.mapTo True (keyword "input")) (P.mapTo False (keyword "query"))
 
 -- `(file : Int)`: the parameter, and the key's type.
 def param : Parser Tokens (String, [TokenTree]) =
-  group Paren (P.pure (\p t -> (p, t)) |> keep ident |> skip (punct ":") |> keep (treesUntil (\t -> False)))
+  group
+    Paren
+    (P.pure (\p t -> (p, t))
+      |> keep ident
+      |> skip (punct ":")
+      |> keep (treesUntil (\t -> False)))
 
 -- What a declaration is read as, before it is known to be one: an input has
 -- no body, and a query has to have one -- which depends on what was read,
 -- and is the one `bind` here.
 def decl : Parser Tokens Decl =
   P.bind
-    (P.pure (\kept input n pk vt body -> (Decl input (M.isSome kept) (fst n) (snd n) (fst pk) (snd pk) vt (M.unwrapOr [] body), M.isSome body))
+    (P.pure
+      (\kept input n pk vt body ->
+        let kept2 = M.isSome kept in
+        let body2 = M.unwrapOr [] body in
+        let d = Decl input kept2 (fst n) (snd n) (fst pk) (snd pk) vt body2 in
+        (d, M.isSome body))
       |> skip (punct "|")
       |> keep (P.optional (keyword "persisted"))
       |> keep kind
@@ -102,8 +112,10 @@ def decl : Parser Tokens Decl =
     (\read ->
       match read with
       | (d, bodied) ->
-          if isInput d and bodied then P.fail "an input is set from outside: it has no `= …`"
-          else if not (isInput d) and not bodied then P.fail "a query is what it works out: `= …`"
+          if isInput d and bodied then
+            P.fail "an input is set from outside: it has no `= …`"
+          else if not (isInput d) and not bodied then
+            P.fail "a query is what it works out: `= …`"
           else P.pure d)
 
 def databaseCall : Parser Tokens (Bool, (String, Loc), [Decl]) =

@@ -461,3 +461,36 @@ use Lingua.Lsp (classOf)
     (functions "let foo a = a in foo 1")
     ["foo@4", "foo@17"]
     "whole, it is resolved, as before"
+
+@test fun aThemeIsChosenAtThePrompt () =
+  -- `:theme quiet` is for the prompt, not MiniML: it is not evaluated, and
+  -- what is typed after it is shown as that theme shows it -- a number
+  -- magenta, where it was yellow.
+  let out =
+    prompted
+      (V.concat
+        [
+          typing "12",
+          [T.key Enter],
+          typing ":theme quiet",
+          [T.key Enter],
+          typing "34",
+          [T.key Enter]
+        ])
+  in
+  let a =
+    assertEq
+      (S.contains "\u{1b}[33m12\u{1b}[0m" out)
+      True
+      "before, as the first theme has a number"
+  in
+  let b =
+    assertEq
+      (S.contains "\u{1b}[35m34\u{1b}[0m" out)
+      True
+      "after, as `quiet` has it"
+  in
+  assertEq
+    (S.contains "34 : Int" out and not (S.contains "Error" out))
+    True
+    "and the line that chose it was no program"

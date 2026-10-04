@@ -834,7 +834,10 @@ found in, the likeliest first, and Enter puts the chosen name where the
 cursor was. What is typed is coloured as an editor colours a file: where the
 database has a server (`lsp!`), by the server's own answer to what each token
 is -- `tokensServer`, which is also what it tells the editor, name resolution
-and all -- and where it has none, from the tree. What is written is `runRepl ()`.
+and all -- and where it has none, from the tree. How each class is shown is a
+theme, of which a prompt has several built in; a line that starts with `:` is
+for the prompt and not the language, and `:theme` lists them, each in its own
+colours, while `:theme quiet` turns one on. What is written is `runRepl ()`.
 
 The line, the finder's matching and its drawing are packages of their own,
 which a compiler not written with Lingua can use as well:

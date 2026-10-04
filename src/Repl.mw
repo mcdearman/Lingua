@@ -1,0 +1,370 @@
+-- `repl!`: a prompt, from what a Lingua compiler already has.
+--
+--   repl! {
+--     pub Repl "miniml" for Session
+--     | text = setSessionSource
+--     | eval = shownOf
+--     | tree = treeOf
+--     | errors = errorsOf
+--     | completion = completionAt
+--     | declarations = declarationsOf
+--     | indent = indentStyle
+--     | prompt = "> "
+--     | history = ".miniml_history"
+--   }
+--
+-- A prompt keeps its compiler's database -- `for Session` makes it with
+-- `newSession` -- and what is being typed is a file of it: each feature is a
+-- function of the database and that file, as a language server's are
+-- (`lsp!`), and several are the server's own:
+--
+--   text          db -> Int -> String -> ()        set the file's text
+--   eval          db -> Int -> String              what entering it prints
+--   tree          db -> Int -> Green k             its lossless tree: how it
+--                                                  is coloured as it is typed
+--   errors        db -> Int -> [Int]               where the parser's errors
+--                                                  are: an entry whose only
+--                                                  ones are at its end is not
+--                                                  finished, and Enter goes on
+--                                                  to a new line of it
+--   completion    db -> Int -> Int -> [(String, String)]     Tab
+--   declarations  db -> Int -> [(String, String, String)]    Ctrl-F: each a
+--                                                  name, what it is, and what
+--                                                  is said of it
+--   indent        Green k -> String                what the line after an
+--                                                  unfinished entry opens
+--                                                  with: a formatter's
+--                                                  (`format!`) `indent<Name>`
+--   prompt        what a line starts with; `history`, the file entries are
+--                 kept in between runs
+--
+-- Only `text` and `eval` are needed. What is written is `runRepl ()`: entries
+-- read, each printed as `eval` says, until there are no more.
+--
+-- **The line** is `LineEditor`'s: the cursor moved about in what is typed,
+-- entries of several lines, the ones before brought back. **Ctrl-F** opens
+-- the finder under it: what is typed there narrows the declarations to those
+-- it is found in (`Fuzzy`), the likeliest first, with what is known of the
+-- one chosen beside them, and Enter puts its name where the cursor was. It
+-- is drawn with `Doodle`.
+--
+-- Where the input is not a terminal -- a file, a pipe -- entries are read a
+-- line at a time, as many lines as each takes to be finished, and nothing is
+-- drawn: a prompt run by a script prints what it would have.
+
+use Std.Collections.Vector as V
+use Std.String as S
+use Std.Char as C
+use Std.Maybe as M
+use Std.Maybe.Maybe.*
+use Std.Console (Console, writeOutput)
+use Std.Terminal as T
+use Std.Terminal (Key, Event)
+use Std.Terminal.Code.*
+use Lingua.Green (Green)
+use Lingua.Green as G
+use Lingua.Lsp (tokenClass)
+use LineEditor as LE
+use LineEditor (Editor, Outcome, Bound)
+use Doodle as D
+use Doodle (Buffer, Size, Rect)
+use Fuzzy as F
+
+-- --- what the line asks of the text -------------------------------------------
+
+-- Whether `text` is an entry not finished: the parser found something wrong
+-- with it, and only at its end -- what is there is right as far as it goes.
+@pub fun unfinished (text : String) (errors : [Int]) : Bool =
+  let last = stringByteLength (S.trimEnd text) in
+  not (V.isEmpty errors) and V.all (\at -> at >= last) errors
+
+-- The tree's text, its tokens coloured by what they are -- as an editor
+-- colours them (`Lingua.Lsp`'s classes), a line at a time, so that a token
+-- over several lines does not colour what starts the next.
+@pub fun coloured (name : k -> String) (g : Green k) : String =
+  S.join ""
+    (V.map
+      (\i ->
+        if not (G.isTokenAt g i) then ""
+        else
+          let t = G.textAt g i in
+          match M.andThen colourOf (tokenClass (name (G.kindAt g i)) t) with
+          | None -> t
+          | Just on -> S.join "\n" (V.map (\l -> if S.isEmpty l then l else on ++ l ++ "\u{1b}[0m") (S.split "\n" t)))
+      (V.range 0 (G.slots g)))
+
+-- A class of token's colour: keywords bold, numbers and strings a colour
+-- each, comments dim; names and operators as they are.
+fun colourOf (class : Int) : Maybe String =
+  if class == 0 then Just "\u{1b}[1;35m"
+  else if class == 2 then Just "\u{1b}[33m"
+  else if class == 3 then Just "\u{1b}[32m"
+  else if class == 4 then Just "\u{1b}[2m"
+  else None
+
+fun isNameChar (c : Char) : Bool = C.isAlphaNum c or C.code c == 95 or C.code c == 39
+
+-- Where the name the cursor is at the end of starts: both count characters.
+@pub fun nameStart (text : String) (at : Int) : Int =
+  let cs = S.chars text in
+  let rec back i = if i > 0 and isNameChar (V.getOr (C.fromCode 32) cs (i - 1)) then back (i - 1) else i in
+  back at
+
+-- The byte character `at` of `text` starts at: what a compiler's features
+-- count in.
+@pub fun byteAt (text : String) (at : Int) : Int = stringByteLength (S.fromChars (V.take (S.chars text) at))
+
+-- What Tab offers: of everything that could be written at the cursor, what
+-- starts as the name before it does -- and where that name starts.
+@pub fun candidates (text : String) (at : Int) (all : [(String, String)]) : (Int, [String]) =
+  let from = nameStart text at in
+  let typed = S.fromChars (V.drop (V.take (S.chars text) at) from) in
+  (from, V.filter (\n -> S.startsWith typed n and n != typed) (V.map fst all))
+
+-- --- the finder ---------------------------------------------------------------
+
+-- A finder: what has been typed in it, which of what that finds is chosen,
+-- and everything there is to find -- each a name, what it is, and what is
+-- said of it.
+@pub data Finder = Finder String Int [(String, String, String)]
+
+@pub fun finder (decls : [(String, String, String)]) : Finder = Finder "" 0 decls
+
+-- What a key did: the finder goes on; a name was chosen; or it was put away.
+@derive(Debug, PartialEq)
+@pub data Found = Looking | Chose String | PutAway
+
+use Found.*
+
+-- What the finder shows: everything, as it came, while nothing is typed;
+-- then what the query is found in, the likeliest first.
+@pub fun shownIn (f : Finder) : [(String, String, String)] =
+  match f with
+  | Finder query _ decls ->
+      if S.isEmpty (S.trim query) then decls
+      else V.map fst (F.rank query (\d -> match d with | (n, what, _) -> n ++ " " ++ what) decls)
+
+@pub fun findKey (f : Finder) (key : Key) : (Finder, Found) =
+  match f with
+  | Finder query at decls ->
+      let count = V.len (shownIn f) in
+      let to = \i -> (Finder query (max 0 (min (count - 1) i)) decls, Looking) in
+      match key.code with
+      | Escape -> (f, PutAway)
+      | Enter -> (match V.get (shownIn f) at with | Just (n, _, _) -> (f, Chose n) | None -> (f, PutAway))
+      | Up -> to (at - 1)
+      | Down -> to (at + 1)
+      | Backspace -> (Finder (S.fromChars (V.take (S.chars query) (S.charLength query - 1))) 0 decls, Looking)
+      | Character c ->
+          if key.ctrl then
+            (if c == "c" or c == "g" or c == "f" then (f, PutAway) else if c == "p" then to (at - 1) else if c == "n" then to (at + 1) else (f, Looking))
+          else (Finder (query ++ c) 0 decls, Looking)
+      | _ -> (f, Looking)
+
+-- The finder, drawn `cols` wide: the query, what it finds with the chosen
+-- one marked, and beside them what the chosen one is and what is said of it.
+@pub fun findDrawn (f : Finder) (cols : Int) : Buffer =
+  match f with
+  | Finder query at _ ->
+      let found = shownIn f in
+      let b0 = D.blank (max 20 (min cols 100)) 12 in
+      let b1 = D.border b0 (D.area b0) (D.dimmed D.style) "find" in
+      let inner = D.inside (D.area b0) in
+      let parts = D.rows inner [Size.Cells 1, Size.Share] in
+      let top = V.getOr inner parts 0 in
+      let rest = V.getOr inner parts 1 in
+      let sides = D.columns rest [Size.Percent 40, Size.Cells 1, Size.Share] in
+      let names = V.getOr rest sides 0 in
+      let about = V.getOr rest sides 2 in
+      let b2 = D.writeSpans b1 top 0 0 [("> ", D.dimmed D.style), (query, D.style)] in
+      let b3 = D.list b2 names (V.map (\d -> match d with | (n, _, _) -> (n, D.style)) found) at (D.invert D.style) in
+      match V.get found at with
+      | None -> D.writeIn b3 about 0 0 (D.dimmed D.style) "nothing found"
+      | Just (n, what, said) ->
+          let b4 = D.writeIn b3 about 0 0 (D.bold D.style) n in
+          let b5 = D.paragraph b4 (D.rect about.x (about.y + 1) about.w 2) D.style what in
+          D.paragraph b5 (D.rect about.x (about.y + 4) about.w (about.h - 4)) (D.dimmed D.style) said
+
+-- The finder shown under the cursor's line until a name is chosen or it is
+-- put away, and then gone: the name, if one was.
+@pub fun find (decls : [(String, String, String)]) : Maybe String ! { Console | e } = finding (finder decls)
+
+fun finding (f : Finder) : Maybe String ! { Console | e } =
+  let cols = fst (T.size ()) in
+  let u = writeOutput (D.below (findDrawn f (if cols > 0 then cols else 80))) in
+  match T.nextEvent () with
+  | Event.Closed -> (let w = writeOutput D.eraseBelow in None)
+  | Event.Pressed key ->
+      (match findKey f key with
+       | (f2, Looking) -> finding f2
+       | (_, Chose n) -> (let w = writeOutput D.eraseBelow in Just n)
+       | (_, PutAway) -> (let w = writeOutput D.eraseBelow in None))
+  | _ -> finding f
+
+-- --- the prompt ---------------------------------------------------------------
+
+-- The line's editor, of what the compiler says of a text: its tree, where
+-- the parser's errors are, what a kind is called, what the next line opens
+-- with, what could be written at a byte of it, and what there is to find --
+-- none, for a prompt with no finder.
+@pub fun editorOf (prompt : String) treeOf errorsOf name indentOf completionsOf declsOf =
+  let found = \text at ->
+    match find (declsOf text) with
+    | Just n ->
+        let cs = S.chars text in
+        let from = nameStart text at in
+        Bound.Edited (S.fromChars (V.concat [V.take cs from, S.chars n, V.drop cs at])) (from + S.charLength n)
+    | None -> Bound.Kept in
+  { LE.editor |
+    prompt = prompt,
+    continued = S.repeat " " (S.charLength prompt),
+    highlight = \t -> coloured name (treeOf t),
+    finished = \t -> not (unfinished t (errorsOf t)),
+    indent = \t -> indentOf (treeOf t),
+    complete = \t at -> candidates t at (completionsOf t (byteAt t at)),
+    bindings = [(T.ctrl "f", found)] }
+
+-- Entries read with `editor` and each printed as `eval` says, until there
+-- are no more: kept in the file `history`, when it names one.
+@pub fun run editor (history : String) eval =
+  entering editor history eval (if S.isEmpty history then [] else LE.loadHistory history)
+
+fun entering editor (history : String) eval (before : [String]) =
+  match LE.readEntry editor before with
+  | Outcome.Ended -> ()
+  | Outcome.Interrupted -> entering editor history eval before
+  | Outcome.Entered text ->
+      if S.isEmpty (S.trim text) then entering editor history eval before
+      else
+        let u = if S.isEmpty history then () else LE.saveEntry history text in
+        let w = writeOutput (eval text ++ "\n") in
+        entering editor history eval (V.pushBack before text)
+
+-- --- repl! ----------------------------------------------------------------------------
+
+use Std.Macro (TokenTree, Loc, isPunct)
+use Std.Macro.TokenTree.*
+use Std.Macro.Loc.*
+use Std.Macro.Parse (Tokens, parseTokens, ident, keyword, punct, stringLit)
+use Std.String.Parse as P
+use Std.String.Parse (Parser)
+use Std.Macro (Expand)
+use Std.Result.Result.*
+
+def replNamed : Parser Tokens (String, Loc) = P.label "a name" (P.token (\t -> match t with | Word w at -> Just (w, at) | _ -> None) [])
+
+-- `| eval = shownOf` or `| prompt = "> "`: a feature, where it was written,
+-- and what it is -- and whether that was written in quotes.
+def replFeature : Parser Tokens ((String, Loc), (String, Bool)) =
+  P.skipThen (punct "|") (P.bind replNamed (\k -> P.skipThen (punct "=") (P.map (\v -> (k, v)) (P.alt (P.map (\s -> (s, True)) stringLit) (P.map (\w -> (w, False)) ident)))))
+
+def replCall : Parser Tokens (Bool, String, String, String, [((String, Loc), (String, Bool))]) =
+  P.bind (P.optional (keyword "pub")) (\pub ->
+    P.bind ident (\name ->
+      P.bind stringLit (\lang ->
+        P.skipThen (keyword "for") (
+          P.bind ident (\db ->
+            P.map (\fs -> (M.isSome pub, name, lang, db, fs)) (P.some replFeature))))))
+
+def replFeatures : [String] = ["text", "eval", "tree", "errors", "completion", "declarations", "indent", "prompt", "history"]
+
+def replWritten : [String] = ["prompt", "history"]
+
+@macro
+@pub fun repl (ts : [TokenTree]) : [TokenTree] ! { Expand | e } =
+  match parseTokens replCall ts with
+  | Err failed -> failed
+  | Ok (pub, name, lang, db, fs) ->
+      match V.find (\f -> not (V.elem (fst (fst f)) replFeatures)) fs with
+      | Just f -> [Fail "a prompt has no `${fst (fst f)}`: it has ${S.join ", " (V.map (\x -> "`${x}`") replFeatures)}" (snd (fst f))]
+      | None ->
+          match V.find (\f -> V.elem (fst (fst f)) replWritten != snd (snd f)) fs with
+          | Just f -> [Fail (if snd (snd f) then "`${fst (fst f)}` is a function's name, not text in quotes" else "`${fst (fst f)}` is text, in quotes") (snd (fst f))]
+          | None ->
+              match V.find (\k -> not (V.any (\f -> fst (fst f) == k) fs)) ["text", "eval"] with
+              | Just k -> [Fail "a prompt needs `${k}`: ${if k == "text" then "how what is typed is given to the compiler" else "what entering it prints"}" Nowhere]
+              | None -> [Code (replCode (if pub then "@pub " else "") name lang db fs)]
+
+fun replCode pub name lang db fs =
+  let given = \k -> M.map (\f -> fst (snd f)) (V.find (\f -> fst (fst f) == k) fs) in
+  let fn = \k -> M.unwrapOr "" (given k) in
+  let setting = \t -> "(let _ = ${fn "text"} db 0 ${t} in " in
+  -- With no tree there is nothing to colour, indent or call unfinished.
+  let tree = (match given "tree" with | Just f -> "(Just (\\t -> ${setting "t"}${f} db 0)))" | None -> "None") in
+  let errors = (match given "errors" with | Just f -> "(\\t -> ${setting "t"}${f} db 0))" | None -> "(\\t -> [])") in
+  let indent = (match given "indent" with | Just f -> "(\\g -> ${f} g)" | None -> "(\\g -> \"\")") in
+  let completion = (match given "completion" with | Just f -> "(\\t at -> ${setting "t"}${f} db 0 at))" | None -> "(\\t at -> [])") in
+  let decls = (match given "declarations" with | Just f -> "(\\t -> ${setting "t"}${f} db 0))" | None -> "(\\t -> [])") in
+  "use Lingua.Repl as LinguaRepl
+
+-- ${lang}'s prompt: entries read and evaluated until there are no more.
+${pub}fun run${name} () =
+  let db = new${db} () in
+  LinguaRepl.run
+    (LinguaRepl.editorFor ${quoted (M.unwrapOr "> " (given "prompt"))} ${tree} ${errors} (\\k -> display k) ${indent} ${completion} ${decls})
+    ${quoted (fn "history")}
+    (\\t -> ${setting "t"}${fn "eval"} db 0))
+"
+
+fun quoted (s : String) : String =
+  "\"" ++ S.join "" (V.map (\i -> let c = stringSlice s i (i + 1) in if c == "\"" then "\\\"" else if c == "\\" then "\\\\" else if c == "$" then "\\$" else c) (V.range 0 (stringByteLength s))) ++ "\""
+
+-- The editor a prompt is given: `editorOf`, or -- with no tree to ask -- one
+-- that colours nothing and takes every entry as finished.
+@pub fun editorFor (prompt : String) treeOf errorsOf name indentOf completionsOf declsOf =
+  match treeOf with
+  | Just tree -> editorOf prompt tree errorsOf name indentOf completionsOf declsOf
+  | None -> { LE.editor | prompt = prompt, continued = S.repeat " " (S.charLength prompt) }
+
+-- --- tests -------------------------------------------------------------------
+
+use Std.Test (assertEq)
+use Std.Console (withOutput)
+
+@test fun anEntryIsUnfinishedWhenItsOnlyErrorsAreAtItsEnd () =
+  let a = assertEq (unfinished "let x =" [7]) True "something is missing after it" in
+  let b = assertEq (unfinished "let x =  \n" [7]) True "and space after it is not something" in
+  let c = assertEq (unfinished "let = 1 in x" [4]) False "an error inside it is an error" in
+  let d = assertEq (unfinished "let = 1 in" [4, 10]) False "even with one at the end too" in
+  assertEq (unfinished "1 + 2" []) False "and none is finished"
+
+@test fun tabOffersWhatStartsAsTheNameDoes () =
+  let all = [("length", "function"), ("lines", "function"), ("let", "keyword"), ("map", "function")] in
+  let a = assertEq (candidates "x + le" 6 all) (4, ["length", "let"]) "from where the name starts" in
+  let b = assertEq (candidates "le" 2 all) (0, ["length", "let"]) "at the text's start" in
+  let c = assertEq (candidates "let" 3 all) (0, []) "nothing for what is whole" in
+  assertEq (byteAt "\u{e9}a" 1) 2 "and a compiler is told the byte, which is not the character"
+
+def things : [(String, String, String)] =
+  [("length", "[a] -> Int", "How many there are."), ("lines", "String -> [String]", "Each line of a text."), ("map", "(a -> b) -> [a] -> [b]", "Each, through a function.")]
+
+fun keys (text : String) : [Key] = V.map (\c -> T.key (Character (C.toString c))) (S.chars text)
+
+fun after (ks : [Key]) : (Finder, Found) = V.foldl (\acc k -> findKey (fst acc) k) (finder things, Looking) ks
+
+@test fun theFinderNarrowsAsItIsTypedIn () =
+  let names = \f -> V.map (\d -> match d with | (n, _, _) -> n) (shownIn f) in
+  let a = assertEq (names (finder things)) ["length", "lines", "map"] "everything, with nothing typed" in
+  let b = assertEq (names (fst (after (keys "li")))) ["lines", "length"] "what the letters are found in, the likeliest first: `li` starts one, and is an `l` and the `I` of `Int` in the other" in
+  let c = assertEq (names (fst (after (keys "String")))) ["lines"] "by what it is, too" in
+  let d = assertEq (names (fst (after (keys "lix")))) [] "nothing, when a letter is in none" in
+  assertEq (names (fst (after (V.append (keys "lix") [T.key Backspace])))) ["lines", "length"] "and what there was, with the letter taken back"
+
+@test fun theFinderChoosesOrIsPutAway () =
+  let a = assertEq (snd (after [T.key Down, T.key Enter])) (Chose "lines") "the second, chosen" in
+  let b = assertEq (snd (after [T.key Down, T.key Down, T.key Down, T.key Up, T.key Enter])) (Chose "lines") "no further down than the last" in
+  let c = assertEq (snd (after (V.append (keys "ma") [T.key Enter]))) (Chose "map") "the one found" in
+  let d = assertEq (snd (after [T.key Escape])) PutAway "Escape puts it away" in
+  assertEq (snd (after (V.append (keys "zzz") [T.key Enter]))) PutAway "and so does choosing nothing"
+
+@test fun theFinderIsDrawnWithWhatIsChosenBesideIt () =
+  let drawn = D.plain (findDrawn (fst (after [T.key Down])) 60) in
+  let a = assertEq (V.getOr "" drawn 0) "╭─ find ───────────────────────────────────────────────────╮" "a border, titled" in
+  let b = assertEq (S.startsWith "│> " (V.getOr "" drawn 1)) True "the query's line" in
+  let c = assertEq (S.contains "lines" (V.getOr "" drawn 3) and S.contains "String -> [String]" (V.getOr "" drawn 3)) True "the chosen name's row, and what it is beside the list" in
+  assertEq (V.len drawn) 12 "twelve rows of it"
+
+@test fun aNameIsFoundFromKeys () =
+  let events = V.map (\k -> Event.Pressed k) (V.append (keys "ma") [T.key Enter]) in
+  let got = withOutput (\() -> T.withEvents events (\() -> find things)) in
+  assertEq (fst got) (Just "map") "what was chosen"

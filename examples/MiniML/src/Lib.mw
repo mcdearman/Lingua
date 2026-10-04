@@ -94,7 +94,7 @@ fun command (cli : Cli) =
   match cli with
   | Cli.Check r -> finish (checkFiles r.files)
   | Cli.Run r -> finish (runFile r.file)
-  | Cli.Repl -> repl ()
+  | Cli.Repl -> runPrompt ()
   | Cli.Demo -> demo ()
   | Cli.Build r -> finish (buildBuild (M.unwrapOr "." r.root))
   | Cli.Lsp -> serveServer ()
@@ -148,14 +148,6 @@ fun runFile (path : String) =
       match sessionResult db 1 with
       | Ok out -> (let u = println out in True)
       | Err ds -> (let u = writeOutput (renderToOutput path (sessionSource db 1) ds) in False)
-
--- A prompt before each line when someone is typing them, and none when
--- they come from a file or a pipe.
-fun repl () =
-  let u = if isTerminal 0 then writeOutput "> " else () in
-  match readLine () with
-  | None -> ()
-  | Just line -> (let w = println (shown line) in repl ())
 
 -- What the REPL prints for a line: `replLine`, its diagnostics in colour
 -- where `renderToOutput` says so.

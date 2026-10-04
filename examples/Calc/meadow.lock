@@ -4,6 +4,34 @@
 version = 1
 
 [[package]]
+name = "Anstyle"
+source = "git+https://github.com/mcdearman/MeadowAnstyle?version=0.2.0"
+version = "0.2.1"
+rev = "66c067ee073ae777336c5bb8f8bc2eac71e14a59"
+tree = "344ca224a72f8d22632104c46f238d134138b8d9"
+
+[[package]]
+name = "Doodle"
+source = "git+https://github.com/mcdearman/Doodle?version=0.1.1"
+version = "0.1.1"
+rev = "7ceb460617dea217d00b1e6d2c94ca81a203da0d"
+tree = "2655c848bec2e2251841f9813d6a47e11d976d56"
+
+[[package]]
+name = "Fuzzy"
+source = "git+https://github.com/mcdearman/Fuzzy?version=0.1.0"
+version = "0.1.0"
+rev = "381f057669eac9b3ad80dd0a8e0ae2fc5874e636"
+tree = "809c6aa34620f8b8270c7811bb4b54e56719cbfe"
+
+[[package]]
+name = "LineEditor"
+source = "git+https://github.com/mcdearman/LineEditor?version=0.2.0"
+version = "0.2.0"
+rev = "ec0a3c8ea0bac7635d30e45ceac7dc78a65eac86"
+tree = "93d1e369435df7a4ee908de2cf610a59ac76bdc1"
+
+[[package]]
 name = "Nettle"
 source = "git+https://github.com/mcdearman/Nettle.git?branch=master"
 rev = "b59e370aea76f2fb5b2072c28f02564f047284fe"
@@ -21,6 +49,13 @@ name = "Scythe"
 source = "git+https://github.com/mcdearman/Scythe.git?branch=master"
 rev = "ea75605dc43f3db611c62c0abd435a2d3637720f"
 tree = "f62c1bdef2b708fef826792c9821f863f63380b1"
+
+[[package]]
+name = "UnicodeWidth"
+source = "git+https://github.com/mcdearman/MeadowUnicodeWidth?version=0.2.0"
+version = "0.2.0"
+rev = "a4580b8010ecfba736c0f7d105a308db6972e60e"
+tree = "018d5c43b7b4c92e41fdcb4b91907ae7654bd335"
 
 [[package]]
 name = "UnicodeWidth"

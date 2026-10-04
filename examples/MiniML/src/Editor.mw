@@ -3,7 +3,8 @@
 -- changed: hovering reads the elaboration, going to a definition the binders,
 -- and neither runs again until the file does.
 
-use Lingua (lsp!)
+use Lingua (lsp!, repl!)
+use Lingua.Diagnostic (renderToOutput)
 use Lingua.Lang (Meta)
 use MiniML.Syntax
 use MiniML.Types
@@ -27,6 +28,40 @@ lsp! {
     | symbols = symbolsOf
     | format = formattedOf
 }
+
+-- The prompt (`repl!`), over the same session and with the server's own
+-- features: what is typed is coloured from its tree, an entry the parser
+-- found nothing wrong with but its end goes on to a new line -- indented as
+-- the formatter says -- Tab completes from what can be seen where the cursor
+-- is, and Ctrl-F finds a name among what the entry binds.
+repl! {
+  pub Prompt "miniml" for Session
+    | text = setSessionSource
+    | eval = shownIn
+    | tree = treeOf
+    | errors = errorsOf
+    | completion = completionAt
+    | declarations = declarationsOf
+    | indent = indentStyle
+    | prompt = "> "
+    | history = ".miniml_history"
+}
+
+-- What entering a program prints: its value and type, or its diagnostics
+-- drawn against it.
+fun shownIn db file =
+  match toResult (\() -> sessionResult db file) with
+  | Ok (Ok out) -> out
+  | Ok (Err ds) -> renderToOutput "input.ml" (answered "" (\() -> sessionSource db file)) ds
+  | Err e -> "miniml: a query could not be answered"
+
+-- Where the parser found something wrong.
+fun errorsOf db file = answered [] (\() -> V.map fst (snd (sessionParsed db file)))
+
+-- What there is to find: everything the entry binds, and what kind of thing
+-- each is.
+fun declarationsOf db file =
+  V.concatMap (\(b : Binder) -> if b.kind == "import" then [] else [(b.name, b.kind, "Bound in what is being typed.")]) (bindersOf db file)
 
 -- The file as MiniML's formatter sets it out (`format!`, in `Syntax`).
 fun formattedOf db file = formatStyle (treeOf db file)
@@ -134,3 +169,43 @@ fun spelled src (ps : [(Int, Meta)]) = V.map (\p -> match snd p with | Meta a b 
     "[{\"range\":{\"start\":{\"line\":0,\"character\":0},\"end\":{\"line\":2,\"character\":4}},\"newText\":\"let x = 1 in\\nx\"}]"
     "the whole file, replaced" in
   assertEq (J.render (formatReply "1" "1")) "[]" "and nothing to do for one already set out"
+
+-- The prompt, given keys.
+
+use Std.Console (withOutput)
+use Std.Terminal as T
+use Std.Terminal (Event, Key)
+use Std.Terminal.Code.*
+use Std.Char as C
+use Std.String as S
+use Std.Fs (removeFile)
+
+fun typing (text : String) : [Key] = V.map (\c -> T.key (Character (C.toString c))) (S.chars text)
+
+-- What the prompt writes, given `keys` and then no more: the last lines of
+-- it that are not what it drew of the entries.
+fun prompted (keys : [Key]) =
+  let out = snd (withOutput (\() -> T.withEvents (V.map (\k -> Event.Pressed k) keys) (\() -> runPrompt ()))) in
+  let u = removeFile ".miniml_history" in
+  out
+
+@test fun anEntryIsEvaluatedWhenItIsEntered () =
+  assertEq (S.contains "\n\r3 : Int\n" (prompted (V.append (typing "1 + 2") [T.key Enter]))) True "its value and type, on a line of their own"
+
+@test fun anUnfinishedEntryGoesOnIndented () =
+  -- `let x =` is right as far as it goes: Enter starts a new line, a level
+  -- in, and the entry is entered when it is whole.
+  let out = prompted (V.concat [typing "let x =", [T.key Enter], typing "41 + 1 in x", [T.key Enter]]) in
+  let a = assertEq (S.contains "42 : Int" out) True "the whole of it, evaluated" in
+  assertEq (S.contains "\n\r    \u{1b}[33m41" out) True "its second line after the prompt's width and a level in, the number coloured"
+
+@test fun aWrongEntryIsEnteredAndSaidToBeWrong () =
+  assertEq (S.contains "cannot unify" (prompted (V.append (typing "1 + true") [T.key Enter]))) True "an error inside it is not something to go on from"
+
+@test fun aNameIsFoundAndPutWhereTheCursorWas () =
+  -- Ctrl-F, `tot` to find `total`, Enter to take it, Enter to enter the entry.
+  let out = prompted (V.concat [typing "let total = 7 in to", [T.ctrl "f"], typing "tot", [T.key Enter, T.key Enter]]) in
+  assertEq (S.contains "7 : Int" out) True "`to` became `total`"
+
+@test fun tabCompletesANameThatCanBeSeen () =
+  assertEq (S.contains "7 : Int" (prompted (V.concat [typing "let total = 7 in tot", [T.key Tab, T.key Enter]]))) True "the one way it could go on"

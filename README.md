@@ -116,6 +116,11 @@ syntax! {
   not fit -- and writes the function that lays a program out within a width,
   which is the editor's formatting, and the one that says where the line
   after an unfinished entry starts.
+- **`repl!`** declares a prompt over the compiler's database, with the
+  server's features: what is typed is coloured from its tree, an entry the
+  parser faults only at its end goes on to a new line, indented as the
+  formatter says, Tab completes, and Ctrl-F finds a declaration by a few of
+  its letters.
 - **`make!`** declares a build over compilation units: each compiled in
   dependency order, those that can be at once, and again only when its files
   or an interface it read changed -- what happens inside a unit being the

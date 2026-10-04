@@ -774,6 +774,30 @@ was only redone for the file that changed. The protocol is Lingua's -- its
 framing, which needs Meadow's `Console.readExact`, its UTF-16 positions, the
 documents open -- and the server says it can do exactly what it was given.
 
+**`repl!`** declares a prompt over the compiler's database, with the
+server's features: what is being typed is a file of the session, and `text`,
+`tree` and `completion` are the functions `lsp!` takes. `eval` is what
+entering an entry prints. `errors` is where the parser found something
+wrong: an entry whose only errors are at its end is right as far as it goes,
+so Enter starts a new line of it rather than entering it -- which is all a
+language has to say to have entries of several lines. `indent` is what that
+line opens with, a formatter's `indent<Name>` (below), so an entry is
+indented as it is typed the way it would be formatted. `declarations` is
+what Ctrl-F finds among -- each a name, what it is, and what is said of it --
+in a finder under the line: what is typed there narrows them to what it is
+found in, the likeliest first, and Enter puts the chosen name where the
+cursor was. The tree colours what is typed, as an editor would. What is
+written is `runRepl ()`.
+
+The line, the finder's matching and its drawing are packages of their own,
+which a compiler not written with Lingua can use as well:
+[LineEditor](https://github.com/mcdearman/LineEditor),
+[Fuzzy](https://github.com/mcdearman/Fuzzy) and
+[Doodle](https://github.com/mcdearman/Doodle), over `Std.Terminal`. The
+editor and the finder are each a state and a function of a key, so a prompt
+is tested by giving it keys. Where the input is not a terminal, entries are
+read a line at a time and nothing is drawn.
+
 **`format!`** declares a formatter against a grammar's rules. A rule of the
 formatter is a rule of the grammar written again as what a node of it holds,
 in the grammar's order -- a token as it is written, a child by its label --
@@ -888,10 +912,8 @@ unit may want threads and a cache of its own.
 7. **Formatting and the prompt** (§8). `format!`: rules written against
    the grammar, laid out within a width or only indented, the editor's
    formatting and the indent a continuation line opens with -- done, on
-   MiniML. To come: `repl!`, a prompt over a session with the server's features --
-   an entry unfinished while the parser's only errors are at its end,
-   indented by the formatter, with a finder over the session's declarations
-   -- which waits on a terminal Meadow's `Std` can drive.
+   MiniML. `repl!`: a prompt over a session, with entries of several lines,
+   the formatter's indentation, completion and a finder -- done, on MiniML.
 
 ## Open questions
 

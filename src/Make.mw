@@ -395,6 +395,7 @@ use Std.Macro.Loc.*
 use Std.Macro.Parse (Tokens, parseTokens, ident, keyword, punct, stringLit)
 use Std.String.Parse as P
 use Std.String.Parse (Parser)
+use Lingua.Pipe (keep, skip)
 use Std.Macro (Expand)
 use Std.Collections.HashMap (HashMap)
 
@@ -403,13 +404,18 @@ def buildNamed : Parser Tokens (String, Loc) = P.label "a name" (P.token (\t -> 
 -- `| sources = ".ml"` or `| compile = compileUnit`: a setting, where it was
 -- written, and what it is.
 def setting : Parser Tokens ((String, Loc), String) =
-  P.skipThen (punct "|") (P.bind buildNamed (\k -> P.skipThen (punct "=") (P.map (\v -> (k, v)) (P.alt stringLit ident))))
+  P.pure (\k v -> (k, v))
+    |> skip (punct "|")
+    |> keep buildNamed
+    |> skip (punct "=")
+    |> keep (P.alt stringLit ident)
 
 def buildCall : Parser Tokens (Bool, String, String, [((String, Loc), String)]) =
-  P.bind (P.optional (keyword "pub")) (\pub ->
-    P.bind ident (\name ->
-      P.bind stringLit (\lang ->
-        P.map (\ss -> (M.isSome pub, name, lang, ss)) (P.some setting))))
+  P.pure (\pub name lang ss -> (M.isSome pub, name, lang, ss))
+    |> keep (P.optional (keyword "pub"))
+    |> keep ident
+    |> keep stringLit
+    |> keep (P.some setting)
 
 -- The settings a build needs, and those it may add.
 def settings : [String] = ["sources", "manifest", "compile"]

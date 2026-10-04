@@ -53,6 +53,7 @@ use Std.Macro.Delim.*
 use Std.Macro.Parse (Tokens, parseTokens, ident, keyword, punct, group, treesUntil, number)
 use Std.String.Parse as P
 use Std.String.Parse (Parser)
+use Lingua.Pipe (keep, skip)
 use Lingua.Ungrammar (Rule, Def, parseGrammar, parseGrammarTrees, defName, defAt, defBody)
 use Lingua.Ungrammar.Rule.*
 use Lingua.Look (Grammar, Config, Tree, decide, clashIn, treeCode, spelled, endOfInput, whole, grammar, stepsTaken, firstPair)
@@ -115,7 +116,7 @@ def section : Parser Tokens Section =
       P.skipThen (keyword "trivia") (P.map Trivia (group Brace (P.many pattern))),
       P.skipThen (keyword "tokens") (P.map Table (group Brace (P.many tokenEntry))),
       P.skipThen (keyword "context") (P.map Context (group Brace (P.many tokenEntry))),
-      P.skipThen (keyword "precedence") (P.bind ident (\e -> P.map (\ls -> Precedence e ls) (group Brace (P.many level)))),
+      P.pure (\e ls -> Precedence e ls) |> skip (keyword "precedence") |> keep ident |> keep (group Brace (P.many level)),
       P.skipThen (keyword "lookahead") (P.map Lookahead number),
       P.skipThen
         (keyword "grammar")
@@ -131,9 +132,11 @@ fun lastEnd (ts : [TokenTree]) : Int =
 
 -- `"name" = Pattern`, or `"name" as Kind = Pattern`.
 def tokenEntry : Parser Tokens (String, Loc, [TokenTree], Maybe String) =
-  P.bind literal (\l ->
-    P.bind (P.optional (P.skipThen (keyword "as") ident)) (\n ->
-      P.skipThen (punct "=") (P.map (\pat -> match l with | (s, at, _) -> (s, at, pat, n)) pattern)))
+  P.pure (\l n pat -> match l with | (s, at, _) -> (s, at, pat, n))
+    |> keep literal
+    |> keep (P.optional (P.skipThen (keyword "as") ident))
+    |> skip (punct "=")
+    |> keep pattern
 
 def level : Parser Tokens (String, [String]) =
   comma
@@ -143,9 +146,10 @@ def level : Parser Tokens (String, [String]) =
         P.skipThen (keyword "postfix") (P.map (\rs -> ("postfix", rs)) (P.some (P.label "a rule" (P.token (\t -> match t with | Word w _ -> (if V.elem w ["left", "right", "postfix"] then None else Just w) | _ -> None) [])))) ])
 
 def call : Parser Tokens (String, [Section]) =
-  P.bind
-    (P.optional (keyword "pub"))
-    (\pub -> P.bind ident (\name -> P.map (\ss -> (name, match pub with | Just _ -> V.pushBack ss Public | None -> ss)) (P.many section)))
+  P.pure (\pub name ss -> (name, match pub with | Just _ -> V.pushBack ss Public | None -> ss))
+    |> keep (P.optional (keyword "pub"))
+    |> keep ident
+    |> keep (P.many section)
 
 -- --- the macro -----------------------------------------------------------------
 

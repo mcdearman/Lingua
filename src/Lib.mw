@@ -14,6 +14,7 @@
 @pub mod Rewrite
 @pub mod Ast
 @pub mod Lang
+@pub mod Pipe
 @pub mod Gen
 @pub mod Pass
 @pub mod Query

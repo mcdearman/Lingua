@@ -420,6 +420,7 @@ use Std.Macro.Loc.*
 use Std.Macro.Parse (Tokens, parseTokens, ident, keyword, punct, stringLit)
 use Std.String.Parse as P
 use Std.String.Parse (Parser)
+use Lingua.Pipe (keep, skip)
 
 -- The features a server can be given, and what each does.
 def features : [String] = ["text", "diagnostics", "tree", "hover", "definition", "references", "completion", "symbols", "format"]
@@ -428,14 +429,20 @@ def namedP : Parser Tokens (String, Loc) = P.label "a name" (P.token (\t -> matc
 
 -- `| hover = hoverAt`: a feature, where it was written, and the function.
 def featureP : Parser Tokens ((String, Loc), String) =
-  P.skipThen (punct "|") (P.bind namedP (\f -> P.skipThen (punct "=") (P.map (\fn -> (f, fn)) ident)))
+  P.pure (\f fn -> (f, fn))
+    |> skip (punct "|")
+    |> keep namedP
+    |> skip (punct "=")
+    |> keep ident
 
 def lspCall : Parser Tokens (Bool, String, String, String, [((String, Loc), String)]) =
-  P.bind (P.optional (keyword "pub")) (\pub ->
-    P.bind ident (\name ->
-      P.bind stringLit (\lang ->
-        P.skipThen (keyword "for") (P.bind ident (\db ->
-          P.map (\fs -> (M.isSome pub, name, lang, db, fs)) (P.some featureP))))))
+  P.pure (\pub name lang db fs -> (M.isSome pub, name, lang, db, fs))
+    |> keep (P.optional (keyword "pub"))
+    |> keep ident
+    |> keep stringLit
+    |> skip (keyword "for")
+    |> keep ident
+    |> keep (P.some featureP)
 
 @macro
 @pub fun lsp (ts : [TokenTree]) : [TokenTree] ! { Expand | e } =

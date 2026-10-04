@@ -248,6 +248,7 @@ use Std.Macro.Loc.*
 use Std.Macro.Parse (Tokens, parseTokens, ident, keyword, punct, stringLit)
 use Std.String.Parse as P
 use Std.String.Parse (Parser)
+use Lingua.Pipe (keep, skip)
 use Std.Macro (Expand)
 use Std.Result.Result.*
 
@@ -256,15 +257,20 @@ def replNamed : Parser Tokens (String, Loc) = P.label "a name" (P.token (\t -> m
 -- `| eval = shownOf` or `| prompt = "> "`: a feature, where it was written,
 -- and what it is -- and whether that was written in quotes.
 def replFeature : Parser Tokens ((String, Loc), (String, Bool)) =
-  P.skipThen (punct "|") (P.bind replNamed (\k -> P.skipThen (punct "=") (P.map (\v -> (k, v)) (P.alt (P.map (\s -> (s, True)) stringLit) (P.map (\w -> (w, False)) ident)))))
+  P.pure (\k v -> (k, v))
+    |> skip (punct "|")
+    |> keep replNamed
+    |> skip (punct "=")
+    |> keep (P.alt (P.map (\s -> (s, True)) stringLit) (P.map (\w -> (w, False)) ident))
 
 def replCall : Parser Tokens (Bool, String, String, String, [((String, Loc), (String, Bool))]) =
-  P.bind (P.optional (keyword "pub")) (\pub ->
-    P.bind ident (\name ->
-      P.bind stringLit (\lang ->
-        P.skipThen (keyword "for") (
-          P.bind ident (\db ->
-            P.map (\fs -> (M.isSome pub, name, lang, db, fs)) (P.some replFeature))))))
+  P.pure (\pub name lang db fs -> (M.isSome pub, name, lang, db, fs))
+    |> keep (P.optional (keyword "pub"))
+    |> keep ident
+    |> keep stringLit
+    |> skip (keyword "for")
+    |> keep ident
+    |> keep (P.some replFeature)
 
 def replFeatures : [String] = ["text", "eval", "tree", "errors", "completion", "declarations", "indent", "prompt", "history"]
 

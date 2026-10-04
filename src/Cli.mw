@@ -303,6 +303,7 @@ use Std.Macro.Delim.*
 use Std.Macro.Parse (Tokens, parseTokens, ident, keyword, punct, group, stringLit)
 use Std.String.Parse as P
 use Std.String.Parse (Parser)
+use Lingua.Pipe (keep, skip)
 
 -- A command as written: its name and where, what help says, its fields.
 data Declared = Declared String Loc String [(String, Loc, Kind, String)]
@@ -322,24 +323,27 @@ def kindP : Parser Tokens Kind =
       P.map (\u -> KNum) (keyword "Int") ]
 
 def fieldP : Parser Tokens (String, Loc, Kind, String) =
-  P.thenSkip
-    (P.bind named (\n ->
-      P.skipThen (punct ":") (P.bind kindP (\k ->
-        P.map (\h -> (fst n, snd n, k, M.unwrapOr "" h)) (P.optional stringLit)))))
-    (P.optional (punct ","))
+  P.pure (\n k h -> (fst n, snd n, k, M.unwrapOr "" h))
+    |> keep named
+    |> skip (punct ":")
+    |> keep kindP
+    |> keep (P.optional stringLit)
+    |> skip (P.optional (punct ","))
 
 def commandP : Parser Tokens Declared =
-  P.skipThen (punct "|") (
-    P.bind named (\n ->
-      P.bind stringLit (\about ->
-        P.map (\fs -> Declared (fst n) (snd n) about fs) (group Brace (P.many fieldP)))))
+  P.pure (\n about fs -> Declared (fst n) (snd n) about fs)
+    |> skip (punct "|")
+    |> keep named
+    |> keep stringLit
+    |> keep (group Brace (P.many fieldP))
 
 def cliCall : Parser Tokens (Bool, String, String, String, [Declared]) =
-  P.bind (P.optional (keyword "pub")) (\pub ->
-    P.bind ident (\name ->
-      P.bind stringLit (\prog ->
-        P.bind stringLit (\about ->
-          P.map (\cs -> (M.isSome pub, name, prog, about, cs)) (P.some commandP)))))
+  P.pure (\pub name prog about cs -> (M.isSome pub, name, prog, about, cs))
+    |> keep (P.optional (keyword "pub"))
+    |> keep ident
+    |> keep stringLit
+    |> keep stringLit
+    |> keep (P.some commandP)
 
 @macro
 @pub fun cli (ts : [TokenTree]) : [TokenTree] ! { Expand | e } =

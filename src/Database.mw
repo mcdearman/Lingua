@@ -65,6 +65,7 @@ use Std.Macro.Delim.*
 use Std.Macro.Parse (Tokens, parseTokens, ident, keyword, punct, group, treesUntil)
 use Std.String.Parse as P
 use Std.String.Parse (Parser)
+use Lingua.Pipe (keep, skip)
 
 -- --- reading ------------------------------------------------------------------------
 
@@ -82,22 +83,34 @@ def kind : Parser Tokens Bool = P.alt (P.map (\u -> True) (keyword "input")) (P.
 
 -- `(file : Int)`: the parameter, and the key's type.
 def param : Parser Tokens (String, [TokenTree]) =
-  group Paren (P.bind ident (\p -> P.skipThen (punct ":") (P.map (\t -> (p, t)) (treesUntil (\t -> False)))))
+  group Paren (P.pure (\p t -> (p, t)) |> keep ident |> skip (punct ":") |> keep (treesUntil (\t -> False)))
 
+-- What a declaration is read as, before it is known to be one: an input has
+-- no body, and a query has to have one -- which depends on what was read,
+-- and is the one `bind` here.
 def decl : Parser Tokens Decl =
-  P.skipThen (punct "|") (
-    P.bind (P.optional (keyword "persisted")) (\kept ->
-      P.bind kind (\input ->
-        P.bind named (\n ->
-          P.bind param (\pk ->
-            P.skipThen (punct ":") (
-              P.bind (treesUntil (\t -> isPunct "=" t or isPunct "|" t)) (\vt ->
-                if input then P.pure (Decl True (M.isSome kept) (fst n) (snd n) (fst pk) (snd pk) vt [])
-                else P.skipThen (punct "=") (P.map (\body -> Decl False (M.isSome kept) (fst n) (snd n) (fst pk) (snd pk) vt body) (treesUntil (isPunct "|"))))))))))
+  P.bind
+    (P.pure (\kept input n pk vt body -> (Decl input (M.isSome kept) (fst n) (snd n) (fst pk) (snd pk) vt (M.unwrapOr [] body), M.isSome body))
+      |> skip (punct "|")
+      |> keep (P.optional (keyword "persisted"))
+      |> keep kind
+      |> keep named
+      |> keep param
+      |> skip (punct ":")
+      |> keep (treesUntil (\t -> isPunct "=" t or isPunct "|" t))
+      |> keep (P.optional (P.skipThen (punct "=") (treesUntil (isPunct "|")))))
+    (\read ->
+      match read with
+      | (d, bodied) ->
+          if isInput d and bodied then P.fail "an input is set from outside: it has no `= …`"
+          else if not (isInput d) and not bodied then P.fail "a query is what it works out: `= …`"
+          else P.pure d)
 
 def databaseCall : Parser Tokens (Bool, (String, Loc), [Decl]) =
-  P.bind (P.optional (keyword "pub")) (\pub ->
-    P.bind named (\name -> P.map (\ds -> (M.isSome pub, name, ds)) (P.some decl)))
+  P.pure (\pub name ds -> (M.isSome pub, name, ds))
+    |> keep (P.optional (keyword "pub"))
+    |> keep named
+    |> keep (P.some decl)
 
 -- --- database! ----------------------------------------------------------------------
 

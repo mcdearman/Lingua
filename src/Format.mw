@@ -524,6 +524,7 @@ use Std.Macro.Delim.*
 use Std.Macro.Parse (Tokens, parseTokens, ident, keyword, punct, number, treesUntil)
 use Std.String.Parse as P
 use Std.String.Parse (Parser)
+use Lingua.Pipe (keep, skip)
 use Std.Macro (Expand)
 use Std.Result.Result.*
 use Lingua.Lang (Lang, Sort, Prod, Field, Ty, Keeping, TokenField)
@@ -559,16 +560,21 @@ fun writing (ts : [TokenTree]) (i : Int) (out : [Written]) : [Written] =
   | (None, _) -> out
 
 def formatRule : Parser Tokens ((String, Loc), [TokenTree]) =
-  P.skipThen (punct "|") (P.bind formatNamed (\r -> P.skipThen (punct "=") (P.map (\body -> (r, body)) (treesUntil (isPunct "|")))))
+  P.pure (\r body -> (r, body))
+    |> skip (punct "|")
+    |> keep formatNamed
+    |> skip (punct "=")
+    |> keep (treesUntil (isPunct "|"))
 
 def formatCall : Parser Tokens (Bool, String, (String, Loc), Maybe Int, Maybe Int, [((String, Loc), [TokenTree])]) =
-  P.bind (P.optional (keyword "pub")) (\pub ->
-    P.bind ident (\name ->
-      P.skipThen (keyword "for") (
-        P.bind formatNamed (\grammar ->
-          P.bind (P.optional (P.skipThen (keyword "indent") number)) (\unit ->
-            P.bind (P.optional (P.skipThen (keyword "width") number)) (\width ->
-              P.map (\rules -> (M.isSome pub, name, grammar, unit, width, rules)) (P.many formatRule)))))))
+  P.pure (\pub name grammar unit width rules -> (M.isSome pub, name, grammar, unit, width, rules))
+    |> keep (P.optional (keyword "pub"))
+    |> keep ident
+    |> skip (keyword "for")
+    |> keep formatNamed
+    |> keep (P.optional (P.skipThen (keyword "indent") number))
+    |> keep (P.optional (P.skipThen (keyword "width") number))
+    |> keep (P.many formatRule)
 
 @macro
 @pub fun format (ts : [TokenTree]) : [TokenTree] ! { Expand | e } =

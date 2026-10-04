@@ -111,6 +111,7 @@ use Std.Macro.Delim.*
 use Std.Macro.Parse (Tokens, parseTokens, ident, keyword, punct, group, treesUntil)
 use Std.String.Parse as P
 use Std.String.Parse (Parser)
+use Lingua.Pipe (keep, skip)
 use Lingua.Lang (Lang, Sort, Prod, Field, Ty, Keeping, TokenField, reservedSorts, langName, langRoot, langSorts, langGrammar, langParams, langKeeping, langWith, isTreeLang, treeTokens, treeTrivia, tokenFields, sortName, sortProds, prodName, prodFields, fieldName, fieldTy, fieldAccessor, fieldIsToken, sortOfProd, findSort)
 use Lingua.Lang.Keeping.*
 use Lingua.Lang.TokenField.*
@@ -138,7 +139,7 @@ def written : Parser Tokens Written =
   P.choice
     [ P.map WMany (group Bracket (P.defer (\u -> written))),
       P.skipThen (keyword "Maybe") (P.map WMaybe (P.defer (\u -> written))),
-      P.bind ident (\n -> P.map (\vs -> WName (S.join " " (V.pushFront vs n))) (P.many typeVar)) ]
+      P.pure (\n vs -> WName (S.join " " (V.pushFront vs n))) |> keep ident |> keep (P.many typeVar) ]
 
 -- A type variable a written type is applied to: a lower-case name.
 def typeVar : Parser Tokens String =
@@ -146,7 +147,7 @@ def typeVar : Parser Tokens String =
 
 fun lowerStart (w : String) : Bool = stringByteLength w > 0 and toInt (stringByteAt w 0) >= 97 and toInt (stringByteAt w 0) <= 122
 
-def fieldDecl : Parser Tokens (String, Written) = comma (P.bind ident (\n -> P.skipThen (punct ":") (P.map (\t -> (n, t)) written)))
+def fieldDecl : Parser Tokens (String, Written) = comma (P.pure (\n t -> (n, t)) |> keep ident |> skip (punct ":") |> keep written)
 
 -- A change to the language extended: `Sort - Prod`, `Sort + Prod { fields }`,
 -- or `Sort * { fields }` -- the fields added to every production of the sort.
@@ -154,13 +155,22 @@ data Delta = Remove String String Loc | Add String Loc String [(String, Written)
 
 use Delta.*
 
+-- The sort, and then what is done to it -- each a function of the sort.
 def delta : Parser Tokens Delta =
-  P.bind named (\s ->
-    P.alt
-      (P.skipThen (punct "-") (P.map (\p -> Remove (fst s) (fst p) (snd p)) named))
-      (P.alt
-        (P.skipThen (punct "+") (P.bind ident (\p -> P.map (\fs -> Add (fst s) (snd s) p fs) (group Brace (P.many fieldDecl)))))
-        (P.skipThen (punct "*") (P.map (\fs -> Every (fst s) (snd s) fs) (group Brace (P.many fieldDecl))))))
+  P.pure (\s change -> change s)
+    |> keep named
+    |> keep
+         (P.choice
+           [ P.pure (\p s -> Remove (fst s) (fst p) (snd p))
+               |> skip (punct "-")
+               |> keep named,
+             P.pure (\p fs s -> Add (fst s) (snd s) p fs)
+               |> skip (punct "+")
+               |> keep ident
+               |> keep (group Brace (P.many fieldDecl)),
+             P.pure (\fs s -> Every (fst s) (snd s) fs)
+               |> skip (punct "*")
+               |> keep (group Brace (P.many fieldDecl)) ])
 
 -- Where a language comes from.
 -- Where a language comes from: a grammar, another language it changes, or --
@@ -173,17 +183,27 @@ use Source.*
 -- `In`, each reading function again for a program being written; `set`, a
 -- field written again on a node already written.
 def asked : Parser Tokens [(String, Loc)] =
-  P.map (\o -> M.unwrapOr [] o) (P.optional (P.skipThen (keyword "with") (P.bind named (\first -> P.map (\more -> V.pushFront more first) (P.many (P.skipThen (punct ",") named))))))
+  P.map (\o -> M.unwrapOr [] o) (P.optional (P.pure (\first more -> V.pushFront more first) |> skip (keyword "with") |> keep named |> keep (P.many (P.skipThen (punct ",") named))))
 
 def langCall : Parser Tokens (Bool, String, [String], Source, [(String, Loc)]) =
-  P.bind (P.optional (keyword "pub")) (\pub ->
-    P.bind ident (\name ->
-      P.bind (P.many (P.token (\t -> match t with | Word w _ -> (if lowerStart w and w != "from" and w != "extends" and w != "with" then Just w else None) | _ -> None) [])) (\params ->
-          P.map (\src -> (M.isSome pub, name, params, fst src, snd src))
-          (P.choice
-            [ P.skipThen (keyword "from") (P.bind named (\g -> P.map (\w -> (FromGrammar (fst g) (snd g), w)) asked)),
-              P.skipThen (keyword "extends") (P.bind named (\b -> P.bind asked (\w -> P.map (\ds -> (Extends (fst b) (snd b) ds, w)) (P.many delta)))),
-              P.bind asked (\w -> P.map (\ds -> (Written ds, w)) (P.many delta)) ]))))
+  P.pure (\pub name params src -> (M.isSome pub, name, params, fst src, snd src))
+    |> keep (P.optional (keyword "pub"))
+    |> keep ident
+    |> keep (P.many (P.token (\t -> match t with | Word w _ -> (if lowerStart w and w != "from" and w != "extends" and w != "with" then Just w else None) | _ -> None) []))
+    |> keep
+         (P.choice
+           [ P.pure (\g w -> (FromGrammar (fst g) (snd g), w))
+               |> skip (keyword "from")
+               |> keep named
+               |> keep asked,
+             P.pure (\b w ds -> (Extends (fst b) (snd b) ds, w))
+               |> skip (keyword "extends")
+               |> keep named
+               |> keep asked
+               |> keep (P.many delta),
+             P.pure (\w ds -> (Written ds, w))
+               |> keep asked
+               |> keep (P.many delta) ])
 
 -- --- lang! ------------------------------------------------------------------------------
 
@@ -912,34 +932,36 @@ use Std.Macro (Expand)
 -- translated, "" -- and the name.
 def caseField : Parser Tokens (String, (String, Loc)) =
   comma
-    (P.bind
-      (P.optional (P.choice [P.map (\u -> "later") (keyword "later"), P.map (\u -> "raw") (keyword "raw")]))
-      (\m -> P.map (\n -> (M.unwrapOr "" m, n)) named))
+    (P.pure (\m n -> (M.unwrapOr "" m, n))
+      |> keep (P.optional (P.choice [P.map (\u -> "later") (keyword "later"), P.map (\u -> "raw") (keyword "raw")]))
+      |> keep named)
 
 def caseP : Parser Tokens Case =
-  P.skipThen
-    (punct "|")
-    (P.bind named (\p ->
-      P.bind (group Brace (P.many caseField)) (\fs ->
-        P.skipThen (punct "->")
-          (P.map
-            (\body ->
-              Case
-                (fst p)
-                (snd p)
-                (V.map snd fs)
-                (V.map (\f -> fst (snd f)) (V.filter (\f -> fst f == "later") fs))
-                (V.map (\f -> fst (snd f)) (V.filter (\f -> fst f == "raw") fs))
-                body)
-            (treesUntil (isPunct "|"))))))
+  P.pure
+    (\p fs body ->
+      Case
+        (fst p)
+        (snd p)
+        (V.map snd fs)
+        (V.map (\f -> fst (snd f)) (V.filter (\f -> fst f == "later") fs))
+        (V.map (\f -> fst (snd f)) (V.filter (\f -> fst f == "raw") fs))
+        body)
+    |> skip (punct "|")
+    |> keep named
+    |> keep (group Brace (P.many caseField))
+    |> skip (punct "->")
+    |> keep (treesUntil (isPunct "|"))
 
 def passCall : Parser Tokens (Bool, (String, Loc), (String, Loc), (String, Loc), Maybe String, [Case]) =
-  P.bind (P.optional (keyword "pub")) (\pub ->
-    P.bind named (\name ->
-      P.skipThen (punct ":") (P.bind named (\src ->
-        P.skipThen (punct "->") (P.bind named (\dst ->
-          P.bind (P.optional (P.skipThen (keyword "with") ident)) (\ctx ->
-            P.map (\cs -> (M.isSome pub, name, src, dst, ctx, cs)) (P.many caseP))))))))
+  P.pure (\pub name src dst ctx cs -> (M.isSome pub, name, src, dst, ctx, cs))
+    |> keep (P.optional (keyword "pub"))
+    |> keep named
+    |> skip (punct ":")
+    |> keep named
+    |> skip (punct "->")
+    |> keep named
+    |> keep (P.optional (P.skipThen (keyword "with") ident))
+    |> keep (P.many caseP)
 
 @macro
 @pub fun pass (ts : [TokenTree]) : [TokenTree] ! { Expand | e } =

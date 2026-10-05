@@ -127,7 +127,11 @@ def breaking : Int = 3
 @pub data Style k
   = Style Int Int (k -> String) (k -> Bool) (HashMap String [Elem])
 
-@pub fun style (unit : Int) (width : Int) (name : k -> String) (trivia : k -> Bool)
+@pub fun style
+    (unit : Int)
+    (width : Int)
+    (name : k -> String)
+    (trivia : k -> Bool)
     (rules : [(String, [Elem])])
     : Style k =
   Style
@@ -171,7 +175,9 @@ fun matchLeaves (st : Style k) (kids : [Syntax k]) (ls : [Elem]) : [(Int, Int)] 
     (V.foldl
        (\acc e ->
          match acc with
-         | (out, at) -> (match matchOne st kids e at with | (r, next) -> (V.pushBack out r, next)))
+         | (out, at) ->
+             (match matchOne st kids e at with
+              | (r, next) -> (V.pushBack out r, next)))
        ([], 0)
        ls)
 
@@ -488,7 +494,9 @@ fun writtenDoc (st : Style k) (s : Syntax k) : Doc () =
              (V.range first (last + 1))
          in
          let endsInComment =
-           (match V.get all last with | Just c -> (triviaOf st) (R.kindOf c) | None -> False)
+           (match V.get all last with
+            | Just c -> (triviaOf st) (R.kindOf c)
+            | None -> False)
          in if endsInComment and M.isSome (R.parent s) then PP.append body PP.hardline else body
      | _ -> PP.nil
 
@@ -517,8 +525,16 @@ fun ruledDoc (st : Style k) (s : Syntax k) (elems : [Elem]) : Doc () =
 -- before, and `taken` the last child written. A child the rule did not name
 -- -- something the parser could not place -- is written before the next one
 -- it did, so nothing that was in the text is left out.
-fun itemsOf (st : Style k) (all : [Syntax k]) (places : [Int]) (kids : [Syntax k])
-    (found : [(Int, Int)]) (es : [Elem]) (level : Int) (leaf : Int) (taken : Int)
+fun itemsOf
+    (st : Style k)
+    (all : [Syntax k])
+    (places : [Int])
+    (kids : [Syntax k])
+    (found : [(Int, Int)])
+    (es : [Elem])
+    (level : Int)
+    (leaf : Int)
+    (taken : Int)
     : ([Item], Int, Int) =
   V.foldl
     (\acc e ->
@@ -569,13 +585,22 @@ fun closesParted (items : [Item]) : Bool =
   | _ -> False
 
 -- Child `j`, with the comments written before it, each on a line of its own.
-fun kidItem (st : Style k) (all : [Syntax k]) (places : [Int]) (kids : [Syntax k]) (level : Int)
+fun kidItem
+    (st : Style k)
+    (all : [Syntax k])
+    (places : [Int])
+    (kids : [Syntax k])
+    (level : Int)
     (j : Int)
     : Item =
   let at = V.getOr 0 places j in
   let before = (if j == 0 then 0 else V.getOr 0 places (j - 1) + 1) in
   let comments = commentsIn all before at in
-  let own = (match V.get kids j with | Just c -> docOf st c | None -> PP.nil) in
+  let own =
+    (match V.get kids j with
+     | Just c -> docOf st c
+     | None -> PP.nil)
+  in
   let doc = V.foldr (\c d -> PP.append (PP.append (PP.text c) PP.hardline) d) own comments in
   Written level doc False False
 

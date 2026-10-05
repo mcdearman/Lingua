@@ -83,7 +83,9 @@ use Tree.*
 def wholeMark : String = " whole"
 
 -- The grammar of these rule bodies and uses, whose whole input is `root`.
-@pub fun grammar (models : [(String, Rule)]) (uses : [(String, [(String, List Rule)])])
+@pub fun grammar
+    (models : [(String, Rule)])
+    (uses : [(String, [(String, List Rule)])])
     (root : String)
     : Grammar ! { Mut | e } =
   let ms = H.fromVec models in
@@ -218,7 +220,11 @@ fun sizeOf (fs : HashMap String (Bits, Bool)) (names : [String]) : Int =
     0
     names
 
-fun followsOf (toks : Tokens) (us : HashMap String [(String, List Rule)]) fs (root : String)
+fun followsOf
+    (toks : Tokens)
+    (us : HashMap String [(String, List Rule)])
+    fs
+    (root : String)
     (names : [String])
     : HashMap String Bits =
   settleFollows toks us fs root names (H.singleton root (bitOf toks endOfInput)) 0
@@ -297,7 +303,9 @@ fun couldBegin (g : Grammar) (want : Maybe Bits) (n : String) : Bool =
   match want with
   | None -> True
   | Just ws ->
-      (match H.lookup n g.firsts with | Just (ts, empty) -> empty or meets ts ws | None -> True)
+      (match H.lookup n g.firsts with
+       | Just (ts, empty) -> empty or meets ts ws
+       | None -> True)
 
 -- What can be read once `owner` has ended: the end of the input, if it is the
 -- whole input or used nowhere; else what can be read after each use. Worked
@@ -440,8 +448,14 @@ def budgetDefault : Int = 16
 fun wholeIn (g : Grammar) (cs : [Config]) : Bool ! { Mut | e } =
   V.any (\i -> itemTok i == wholeMark) (V.concatMap (closureFor g [wholeMark]) cs)
 
-fun step (g : Grammar) (greedy : Bool) (budget : Ref Int) (configs : [Config]) (depth : Int)
-    (k : Int) (prefix : [String])
+fun step
+    (g : Grammar)
+    (greedy : Bool)
+    (budget : Ref Int)
+    (configs : [Config])
+    (depth : Int)
+    (k : Int)
+    (prefix : [String])
     : Tree ! { Mut | e } =
   let first = V.filter (\c -> configAlt c == 0) configs in
   let rest = V.filter (\c -> configAlt c != 0) configs in

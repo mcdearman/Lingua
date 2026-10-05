@@ -300,7 +300,9 @@ use Found.*
       match key.code with
       | Escape -> (f, PutAway)
       | Enter ->
-          (match V.get (shownIn f) at with | Just (n, _, _) -> (f, Chose n) | None -> (f, PutAway))
+          (match V.get (shownIn f) at with
+           | Just (n, _, _) -> (f, Chose n)
+           | None -> (f, PutAway))
       | Up -> to (at - 1)
       | Down -> to (at + 1)
       | Backspace ->
@@ -371,7 +373,15 @@ fun finding (f : Finder) : Maybe String ! { Console | e } =
 -- the parser's errors are, what a kind is called, what the next line opens
 -- with, what could be written at a byte of it, and what there is to find --
 -- none, for a prompt with no finder.
-@pub fun editorOf theme (prompt : String) paint treeOf errorsOf name indentOf completionsOf
+@pub fun editorOf
+    theme
+    (prompt : String)
+    paint
+    treeOf
+    errorsOf
+    name
+    indentOf
+    completionsOf
     declsOf =
   let found =
     \text at ->
@@ -499,7 +509,9 @@ def replWritten : [String] = ["prompt", "history", "theme"]
                   -- The database's language server, if one is declared: a
                   -- prompt colours what is typed as it colours a file.
                   let server =
-                    (match lookupAs (serverOf db) with | Ok s -> Just s | Err _ -> None)
+                    (match lookupAs (serverOf db) with
+                     | Ok s -> Just s
+                     | Err _ -> None)
                   in [Code (replCode (if pub then "@pub " else "") name lang db server fs)]
 
 fun replCode pub name lang db (server : Maybe String) fs =
@@ -525,7 +537,9 @@ fun replCode pub name lang db (server : Maybe String) fs =
      | None -> "(\\t -> [])")
   in
   let indent =
-    (match given "indent" with | Just f -> "(\\g -> ${f} g)" | None -> "(\\g -> \"\")")
+    (match given "indent" with
+     | Just f -> "(\\g -> ${f} g)"
+     | None -> "(\\g -> \"\")")
   in
   let completion =
     (match given "completion" with
@@ -564,7 +578,15 @@ fun quoted (s : String) : String =
 
 -- The editor a prompt is given: `editorOf`, or -- with no tree to ask -- one
 -- that colours nothing and takes every entry as finished.
-@pub fun editorFor theme (prompt : String) paint treeOf errorsOf name indentOf completionsOf
+@pub fun editorFor
+    theme
+    (prompt : String)
+    paint
+    treeOf
+    errorsOf
+    name
+    indentOf
+    completionsOf
     declsOf =
   match treeOf with
   | Just tree -> editorOf theme prompt paint tree errorsOf name indentOf completionsOf declsOf

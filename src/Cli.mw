@@ -289,7 +289,9 @@ fun finish s args c line p vals =
 fun convert k text =
   match k with
   | KNum ->
-      (match S.toInt text with | Just n -> Ok (VNum n) | None -> Err "`${text}` is not a number")
+      (match S.toInt text with
+       | Just n -> Ok (VNum n)
+       | None -> Err "`${text}` is not a number")
   | KMaybe x -> convert x text
   | KMany x -> convert x text
   | KOption x -> convert x text

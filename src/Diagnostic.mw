@@ -81,7 +81,9 @@ use Nettle.Write (render)
       match e with
       | (at, msg) ->
           let span =
-            (match R.tokenAt at (R.root g) with | Just t -> R.range t | None -> (at, at))
+            (match R.tokenAt at (R.root g) with
+             | Just t -> R.range t
+             | None -> (at, at))
           in errorAt (Meta (fst span) (snd span)) msg)
     errs
 
@@ -122,7 +124,10 @@ use Nettle.Write (render)
 
 -- Whether what goes to standard output should be coloured.
 @pub fun coloured () : Bool ! { Process | e } =
-  isTerminal 1 and (match getEnv "NO_COLOR" with | Just v -> v == "" | None -> True)
+  isTerminal 1
+    and (match getEnv "NO_COLOR" with
+     | Just v -> v == ""
+     | None -> True)
 
 fun drawn color path text ds =
   S.join "" (V.map (\d -> render (nettle color path d) (NS.namedSource path (NS.source text))) ds)

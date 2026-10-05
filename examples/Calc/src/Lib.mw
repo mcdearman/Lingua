@@ -194,8 +194,13 @@ fun value env (e : CalcExpr) : Int =
        | Just t -> (match S.toInt (R.text t) with | Just n -> n | None -> 0)
        | None -> 0)
   | CalcExpr.NameRef n ->
-      (match calcNameRefIdentToken n with | Just t -> lookup env (R.text t) | None -> 0)
-  | CalcExpr.Paren p -> (match calcParenExpr p with | Just x -> value env x | None -> 0)
+      (match calcNameRefIdentToken n with
+       | Just t -> lookup env (R.text t)
+       | None -> 0)
+  | CalcExpr.Paren p ->
+      (match calcParenExpr p with
+       | Just x -> value env x
+       | None -> 0)
   | CalcExpr.Bin b ->
       (match (calcBinLhs b, calcBinOp b, calcBinRhs b) with
        | (Just l, Just op, Just r) -> apply (R.text op) (value env l) (value env r)
@@ -277,7 +282,9 @@ fun stepCore a env s =
 fun evalCore (a : CoreArena) env (e : CoreExpr) : Int =
   match kindCoreExpr a e with
   | CoreExprKind.Literal ->
-      (match S.toInt (coreExprLiteralNumber a e) with | Just n -> n | None -> 0)
+      (match S.toInt (coreExprLiteralNumber a e) with
+       | Just n -> n
+       | None -> 0)
   | CoreExprKind.NameRef -> lookup env (coreExprNameRefIdent a e)
   | CoreExprKind.Paren -> evalCore a env (coreExprParenExpr a e)
   | CoreExprKind.Prim ->
@@ -328,7 +335,9 @@ pass! {
          | CoreFileView.File r -> M.map (viewCoreStmt a) (V.get r.stmts 0))
       in
       let folded =
-        (match top with | Just (CoreStmtView.Let l) -> coreExprPrimOp a l.value | _ -> "")
+        (match top with
+         | Just (CoreStmtView.Let l) -> coreExprPrimOp a l.value
+         | _ -> "")
       in
       let u = assertEq folded "*" "`0 +` is gone" in
       assertEq (bindingsOf p) [("x", 6), ("y", 7)] "and the rest lowered as before"
@@ -403,7 +412,8 @@ pass! {
   | (g, _) ->
       match surfaceFromCalc g with
       | Just s ->
-          (match runState 0 (\() -> lowerCounting s) with | (_, n) -> assertEq n 2 "two operators")
+          (match runState 0 (\() -> lowerCounting s) with
+           | (_, n) -> assertEq n 2 "two operators")
       | None -> assertEq 0 1 "a program"
 
 -- --- queries -----------------------------------------------------------------
@@ -424,7 +434,9 @@ database! {
     | query program (file : Int) : Maybe CoreProgram =
         M.map lower (surfaceFromCalc (queryTree file))
     | query bindings (file : Int) : [(String, Int)] =
-        (match queryProgram file with | Just p -> bindingsOf p | None -> [])
+        (match queryProgram file with
+         | Just p -> bindingsOf p
+         | None -> [])
     | persisted query sum (files : [Int]) : Int =
         V.foldl (\acc bs -> acc + V.foldl (\a b -> a + snd b) 0 bs) 0 (queryBindingsEach files)
 }

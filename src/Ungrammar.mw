@@ -221,7 +221,9 @@ fun seqLoop ls i stop acc =
 fun atom ls i stop =
   match (V.get ls i, V.get ls (i + 1)) with
   | (Just (LName l at), Just (LPunct ":" _)) ->
-      (match atom ls (i + 2) stop with | Ok (a, j) -> Ok (Label l at a, j) | Err e -> Err e)
+      (match atom ls (i + 2) stop with
+       | Ok (a, j) -> Ok (Label l at a, j)
+       | Err e -> Err e)
   | _ ->
       match base ls i stop with
       | Err e -> Err e

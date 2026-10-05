@@ -43,7 +43,9 @@ fun eval (a : CoreArena) env (e : CoreExpr) =
   | Expr.Let id value body -> eval a ((id, eval a env value) :: env) body
   | Expr.LetRec id param value body -> eval a ((id, Value.Rec id param value env) :: env) body
   | Expr.If cond yes no ->
-      (match eval a env cond with | Value.Bool True -> eval a env yes | _ -> eval a env no)
+      (match eval a env cond with
+       | Value.Bool True -> eval a env yes
+       | _ -> eval a env no)
   | Expr.Prim op args -> operate a env e op args
 
 fun operate a env e op args =

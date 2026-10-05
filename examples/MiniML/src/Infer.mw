@@ -104,7 +104,10 @@ fun bindVar at r t =
 
 fun isVar id t =
   match t with
-  | MType.Var r -> (match St.getRef r with | Unbound j _ -> j == id | Bound _ -> False)
+  | MType.Var r ->
+      (match St.getRef r with
+       | Unbound j _ -> j == id
+       | Bound _ -> False)
   | _ -> False
 
 fun adjust at id level t =
@@ -157,7 +160,10 @@ fun frozen t =
   | MType.Int -> Type.Int
   | MType.Bool -> Type.Bool
   | MType.Fun a b -> Type.Fun (frozen a) (frozen b)
-  | MType.Var r -> (match St.getRef r with | Unbound j _ -> Type.Var j | Bound u -> frozen u)
+  | MType.Var r ->
+      (match St.getRef r with
+       | Unbound j _ -> Type.Var j
+       | Bound u -> frozen u)
 
 -- `Core`, every expression holding its type as inference has it so far.
 lang! {
@@ -292,7 +298,9 @@ fun thawing c t seen =
   | Type.Bool -> (MType.Bool, seen)
   | Type.Fun a b ->
       (match thawing c a seen with
-       | (a2, s1) -> (match thawing c b s1 with | (b2, s2) -> (MType.Fun a2 b2, s2)))
+       | (a2, s1) ->
+           (match thawing c b s1 with
+            | (b2, s2) -> (MType.Fun a2 b2, s2)))
   | Type.Var n ->
       (match V.find (\p -> fst p == n) seen with
        | Just p -> (snd p, seen)

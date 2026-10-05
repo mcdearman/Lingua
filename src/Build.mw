@@ -93,7 +93,10 @@ use Lexing.*
 -- came with. The text is theirs, a space between each two, so that what
 -- reads the tree's text reads them apart; the spaces are trivia of kind
 -- `filler`, standing where they are.
-@pub fun tokenLexemes (filler : k) (isTrivia : k -> Bool) (kinds : [k])
+@pub fun tokenLexemes
+    (filler : k)
+    (isTrivia : k -> Bool)
+    (kinds : [k])
     (tokens : [(Int, Int, String)])
     : Lexemes k =
   let texts = V.map (\x -> match x with | (_, _, t) -> t) tokens in
@@ -104,8 +107,14 @@ use Lexing.*
 
 -- Token `i` of `tokens` laid down at byte `at`, after a space if it is not
 -- the first: where it ends.
-fun laid (l : Lexing s k) (filler : k) (isTrivia : k -> Bool) (kinds : [k])
-    (tokens : [(Int, Int, String)]) (at : Int) (i : Int)
+fun laid
+    (l : Lexing s k)
+    (filler : k)
+    (isTrivia : k -> Bool)
+    (kinds : [k])
+    (tokens : [(Int, Int, String)])
+    (at : Int)
+    (i : Int)
     : Int ! { St s | e } =
   match V.get tokens i with
   | Just (from, to, t) ->
@@ -270,7 +279,9 @@ fun errorPlace (ls : Lexemes k) (at : Int) : Int =
       (match V.find (\j -> (if j == 0 then 0 else arrayGet ends (j - 1)) >= at) placed with
        | Just j -> arrayGet os j
        | None ->
-           (match V.get placed (V.len placed - 1) with | Just j -> arrayGet oe j | None -> at))
+           (match V.get placed (V.len placed - 1) with
+            | Just j -> arrayGet oe j
+            | None -> at))
 
 -- A node of kind `k` opening here, inside the one open.
 fun openSlot b k =

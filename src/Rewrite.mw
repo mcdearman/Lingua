@@ -256,5 +256,6 @@ def flat : Green String =
                 (if many then take (j + 1) (V.pushBack got c) else (V.pushBack got c, j + 1))
               else if later i c then (got, j)
               else take (j + 1) got
-        in (match take at [] with | (got, next) -> field (i + 1) next (V.pushBack acc got))
+        in (match take at [] with
+            | (got, next) -> field (i + 1) next (V.pushBack acc got))
   in if n == 0 then V.map (\w -> []) wants else field 0 0 []

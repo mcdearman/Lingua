@@ -44,15 +44,27 @@ use Green.*
 -- A tree from its tables, as `Lingua.Build` writes them: the text, and for
 -- each slot its kind, start, end, subtree size (0 for a token) and parent (-1
 -- for the root).
-@pub fun fromTables (text : String) (kinds : #[k]) (starts : #[Int]) (ends : #[Int])
-    (sizes : #[Int]) (parents : #[Int])
+@pub fun fromTables
+    (text : String)
+    (kinds : #[k])
+    (starts : #[Int])
+    (ends : #[Int])
+    (sizes : #[Int])
+    (parents : #[Int])
     : Green k =
   Green text kinds starts ends sizes parents #[] #[]
 
 -- The same, with each slot's origin: where it stands, or -1 where it is. Each
 -- node's is worked out from its tokens'.
-@pub fun fromTablesAt (text : String) (kinds : #[k]) (starts : #[Int]) (ends : #[Int])
-    (sizes : #[Int]) (parents : #[Int]) (froms : #[Int]) (tos : #[Int])
+@pub fun fromTablesAt
+    (text : String)
+    (kinds : #[k])
+    (starts : #[Int])
+    (ends : #[Int])
+    (sizes : #[Int])
+    (parents : #[Int])
+    (froms : #[Int])
+    (tos : #[Int])
     : Green k =
   settled (Green text kinds starts ends sizes parents froms tos)
 

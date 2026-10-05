@@ -1118,7 +1118,9 @@ fun fromSort pub l lower s =
   let prods = sortProds s in
   let single =
     V.len prods == 1
-      and (match V.get prods 0 with | Just p -> prodName p == sortName s | None -> False)
+      and (match V.get prods 0 with
+       | Just p -> prodName p == sortName s
+       | None -> False)
   in if single then "
 fun ${lower}Of${sortName s} lingua_out (y : ${g}${sortName s}) = ${build l lower s (V.getOr (Prod "" []) prods 0)}
 " else "
@@ -1353,7 +1355,9 @@ def caseP : Parser Tokens Case = P.alt (P.try otherwiseP) productionCase
 def productionCase : Parser Tokens Case =
   P.pure (\p of fs body ->
     Case
-      (match of with | Just q -> "${fst p}.${fst q}" | None -> fst p)
+      (match of with
+       | Just q -> "${fst p}.${fst q}"
+       | None -> fst p)
       (snd p)
       (V.map snd fs)
       (V.map (\f -> fst (snd f)) (V.filter (\f -> fst f == "later") fs))
@@ -1961,7 +1965,9 @@ fun rewriteWith to (cur : String) readers (ts : [TokenTree]) : [TokenTree] =
 -- which.
 fun placed to (cur : String) readers ts i w at done =
   let braced =
-    (match V.get ts (i + 1) with | Just (Group Brace inner _) -> Just inner | _ -> None)
+    (match V.get ts (i + 1) with
+     | Just (Group Brace inner _) -> Just inner
+     | _ -> None)
   in
   let sortBefore =
     (match (V.get ts (i - 2), qualified ts i) with

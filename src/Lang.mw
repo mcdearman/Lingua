@@ -290,7 +290,14 @@ use Keeping.*
        let _ = B.push xs c in
        node w k from to first)
 
-@pub fun node4 (w : LangWriting s) (k : Int) (from : Int) (to : Int) (a : Int) (b : Int) (c : Int)
+@pub fun node4
+    (w : LangWriting s)
+    (k : Int)
+    (from : Int)
+    (to : Int)
+    (a : Int)
+    (b : Int)
+    (c : Int)
     (d : Int)
     : Int ! { St s | e } =
   match w with

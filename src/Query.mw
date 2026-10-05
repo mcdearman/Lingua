@@ -240,7 +240,9 @@ fun revisionLive (db : Live k v) : Int ! { Thread | e } = T.readTVarIO (revision
   | Db.Incremental live -> setLive live key value
   | Db.Batch o ->
       let held = getRef (onceInputs o) in
-      if (match HashMap.lookup key held with | Just h -> same h value | None -> False) then ()
+      if (match HashMap.lookup key held with
+       | Just h -> same h value
+       | None -> False) then ()
       else
         let a = setRef (onceInputs o) (HashMap.insert key value held) in
         let b = setRef (onceMemo o) HashMap.empty in
@@ -249,7 +251,9 @@ fun revisionLive (db : Live k v) : Int ! { Thread | e } = T.readTVarIO (revision
 fun setLive (db : Live k v) (key : k) (value : v) : () ! { Thread | e } =
   T.atomically (\() ->
     let held = HashMap.lookup key (T.readTVar (inputsVar db)) in
-    if (match held with | Just h -> same (fst h) value | None -> False) then ()
+    if (match held with
+     | Just h -> same (fst h) value
+     | None -> False) then ()
     else
       let now = T.readTVar (revisionVar db) + 1 in
       let u = T.writeTVar (revisionVar db) now in
@@ -260,7 +264,9 @@ fun setLive (db : Live k v) (key : k) (value : v) : () ! { Thread | e } =
 @pub fun get (db : Db k v) (key : k) : v ! { Thread, Mut, Exn (QueryError k) | e } =
   match db with
   | Db.Incremental live ->
-      (match refresh live (newChain live []) key with | Ok got -> fst got | Err e -> raise e)
+      (match refresh live (newChain live []) key with
+       | Ok got -> fst got
+       | Err e -> raise e)
   | Db.Batch o -> (match onceGet o [] key with | Ok x -> x | Err e -> raise e)
 
 -- What each of `keys` answers now: worked out one after another, or each on
@@ -271,7 +277,10 @@ fun setLive (db : Live k v) (key : k) (value : v) : () ! { Thread | e } =
       (match (severalOf live) live (newChain live []) keys with
        | Ok got -> V.map fst got
        | Err e -> raise e)
-  | Db.Batch o -> (match (onceSeveral o) o [] keys with | Ok xs -> xs | Err e -> raise e)
+  | Db.Batch o ->
+      (match (onceSeveral o) o [] keys with
+       | Ok xs -> xs
+       | Err e -> raise e)
 
 -- The keys computed since this was last asked, in the order they finished:
 -- what a revision cost, and what a test checks. A batch on threads logs
@@ -306,9 +315,13 @@ fun onceGet (o : Once k v) (stack : [k]) (key : k) : Result (QueryError k) v ! {
             let attempt =
               handle (onceCompute o) key with {
                 fetch k2 resume ->
-                  (match onceGet o inner k2 with | Err e -> Err e | Ok x -> resume x),
+                  (match onceGet o inner k2 with
+                   | Err e -> Err e
+                   | Ok x -> resume x),
                 fetchAll ks resume ->
-                  (match (onceSeveral o) o inner ks with | Err e -> Err e | Ok xs -> resume xs),
+                  (match (onceSeveral o) o inner ks with
+                   | Err e -> Err e
+                   | Ok xs -> resume xs),
                 return x -> Ok x
               }
             in match attempt with
@@ -327,7 +340,10 @@ fun onceInTurn (o : Once k v) (stack : [k]) (keys : [k])
     (\acc k ->
       match acc with
       | Err e -> Err e
-      | Ok xs -> (match onceGet o stack k with | Ok x -> Ok (V.pushBack xs x) | Err e -> Err e))
+      | Ok xs ->
+          (match onceGet o stack k with
+           | Ok x -> Ok (V.pushBack xs x)
+           | Err e -> Err e))
     (Ok [])
     keys
 
@@ -606,7 +622,9 @@ fun run (db : Live k v) (ch : Chain k) (key : k) (old : Maybe (v, Int))
            (T.atomically (\() ->
               let now = T.readTVar (revisionVar db) in
               let changed =
-                (match old with | Just (y, c) -> if same y x then c else now | None -> now)
+                (match old with
+                 | Just (y, c) -> if same y x then c else now
+                 | None -> now)
               in
               let u = put db key (Computed (Memo x changed now deps)) in
               let w = T.modifyTVar (logVar db) (\l -> V.pushBack l key) in
@@ -622,7 +640,10 @@ fun inTurn (db : Live k v) (ch : Chain k) (keys : [k])
     (\acc k ->
       match acc with
       | Err e -> Err e
-      | Ok xs -> (match refresh db ch k with | Ok x -> Ok (V.pushBack xs x) | Err e -> Err e))
+      | Ok xs ->
+          (match refresh db ch k with
+           | Ok x -> Ok (V.pushBack xs x)
+           | Err e -> Err e))
     (Ok [])
     keys
 
@@ -799,7 +820,9 @@ fun storedOf decodeKey decodeValue (e : Json) =
             | Just k ->
                 (match (jsonDatum vj, allOf (V.map (inputOf decodeKey) is)) with
                  | (Just vd, Just ins) ->
-                     (match decodeValue k vd with | Just x -> Just (k, x, ins) | None -> None)
+                     (match decodeValue k vd with
+                      | Just x -> Just (k, x, ins)
+                      | None -> None)
                  | _ -> None)
             | None -> None)
        | None -> None)
@@ -809,7 +832,10 @@ fun inputOf decodeKey (j : Json) =
   match (Json.index 0 j, Json.index 1 j) with
   | (Just kj, Just (Json.Int h)) ->
       (match jsonDatum kj with
-       | Just kd -> (match decodeKey kd with | Just k -> Just (k, h) | None -> None)
+       | Just kd ->
+           (match decodeKey kd with
+            | Just k -> Just (k, h)
+            | None -> None)
        | None -> None)
   | _ -> None
 
@@ -901,7 +927,9 @@ use Untag.*
 @pub fun untag (d : Datum) : Untag =
   match d with
   | Datum.Tag q xs ->
-      (match (V.len xs, V.get xs 0) with | (1, Just x) -> Tagged q x | _ -> Untagged)
+      (match (V.len xs, V.get xs 0) with
+       | (1, Just x) -> Tagged q x
+       | _ -> Untagged)
   | _ -> Untagged
 
 -- A `Datum` read back as `wrap` of the value it is.

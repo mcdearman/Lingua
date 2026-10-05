@@ -312,12 +312,16 @@ fun ledAlts spec e =
       match lookupDef spec a with
       | Just d -> leading (defBody d) == Just e
       | None -> False)
-    (match lookupDef spec e with | Just d -> alternatives d | None -> [])
+    (match lookupDef spec e with
+     | Just d -> alternatives d
+     | None -> [])
 
 fun prefixAlts spec e =
   V.filter
     (\a -> not (V.elem a (ledAlts spec e)))
-    (match lookupDef spec e with | Just d -> alternatives d | None -> [])
+    (match lookupDef spec e with
+     | Just d -> alternatives d
+     | None -> [])
 
 -- Every quoted token the grammar writes, with where.
 fun quoted (r : Rule) : [(String, Int)] =
@@ -712,7 +716,11 @@ fun generate spec (env : Grammar) : [TokenTree] ! { Mut | e } =
           start = 0 - 1
         }
       in
-      let root = (match V.get defs 0 with | Just d -> defName d | None -> "File") in
+      let root =
+        (match V.get defs 0 with
+         | Just d -> defName d
+         | None -> "File")
+      in
       let x = Deciding { g = lookGrammar spec root, problems = newRef [], k = k } in
       let env = x.g in
       let counter = newRef [] in
@@ -777,7 +785,10 @@ fun ledLoop spec e = Rep (Alt (V.map (\a -> Seq (restOf spec a)) (ledAlts spec e
 -- rule used, and where -- the caller, and what is left to read after the use.
 -- A left-recursive alternative is read inside its enum's loop instead, which
 -- `lookGrammar` says.
-fun usesIn (caller : String) (r : Rule) (after : List Rule)
+fun usesIn
+    (caller : String)
+    (r : Rule)
+    (after : List Rule)
     (acc : HashMap String [(String, List Rule)])
     : HashMap String [(String, List Rule)] =
   match r with
@@ -1579,7 +1590,9 @@ fun synonymOf spec pub d : TokenTree =
         let whole = isMany f in
         let certain = V.getOr False always i and not whole in
         let back =
-          (match f with | NodeField _ n _ -> Just "syntax${ty spec n}" | TokField _ _ _ -> None)
+          (match f with
+           | NodeField _ n _ -> Just "syntax${ty spec n}"
+           | TokField _ _ _ -> None)
         in
         let value =
           (match back with
@@ -1743,7 +1756,11 @@ fun grammarLang spec : Lang =
       (\d -> Sort (defName d) [prodOf spec (defName d)])
       (V.filter (\d -> not (isEnum d) and not (V.elem (defName d) alts)) spec.defs)
   in
-  let root = (match V.get spec.defs 0 with | Just d -> defName d | None -> "File") in
+  let root =
+    (match V.get spec.defs 0 with
+     | Just d -> defName d
+     | None -> "File")
+  in
   let tokenKinds = V.map fst (V.filter (\c -> S.startsWith "Token" (fst c)) (kinds spec)) in
   let trivia = V.map (\p -> "Token${ctorOf p}") spec.trivia in
   let tokenFieldsOf =

@@ -125,7 +125,10 @@ def config : BenchConfig = BenchConfig { warmupNanos = 0, sampleNanos = 1, sampl
 -- nothing remembered.
 fun straight (src : String) : String =
   match compile [] (parseMini src) with
-  | (Just f, _, _) -> (match typed f with | Ok t -> typeName (programType t) | Err _ -> "?")
+  | (Just f, _, _) ->
+      (match typed f with
+       | Ok t -> typeName (programType t)
+       | Err _ -> "?")
   | _ -> "?"
 
 -- --- tests -------------------------------------------------------------------

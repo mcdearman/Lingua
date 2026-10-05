@@ -59,7 +59,9 @@ database! {
 fun linkedOf (imports : [(String, Type)]) parsed : Result [Diagnostic] Type =
   match compile (V.map fst imports) parsed with
   | (Just f, _, _) ->
-      (match typedIn (V.map snd imports) f with | Ok t -> Ok (programType t) | Err d -> Err [d])
+      (match typedIn (V.map snd imports) f with
+       | Ok t -> Ok (programType t)
+       | Err d -> Err [d])
   | (None, _, ds) -> Err ds
 
 fun elaboratedOf (p : (Maybe CoreProgram, [Binder], [Diagnostic]))
@@ -80,7 +82,10 @@ fun resultOf (typed : Result [Diagnostic] String) (p : (Maybe CoreProgram, [Bind
     : Result [Diagnostic] String =
   match (typed, p) with
   | (Err ds, _) -> Err ds
-  | (Ok ty, (Just f, _, _)) -> (match run f with | Ok v -> Ok "${v} : ${ty}" | Err d -> Err [d])
+  | (Ok ty, (Just f, _, _)) ->
+      (match run f with
+       | Ok v -> Ok "${v} : ${ty}"
+       | Err d -> Err [d])
   | (Ok _, (None, _, ds)) -> Err ds
 
 -- What MiniML's REPL prints for a program: its value and type, or its
@@ -105,7 +110,10 @@ fun signature (t : Result [Diagnostic] String) : String = match t with | Ok ty -
 -- A program's type, or the message of the first thing wrong with it.
 @pub(pkg) fun typeOfSource (src : String) : Result String String =
   match compile [] (parseMini src) with
-  | (Just f, _, _) -> (match typeOf f with | Ok t -> Ok t | Err d -> Err (message d))
+  | (Just f, _, _) ->
+      (match typeOf f with
+       | Ok t -> Ok t
+       | Err d -> Err (message d))
   | (None, _, ds) -> Err (S.join "; " (V.map message ds))
 
 -- A program's value, or the message of the first thing wrong with it.
@@ -120,7 +128,10 @@ fun signature (t : Result [Diagnostic] String) : String = match t with | Ok ty -
 -- Each expression of a program with its type, outermost first.
 @pub(pkg) fun annotatedSource (src : String) : [String] =
   match compile [] (parseMini src) with
-  | (Just f, _, _) -> (match typed f with | Ok t -> annotated src t | Err d -> [message d])
+  | (Just f, _, _) ->
+      (match typed f with
+       | Ok t -> annotated src t
+       | Err d -> [message d])
   | (None, _, ds) -> V.map message ds
 
 -- --- tests -------------------------------------------------------------------

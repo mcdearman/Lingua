@@ -99,7 +99,9 @@ fun depsOf us (root : String) (dir : String) : Result String [String] ! { Fs | e
   | Ok text ->
       (match us.deps with
        | Just read ->
-           (match read root dir text with | Ok ds -> Ok (V.map Path.normalize ds) | Err e -> Err e)
+           (match read root dir text with
+            | Ok ds -> Ok (V.map Path.normalize ds)
+            | Err e -> Err e)
        | None ->
            Ok
              (V.map

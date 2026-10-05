@@ -58,7 +58,29 @@
 -- node it replaces. A case's body is ordinary Meadow: it may call anything,
 -- effects and all, and a `match` in it is parenthesised, since `|` starts the
 -- next case. `here` is the `meta` of the node being rewritten: where a
--- diagnostic about it points (`Lingua.Diagnostic`).
+-- diagnostic about it points (`Lingua.Diagnostic`); `node` is the node
+-- itself as the source has it -- a `Syntax` of a tree, a row of tables --
+-- for a case that needs more of it than its fields.
+--
+-- What a case answers is its sort's function's answer: a node of the target,
+-- most often, but anything every case of the sort agrees on -- several nodes,
+-- where one declaration becomes several, for the case above to put together.
+-- From a tree, such a sort also says what a node that is not what its rule
+-- says answers -- one with something missing in it -- which for a sort of
+-- nodes is no node: `| Decl _ -> []`.
+--
+-- A pass need not be of a whole program. `from` says where it starts:
+--
+--   pass! {
+--     lowerTy : Grouped -> Ast from Type, Row
+--     | Arrow { param, result } -> …
+--   }
+--
+-- writes a function for each of those sorts and the ones it comes to from
+-- them -- `lowerTyType src out node` -- and nothing for the rest, with no
+-- entry of its own: for a compiler that is being moved onto passes a part at
+-- a time, whose code by hand calls the part that is one already. From a
+-- tree, `src` is `()`; `out` is the target being written.
 --
 -- A pass may carry a **context** down the tree -- what an elaboration needs,
 -- an environment say:
@@ -120,6 +142,7 @@ use Std.Macro (
   Delim,
   Loc,
   spanOf,
+  spaced,
   isPunct,
   isWord,
   lookupAs,
@@ -1490,7 +1513,26 @@ def caseField : Parser Tokens (String, (String, Loc)) =
                  P.map (\u -> "raw") (keyword "raw") ]))
       |> keep named)
 
-def caseP : Parser Tokens Case =
+-- `| Stmt _ -> []`: what a sort's function answers for a node that is not
+-- what its rule says -- a tree with something missing in it -- when that is
+-- not a node of the target, which it otherwise is: no node, -1. Kept as a
+-- case named for the sort, marked.
+def otherwiseP : Parser Tokens Case =
+  P.pure (\s body -> Case ("?" ++ fst s) (snd s) [] [] [] body)
+    |> skip (punct "|")
+    |> keep named
+    |> skip (P.satisfy (\t -> isWord "_" t or isPunct "_" t))
+    |> skip (punct "->")
+    |> keep (treesUntil (isPunct "|"))
+
+fun isOtherwise c : Bool = S.startsWith "?" (caseName c)
+
+-- The sort an `otherwise` case is for.
+fun otherwiseSort c : String = S.drop (caseName c) 1
+
+def caseP : Parser Tokens Case = P.alt (P.try otherwiseP) productionCase
+
+def productionCase : Parser Tokens Case =
   P.pure
     (\p of fs body ->
       Case
@@ -1510,8 +1552,25 @@ def caseP : Parser Tokens Case =
 -- A name, and where it was written.
 type Named = (String, Loc)
 
-def passCall : Parser Tokens (Bool, Named, Named, Named, Maybe String, [Case]) =
-  P.pure (\pub name src dst ctx cs -> (M.isSome pub, name, src, dst, ctx, cs))
+-- `from Type, Row`: the sorts a pass starts at, where it is not the whole
+-- of a program's.
+def rooted : Parser Tokens [Named] =
+  P.map
+    (\o -> M.unwrapOr [] o)
+    (P.optional
+      (P.pure (\first more -> V.pushFront more first)
+        |> skip (keyword "from")
+        |> keep named
+        |> keep (P.many (P.skipThen (punct ",") named))))
+
+-- A call: whether it is public, its name, the languages it goes between,
+-- its context, the sorts it starts at, and its cases.
+type PassCall = (Bool, Named, Named, Named, Maybe String, [Named], [Case])
+
+def passCall : Parser Tokens PassCall =
+  P.pure
+    (\pub name src dst ctx roots cs ->
+      (M.isSome pub, name, src, dst, ctx, roots, cs))
     |> keep (P.optional (keyword "pub"))
     |> keep named
     |> skip (punct ":")
@@ -1519,30 +1578,53 @@ def passCall : Parser Tokens (Bool, Named, Named, Named, Maybe String, [Case]) =
     |> skip (punct "->")
     |> keep named
     |> keep (P.optional (P.skipThen (keyword "with") ident))
+    |> keep rooted
     |> keep (P.many caseP)
 
 @macro
 @pub fun pass (ts : [TokenTree]) : [TokenTree] ! { Expand | e } =
   match parseTokens passCall ts with
   | Err failed -> failed
-  | Ok (pub, name, src, dst, ctx, cases) ->
+  | Ok (pub, name, src, dst, ctx, roots, cases) ->
       match (lookupAs (fst src), lookupAs (fst dst)) with
       | (Err _, _) -> [Fail "no language is called `${fst src}`" (snd src)]
       | (_, Err _) -> [Fail "no language is called `${fst dst}`" (snd dst)]
       | (Ok from, Ok to) ->
-          match passProblems name from to cases with
+          match rootProblems from to roots with
           | Just failed -> failed
           | None ->
-              passCode
-                (if pub then "@pub " else "")
-                (fst name)
-                ctx
-                from
-                to
-                cases
+              let starts = V.map fst roots in
+              match passProblems name from to starts cases with
+              | Just failed -> failed
+              | None ->
+                  passCode
+                    (if pub then "@pub " else "")
+                    (fst name)
+                    ctx
+                    from
+                    to
+                    starts
+                    cases
+
+-- What a pass cannot start at: a sort its source does not have -- and
+-- anything, when it writes a tree, which has a function for every sort
+-- already.
+fun rootProblems from to (roots : [Named]) : Maybe [TokenTree] =
+  match V.get roots 0 with
+  | None -> None
+  | Just first ->
+      if isTree to then
+        Just
+          [ Fail
+              "a pass that writes a tree has a function for every sort of `${langName from}` already: there is nothing for `from` to choose"
+              (snd first) ]
+      else
+        M.map
+          (\r -> [Fail "`${langName from}` has no sort `${fst r}`" (snd r)])
+          (V.find (\r -> M.isNone (findSort from (fst r))) roots)
 
 -- What a pass cannot be written for, each where it is.
-fun passProblems name from to cases =
+fun passProblems name from to (starts : [String]) cases =
   let direction =
     if isTree to and not (isTree from)
     then
@@ -1554,6 +1636,11 @@ fun passProblems name from to cases =
         V.concatMap
         (\c -> match c with
                | Case p at fs _ _ _ ->
+                   if isOtherwise c then
+                     (if M.isSome (findSort from (otherwiseSort c)) then []
+                      else
+                        [Fail "`${langName from}` has no sort `${otherwiseSort c}`" at])
+                   else
                    (let found = meant from p in
                      match V.get found 0 with
                      | None ->
@@ -1581,7 +1668,7 @@ fun passProblems name from to cases =
               else
                 [Fail "`${langName to}` has no `${prodName p}` as `${langName from}` has it: `${fst name}` needs a case for it" (snd name)])
             (sortProds s))
-          (if isTree to then [] else translated from to cases) in
+          (if isTree to then [] else translated from to starts cases) in
           -- To a tree: a node no case is for is kept, as the node of its name
           -- in the
           -- target -- which the target has to have.
@@ -1631,17 +1718,22 @@ fun isTree l = isTreeLang l
 -- The sorts of `from` the pass has a function for. From tables, the ones the
 -- target has too, as before; from a tree, the ones it can come to from the
 -- root -- every one, when it writes a tree, which it may rebuild anywhere.
-fun translated from to cases : [Sort] =
+-- A pass told where to start (`from Type, Row`) has one for those sorts and
+-- the ones it comes to from them, and no others.
+fun translated from to (starts : [String]) cases : [Sort] =
   if isTree to then langSorts from
+  else if not (V.isEmpty starts) then
+    let reached = reachable from starts cases in
+    V.filter (\s -> V.elem (sortName s) reached) (langSorts from)
   else if isTree from then
-    let reached = reachable from cases in
+    let reached = reachable from [langRoot from] cases in
     V.filter (\s -> V.elem (sortName s) reached) (langSorts from)
   else V.filter (\s -> M.isSome (findSort to (sortName s))) (langSorts from)
 
 -- The sorts a pass from a tree comes to: the root's, and those of the fields
 -- it translates -- a case's, those it names and takes translated; a copy's,
 -- all.
-fun reachable from cases : [String] =
+fun reachable from (starts : [String]) cases : [String] =
   let rec go (todo : [String]) (seen : [String]) =
     match V.get todo 0 with
     | None -> seen
@@ -1662,7 +1754,7 @@ fun reachable from cases : [String] =
                   (findSort from s))))
             (V.pushBack seen s)
   in
-  go [langRoot from] []
+  go starts []
 
 fun sortsNeeded cases s p =
   let fields =
@@ -1721,19 +1813,22 @@ fun copies to s p =
         (sortProds t)
   | None -> False
 
-fun passCode pub pass ctx from to cases : [TokenTree] =
+fun passCode pub pass ctx from to starts cases : [TokenTree] =
   if isTree from
-  then treePassCode pub pass ctx from to cases
-  else tablePassCode pub pass ctx from to cases
+  then treePassCode pub pass ctx from to starts cases
+  else tablePassCode pub pass ctx from to starts cases
 
-fun tablePassCode pub pass ctx from to cases : [TokenTree] =
-  let sorts = translated from to cases in
+fun tablePassCode pub pass ctx from to (starts : [String]) cases
+    : [TokenTree] =
+  let sorts = translated from to starts cases in
   let c = given ctx in
   let fromN = langName from in
   let toN = langName to in
   V.concat
     [ [Code "use Std.Maybe as LinguaM\nuse Std.Collections.Vector as LinguaV\n"],
       V.concatMap (\s -> sortPass pub pass ctx from to cases s) sorts,
+      -- A pass that starts part of the way down has no whole to enter.
+      if not (V.isEmpty starts) then [] else
       [Code (if stateful from to then "" else "\n-- `${pass}`: a `${fromN}` program as a `${toN}` one, written into tables of its own.\n${pub}fun ${pass} ${c}lingua_p = runSt (\\() -> ${pass}St ${c}lingua_p)\n"),
         Code
           "\n-- `${pass}`, writing its tables inside the caller's `runSt`: for a pass whose cases\n-- use the caller's state too. A function using two `runSt`s' state at once is\n-- not one Meadow can type, so a `runSt` of its own would be one too many.\n${pub}fun ${pass}St ${c}lingua_p =\n  match lingua_p with\n  | ${fromN}Program lingua_a lingua_r ->\n      let lingua_out = new${toN}Builder () in\n      let lingua_root = ${pass}${langRoot from} lingua_a lingua_out ${c}lingua_r in\n      ${toN}Program (freeze${toN} lingua_out) lingua_root\n"] ]
@@ -1784,9 +1879,10 @@ fun arm pass ctx from to cases s p =
       let src =
         if mentions "src" body then "let src = lingua_src in " else ""
       in
+      let node = if mentions "node" body then "let node = lingua_x in " else "" in
       let binds = S.join "" (V.map (bindField pass ctx p lates raws read) fs) in
       [
-        Code "\n  | ${st}Kind.${prodName p} -> ${span}${here}${out}${src}${binds}",
+        Code "\n  | ${st}Kind.${prodName p} -> ${span}${here}${out}${src}${node}${binds}",
         Group Paren (rewrite to (sortName s) body) Nowhere
       ]
   | None ->
@@ -1836,7 +1932,8 @@ fun fieldTyOf p n =
 -- To tables, a node's function answers the row it wrote; to a tree, a piece of
 -- the new tree (`Lingua.Rewrite`).
 
-fun treePassCode pub pass ctx from to cases : [TokenTree] =
+fun treePassCode pub pass ctx from to (starts : [String]) cases
+    : [TokenTree] =
   let c = given ctx in
   let root = langRoot from in
   let toN = langName to in
@@ -1852,9 +1949,11 @@ fun treePassCode pub pass ctx from to cases : [TokenTree] =
         ++ "\n-- `${pass}`, writing its tables inside the caller's `runSt`.\n${pub}fun ${pass}St ${c}lingua_root =\n  let lingua_out = new${toN}Builder () in\n  let lingua_r = ${pass}${root} () lingua_out ${c}lingua_root in\n  ${toN}Program (freeze${toN} lingua_out) lingua_r\n" in
       V.concat
       [ [Code "use Std.Maybe as LinguaM\nuse Std.Collections.Vector as LinguaV\nuse Lingua.Red as LinguaR\nuse Lingua.Rewrite as LinguaW\nuse Lingua.Lang as LinguaL\n"],
-        V.concatMap (\s -> treeSortPass pub pass ctx from to cases s) (translated from to cases),
+        V.concatMap (\s -> treeSortPass pub pass ctx from to cases s) (translated from to starts cases),
         (if isTree to then [Code (anyCode pub pass ctx from)] else []),
-        [Code entry] ]
+        -- A pass that starts part of the way down is its sorts' functions,
+        -- for whoever has the rest to call: there is no whole to enter.
+        [Code (if V.isEmpty starts then entry else "")] ]
 
 -- Each kind of `from`'s trees as the kind of `to`'s of the same name: what a
 -- node or token kept is in the tree written.
@@ -1881,7 +1980,13 @@ fun rebuildCode pass ctx : String =
   "LinguaW.rebuild lingua_src (\\lingua_y -> ${pass}Any lingua_src lingua_out ${given ctx}lingua_y) lingua_x"
 
 fun treeSortPass pub pass ctx from to cases s : [TokenTree] =
-  let fallback = fallbackOf pass ctx to in
+  -- What the sort's function answers for a node that is none of its
+  -- productions: what the pass says, `| Stmt _ -> …`, or no node.
+  let fallback =
+    (match V.find (\c -> isOtherwise c and otherwiseSort c == sortName s) cases with
+     | Just (Case _ _ _ _ _ body) -> "(${spaced body})"
+     | None -> fallbackOf pass ctx to)
+  in
   let prods = sortProds s in
   let arms =
     if V.len prods == 1
@@ -1933,6 +2038,10 @@ fun treeArm pass ctx from to cases s p fallback : [TokenTree] =
           let out =
             if mentions "out" body then "let out = lingua_out in " else ""
           in
+          -- The node the case is for, whole, as the tree has it.
+          let node =
+            if mentions "node" body then "let node = lingua_x in " else ""
+          in
           let binds =
             S.join
             ""
@@ -1951,7 +2060,7 @@ fun treeArm pass ctx from to cases s p fallback : [TokenTree] =
             Paren
             (V.concat
               [
-                [Code (open ++ span ++ here ++ out ++ binds)],
+                [Code (open ++ span ++ here ++ out ++ node ++ binds)],
                 answer,
                 [Code close]
               ])

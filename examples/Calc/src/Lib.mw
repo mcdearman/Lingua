@@ -667,3 +667,72 @@ fun bound (a : ShapesArena) (p : ShapesPat) : [String] =
              "the variable, and how deep"
        | _ -> assertEq "a lam" "" "the inner function")
   | _ -> assertEq "a lam" "" "the root"
+
+-- --- a pass of part of a program ---------------------------------------------
+--
+-- `from Expr`: the pass is of expressions, and of what an expression holds.
+-- There is no function for a statement or a file, and none is asked for --
+-- what reads those calls `onlyExprsExpr` where it meets an expression. And
+-- `node` is the node a case is for: here, where a number was written.
+
+pass! {
+  onlyExprs : Calc -> Core from Expr
+    | Bin { lhs, op, rhs } -> Prim { op = op, args = [lhs, rhs] }
+    | Literal { number } ->
+        Literal { number = "${number}@${show (R.offset node)}" }
+}
+
+-- The expression of the statement `i` of a file, if it is one.
+fun exprOf (g : Green Calc) (i : Int) : Maybe (Syntax Calc) =
+  match M.andThen (\f -> V.get (calcFileStmts f) i) (astCalc g) with
+  | Just (CalcStmt.ExprStmt s) -> M.map syntaxCalcExpr (calcExprStmtExpr s)
+  | _ -> None
+
+@test fun aPassMayStartPartOfTheWayDown () =
+  match parseCalc "let x = 7;\n40 + 2;" with
+  | (g, _) ->
+      (match exprOf g 1 with
+       | None -> assertEq "an expression" "" "the second statement's"
+       | Just e ->
+           let p =
+             runSt (\() ->
+               let b = newCoreBuilder () in
+               let r = onlyExprsExpr () b e in
+               CoreProgram (freezeCore b) r)
+           in
+           let a = coreArena p in
+           assertEq
+             ( kindCoreExpr a (coreRoot p),
+               V.map (coreExprLiteralNumber a) (coreExprPrimArgs a (coreRoot p)) )
+             (CoreExprKind.Prim, ["40@11", "2@16"])
+             "the sum, its numbers each with where its node was")
+
+-- A case answers what its sort's function answers, and that need not be one
+-- node: a statement here is the expressions it runs, an expression statement
+-- twice over, and the file puts them together. A sort that answers something
+-- else says what a node that is not what its rule says answers too -- `| Stmt
+-- _ -> []` -- where a sort of nodes answers no node.
+pass! {
+  spread : Calc -> Core from File
+    | File _ -> []
+    | Stmt _ -> []
+    | File { stmts } -> V.concat stmts
+    | Let { value } -> [value]
+    | ExprStmt { expr } -> [expr, expr]
+    | Bin { lhs, op, rhs } -> Prim { op = op, args = [lhs, rhs] }
+}
+
+@test fun aCaseMayAnswerSeveralNodes () =
+  match parseCalc "let x = 1;\n2 + 3;" with
+  | (g, _) ->
+      let got =
+        runSt (\() ->
+          let b = newCoreBuilder () in
+          let rows = spreadFile () b (R.root g) in
+          let a = freezeCore b in
+          V.map (kindCoreExpr a) rows)
+      in
+      assertEq
+        got
+        [CoreExprKind.Literal, CoreExprKind.Prim, CoreExprKind.Prim]
+        "the `let`'s value, and the sum twice"

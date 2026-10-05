@@ -557,6 +557,22 @@ all. The functions a pass writes are left to inference, so a pass performs what
 its cases do: one that counts with `Std.State` is run under `runState`. A
 `match` in a body is parenthesised, since `|` begins the next case.
 
+A case's body also has `here`, where the node it rewrites is; `node`, the
+node itself as the source has it, for a case that needs more of it than its
+fields; and `out`, the target being written. What a case answers is its
+sort's function's answer -- a node of the target, most often, but anything
+every case of the sort agrees on: several nodes, where one declaration
+becomes several, for the case above to put together. (From a tree, a sort
+that answers something else says what a malformed node answers too: `| Decl _
+-> []`.)
+
+A pass need not be of a whole program. `lowerTy : Grouped -> Ast from Type,
+Row` starts at those sorts: it has a function for each and for what it comes
+to from them -- `lowerTyType src out node` -- none for the rest, and no entry
+of its own. That is how a compiler written by hand is moved onto passes a
+part at a time: the code by hand calls the part that is a pass already, and
+the pass grows a group of rules at a step.
+
 A pass may carry a **context** down the tree -- an inherited attribute, in the
 old words -- and a case may take a child **`later`**:
 

@@ -38,20 +38,22 @@ use Std.String as S
 use Green.*
 
 @derive(Debug, PartialEq)
-@pub data Green k = Green String #[k] #[Int] #[Int] #[Int] #[Int] #[Int] #[Int]
+@pub data Green k
+  = Green String #[k] #[Int] #[Int] #[Int] #[Int] #[Int] #[Int]
 
 -- A tree from its tables, as `Lingua.Build` writes them: the text, and for
 -- each slot its kind, start, end, subtree size (0 for a token) and parent (-1
 -- for the root).
-@pub fun fromTables (text : String) (kinds : #[k]) (starts : #[Int])
-    (ends : #[Int]) (sizes : #[Int]) (parents : #[Int]) : Green k =
+@pub fun fromTables (text : String) (kinds : #[k]) (starts : #[Int]) (ends : #[Int])
+    (sizes : #[Int]) (parents : #[Int])
+    : Green k =
   Green text kinds starts ends sizes parents #[] #[]
 
 -- The same, with each slot's origin: where it stands, or -1 where it is. Each
 -- node's is worked out from its tokens'.
-@pub fun fromTablesAt (text : String) (kinds : #[k]) (starts : #[Int])
-    (ends : #[Int]) (sizes : #[Int]) (parents : #[Int]) (froms : #[Int])
-    (tos : #[Int]) : Green k =
+@pub fun fromTablesAt (text : String) (kinds : #[k]) (starts : #[Int]) (ends : #[Int])
+    (sizes : #[Int]) (parents : #[Int]) (froms : #[Int]) (tos : #[Int])
+    : Green k =
   settled (Green text kinds starts ends sizes parents froms tos)
 
 -- A token of kind `k` whose text is `text`.
@@ -114,9 +116,8 @@ fun origins (xs : #[Int]) (n : Int) : #[Int] =
 fun settled (g : Green k) : Green k =
   match g with
   | Green _ _ _ _ _ _ os _ ->
-      (if arrayLen os == 0
-        then g
-        else V.foldl (\h i -> if isTokenAt h i then h else settledAt h i) g (V.range 0 (slots g)))
+      (if arrayLen os == 0 then g
+       else V.foldl (\h i -> if isTokenAt h i then h else settledAt h i) g (V.range 0 (slots g)))
 
 -- Node `i`'s origin: its first placed token's start to its last's end.
 fun settledAt (g : Green k) (i : Int) : Green k =
@@ -147,16 +148,14 @@ fun settledAt (g : Green k) (i : Int) : Green k =
 @pub fun fromAt (g : Green k) (i : Int) : Int =
   match g with
   | Green _ _ ss _ _ _ os _ ->
-      (if arrayLen os == 0
-        then arrayGet ss i
-        else (let o = arrayGet os i in if o < 0 then arrayGet ss i else o))
+      (if arrayLen os == 0 then arrayGet ss i
+       else (let o = arrayGet os i in if o < 0 then arrayGet ss i else o))
 
 @pub fun toAt (g : Green k) (i : Int) : Int =
   match g with
   | Green _ _ _ es _ _ os oe ->
-      (if arrayLen os == 0
-        then arrayGet es i
-        else (if arrayGet os i < 0 then arrayGet es i else arrayGet oe i))
+      (if arrayLen os == 0 then arrayGet es i
+       else (if arrayGet os i < 0 then arrayGet es i else arrayGet oe i))
 
 -- Whether slot `i` stands somewhere other than where it is.
 @pub fun isPlacedAt (g : Green k) (i : Int) : Bool =
@@ -180,8 +179,7 @@ fun settledAt (g : Green k) (i : Int) : Green k =
 
 -- The slot of the child of `p` after its child `c`; -1 if `c` is the last.
 @pub fun nextSibling (g : Green k) (p : Int) (c : Int) : Int =
-  let n = after g c in
-  if n < after g p then n else 0 - 1
+  let n = after g c in if n < after g p then n else 0 - 1
 
 -- The slots of `i`'s children, in order.
 @pub fun childSlots (g : Green k) (i : Int) : [Int] =
@@ -258,18 +256,17 @@ use Std.Test (assertEq)
 
 @test fun aPlacedNodeStandsWhereItsTokensDo () =
   let g =
-    node
-      "Sum"
-      [
-        tokenFrom "Num" "1" 40 41,
-        token "Space" " ",
-        tokenFrom "Plus" "+" 10 20,
-        token "Space" " ",
-        tokenFrom "Num" "2" 12 13
-      ]
+    node "Sum" [
+      tokenFrom "Num" "1" 40 41,
+      token "Space" " ",
+      tokenFrom "Plus" "+" 10 20,
+      token "Space" " ",
+      tokenFrom "Num" "2" 12 13
+    ]
   in
   let a = assertEq (text g) "1 + 2" "its text is its tokens'" in
-  let b = assertEq (fromAt g 0, toAt g 0) (40, 13) "from its first token's start to its last's end"
+  let b =
+    assertEq (fromAt g 0, toAt g 0) (40, 13) "from its first token's start to its last's end"
   in
   let c = assertEq (fromAt g 2, toAt g 2) (1, 2) "trivia is where it is" in
   assertEq

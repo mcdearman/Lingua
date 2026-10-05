@@ -36,7 +36,13 @@ use Std.Maybe as M
 -- a parameter or an import, the stretches of the file it can be seen in, and
 -- each use of it.
 @derive(Debug, PartialEq)
-@pub record Binder = { name : String, at : Meta, kind : String, scopes : [Meta], uses : [Meta] }
+@pub record Binder = {
+  name : String,
+  at : Meta,
+  kind : String,
+  scopes : [Meta],
+  uses : [Meta]
+}
 
 -- The id of a name bound nowhere. It has no entry: it was reported.
 @pub def unbound : Int = 0 - 1
@@ -47,36 +53,36 @@ pass! {
         (match L.lookupAssoc ident env with
          | Just id ->
              (let u = amend id (\(b : Binder) -> { b | uses = V.pushBack b.uses here }) in
-               NameRef { id = id })
+              NameRef { id = id })
          | None ->
              (let u = say (errorAt here "unbound variable: ${ident}") in NameRef { id = unbound }))
     | Lam { params, later body } ->
-        (let ids = V.map (\p -> declare (paramIdent out p) (metaResolvedParam p) "parameter") params
-          in
-          let b = body (bindAll out params ids env) in
-          let u = seenIn ids [metaResolvedExpr b] in
-          Lam { params = ids, body = b })
+        (let ids =
+           V.map (\p -> declare (paramIdent out p) (metaResolvedParam p) "parameter") params
+         in
+         let b = body (bindAll out params ids env) in
+         let u = seenIn ids [metaResolvedExpr b] in
+         Lam { params = ids, body = b })
     | Let { recursive, name, params, later value, later body } ->
         (let rec = M.isSome recursive in
-          let self = declare (nameIdent out name) (metaResolvedName name) "variable" in
-          let outer = (nameIdent out name, self) :: env in
-          let ids =
-            V.map (\p -> declare (paramIdent out p) (metaResolvedParam p) "parameter") params
-          in
-          let v = value (bindAll out params ids (if rec then outer else env)) in
-          let b = body outer in
-          let kind = if not (V.isEmpty ids) or isLam out v then "function" else "variable" in
-          let scopes =
-            if rec then [metaResolvedExpr v, metaResolvedExpr b] else [metaResolvedExpr b]
-          in
-          let u = amend self (\(x : Binder) -> { x | kind = kind, scopes = scopes }) in
-          let w = seenIn ids [metaResolvedExpr v] in
-          Let { recursive = rec, id = self, params = ids, value = v, body = b })
+         let self = declare (nameIdent out name) (metaResolvedName name) "variable" in
+         let outer = (nameIdent out name, self) :: env in
+         let ids =
+           V.map (\p -> declare (paramIdent out p) (metaResolvedParam p) "parameter") params
+         in
+         let v = value (bindAll out params ids (if rec then outer else env)) in
+         let b = body outer in
+         let kind = if not (V.isEmpty ids) or isLam out v then "function" else "variable" in
+         let scopes =
+           if rec then [metaResolvedExpr v, metaResolvedExpr b] else [metaResolvedExpr b]
+         in
+         let u = amend self (\(x : Binder) -> { x | kind = kind, scopes = scopes }) in
+         let w = seenIn ids [metaResolvedExpr v] in
+         Let { recursive = rec, id = self, params = ids, value = v, body = b })
 }
 
 -- A new binder, seen nowhere and used nowhere yet.
-fun declare (name : String) (at : Meta) (kind : String)
-    : Int ! { Table Binder | e } =
+fun declare (name : String) (at : Meta) (kind : String) : Int ! { Table Binder | e } =
   enter (Binder { name = name, at = at, kind = kind, scopes = [], uses = [] })
 
 fun seenIn (ids : [Int]) (scopes : [Meta]) =
@@ -115,8 +121,8 @@ fun binders src =
 @test fun eachBinderIsEnteredInTheOrderItIsWritten () =
   assertEq
     (V.map
-      (\(b : Binder) -> (b.name, b.kind, V.len b.uses))
-      (binders "let rec f n = if n < 2 then 1 else f (n - 1) in let x = f 3 in x"))
+       (\(b : Binder) -> (b.name, b.kind, V.len b.uses))
+       (binders "let rec f n = if n < 2 then 1 else f (n - 1) in let x = f 3 in x"))
     [("f", "function", 2), ("n", "parameter", 2), ("x", "variable", 1)]
     "a binder each, with what it is and how often it is used"
 

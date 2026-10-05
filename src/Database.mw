@@ -77,7 +77,8 @@ use Lingua.Pipe (named)
 -- A declaration: whether it is an input, whether it is kept between runs, its
 -- name and where that was written, its parameter, the key's type, the value's
 -- type, and -- for a derived query -- its body.
-data Decl = Decl Bool Bool String Loc String [TokenTree] [TokenTree] [TokenTree]
+data Decl
+  = Decl Bool Bool String Loc String [TokenTree] [TokenTree] [TokenTree]
 
 use Decl.*
 use Std.Macro (Expand)
@@ -96,27 +97,24 @@ def param : Parser Tokens (String, [TokenTree]) =
 -- and is the one `bind` here.
 def decl : Parser Tokens Decl =
   P.bind
-    (P.pure
-      (\kept input n pk vt body ->
-        let kept2 = M.isSome kept in
-        let body2 = M.unwrapOr [] body in
-        let d = Decl input kept2 (fst n) (snd n) (fst pk) (snd pk) vt body2 in
-        (d, M.isSome body))
-      |> skip (punct "|")
-      |> keep (P.optional (keyword "persisted"))
-      |> keep kind
-      |> keep named
-      |> keep param
-      |> skip (punct ":")
-      |> keep (treesUntil (\t -> isPunct "=" t or isPunct "|" t))
-      |> keep (P.optional (P.skipThen (punct "=") (treesUntil (isPunct "|")))))
+    (P.pure (\kept input n pk vt body ->
+       let kept2 = M.isSome kept in
+       let body2 = M.unwrapOr [] body in
+       let d = Decl input kept2 (fst n) (snd n) (fst pk) (snd pk) vt body2 in
+       (d, M.isSome body))
+       |> skip (punct "|")
+       |> keep (P.optional (keyword "persisted"))
+       |> keep kind
+       |> keep named
+       |> keep param
+       |> skip (punct ":")
+       |> keep (treesUntil (\t -> isPunct "=" t or isPunct "|" t))
+       |> keep (P.optional (P.skipThen (punct "=") (treesUntil (isPunct "|")))))
     (\read ->
       match read with
       | (d, bodied) ->
-          if isInput d and bodied then
-            P.fail "an input is set from outside: it has no `= …`"
-          else if not (isInput d) and not bodied then
-            P.fail "a query is what it works out: `= …`"
+          if isInput d and bodied then P.fail "an input is set from outside: it has no `= …`"
+          else if not (isInput d) and not bodied then P.fail "a query is what it works out: `= …`"
           else P.pure d)
 
 def databaseCall : Parser Tokens (Bool, (String, Loc), [Decl]) =
@@ -142,21 +140,16 @@ fun problems (decls : [Decl]) : Maybe [TokenTree] =
   let names = V.map declName decls in
   let wrong =
     V.concatMap
-      (\i -> match V.get decls i with
-             | Just (Decl input kept n at _ _ _ _) ->
-                 if V.any (\m -> m == n) (V.take names i)
-                 then [Fail "`${n}` is declared twice" at]
-                 else if input and kept
-                 then
-                   [Fail
-                     "`${n}` is an input: it is set every run, so there is nothing of it to keep"
-                     at]
-                 else []
-             | None -> [])
-      (V.range 0 (V.len decls)) in
-  match V.get wrong 0 with
-  | Just f -> Just [f]
-  | None -> None
+      (\i ->
+        match V.get decls i with
+        | Just (Decl input kept n at _ _ _ _) ->
+            if V.any (\m -> m == n) (V.take names i) then [Fail "`${n}` is declared twice" at]
+            else if input and kept then
+              [Fail "`${n}` is an input: it is set every run, so there is nothing of it to keep" at]
+            else []
+        | None -> [])
+      (V.range 0 (V.len decls))
+  in match V.get wrong 0 with | Just f -> Just [f] | None -> None
 
 fun declName d = match d with | Decl _ _ n _ _ _ _ _ -> n
 
@@ -170,18 +163,25 @@ fun databaseCode pub db decls : [TokenTree] =
   let lower = lowerFirst db in
   let several = V.len decls > 1 in
   let keeps = V.any isKept decls in
-  V.concat
-    [ [Code "use Lingua.Query as LinguaQ\nuse Std.Collections.Vector as LinguaV\n\n-- A key of `${db}`: which query, and of what.\n@derive(PartialEq)\n${pub}data ${key} = "],
-      cases (\d -> match d with | Decl _ _ n _ _ k _ _ -> (upperFirst n, k)) decls,
-      [Code "\n\n-- An answer of `${db}`, by the query that gave it.\n${pub}data ${value} = "],
-      cases (\d -> match d with | Decl _ _ n _ _ _ v _ -> ("${upperFirst n}Value", v)) decls,
-      [Code "\n"],
-      V.concatMap (\d -> accessor pub key value several d) decls,
-      [Code "\nfun lingua${db}_compute key =\n  match key with"],
-      V.concatMap (\d -> computeArm key value d) decls,
-      [Code "\n\n-- A `${db}` database, every input unset.\n${pub}fun new${db} () = LinguaQ.newDb lingua${db}_compute\n\n-- `${db}` as a batch: each query worked out once, and nothing else kept.\n${pub}fun batch${db} () = LinguaQ.newBatch lingua${db}_compute\n\n-- `db`, with several keys asked at once each on a thread of its own.\n${pub}fun parallel${db} db = LinguaQ.parallel db\n\n-- `parallel${db} db`, a batch's threads sharing the inputs in a compact region.\n${pub}fun shared${db} db = LinguaQ.shared db\n"],
-      V.concatMap (\d -> outside pub db key value several d) decls,
-      if keeps then [Code (codec pub db key value decls)] else [] ]
+  V.concat [
+    [Code
+       "use Lingua.Query as LinguaQ\nuse Std.Collections.Vector as LinguaV\n\n-- A key of `${db}`: which query, and of what.\n@derive(PartialEq)\n${pub}data ${key} = "],
+    cases (\d -> match d with | Decl _ _ n _ _ k _ _ -> (upperFirst n, k)) decls,
+    [Code "\n\n-- An answer of `${db}`, by the query that gave it.\n${pub}data ${value} = "],
+    cases
+      (\d ->
+        match d with
+        | Decl _ _ n _ _ _ v _ -> ("${upperFirst n}Value", v))
+      decls,
+    [Code "\n"],
+    V.concatMap (\d -> accessor pub key value several d) decls,
+    [Code "\nfun lingua${db}_compute key =\n  match key with"],
+    V.concatMap (\d -> computeArm key value d) decls,
+    [Code
+       "\n\n-- A `${db}` database, every input unset.\n${pub}fun new${db} () = LinguaQ.newDb lingua${db}_compute\n\n-- `${db}` as a batch: each query worked out once, and nothing else kept.\n${pub}fun batch${db} () = LinguaQ.newBatch lingua${db}_compute\n\n-- `db`, with several keys asked at once each on a thread of its own.\n${pub}fun parallel${db} db = LinguaQ.parallel db\n\n-- `parallel${db} db`, a batch's threads sharing the inputs in a compact region.\n${pub}fun shared${db} db = LinguaQ.shared db\n"],
+    V.concatMap (\d -> outside pub db key value several d) decls,
+    if keeps then [Code (codec pub db key value decls)] else []
+  ]
 
 -- `A (T) | B (U)`: a constructor per declaration, its type as it was written.
 fun cases (f : Decl -> (String, [TokenTree])) (decls : [Decl]) : [TokenTree] =
@@ -209,14 +209,15 @@ fun accessor pub key value several d =
   | Decl _ _ n _ _ _ _ _ ->
       let q = upperFirst n in
       [Code
-        "\n-- `${n}`, read from within a query.\n${pub}fun query${q} key = match LinguaQ.ask (${key}.${q} key)${unwrap value several n}\n\n-- `${n}` of each of `keys`, read at once.\n${pub}fun query${q}Each keys = LinguaV.map ${unwrapping value several n} (LinguaQ.askAll (LinguaV.map ${key}.${q} keys))\n"]
+         "\n-- `${n}`, read from within a query.\n${pub}fun query${q} key = match LinguaQ.ask (${key}.${q} key)${unwrap value several n}\n\n-- `${n}` of each of `keys`, read at once.\n${pub}fun query${q}Each keys = LinguaV.map ${unwrapping value several n} (LinguaQ.askAll (LinguaV.map ${key}.${q} keys))\n"]
 
 fun computeArm key value d =
   match d with
   | Decl True _ n _ p _ _ _ -> [Code "\n  | ${key}.${upperFirst n} ${p} -> LinguaQ.notComputed ()"]
   | Decl False _ n _ p _ _ body ->
       [
-        Code "\n  | ${key}.${upperFirst n} ${p} -> LinguaQ.computedAs ${value}.${upperFirst n}Value",
+        Code
+          "\n  | ${key}.${upperFirst n} ${p} -> LinguaQ.computedAs ${value}.${upperFirst n}Value",
         Group Paren body Nowhere
       ]
 
@@ -228,10 +229,9 @@ fun outside pub db key value several d =
       let asker = "${lowerFirst db}${q}" in
       let ask =
         "\n-- `${n}`, asked of a `${db}` database.\n${pub}fun ${asker} db key = match LinguaQ.get db (${key}.${q} key)${unwrap value several n}\n\n-- `${n}` of each of `keys`, asked at once.\n${pub}fun ${asker}Each db keys = LinguaV.map ${unwrapping value several n} (LinguaQ.getAll db (LinguaV.map ${key}.${q} keys))\n"
-      in if input
-         then
+      in if input then
            [Code
-             "\n-- Set input `${n}` for `key`.\n${pub}fun set${db}${q} db key x = LinguaQ.set db (${key}.${q} key) (${value}.${q}Value x)\n${ask}"]
+              "\n-- Set input `${n}` for `key`.\n${pub}fun set${db}${q} db key x = LinguaQ.set db (${key}.${q} key) (${value}.${q}Value x)\n${ask}"]
          else [Code ask]
 
 -- How the `persisted` queries' keys and answers, and the inputs' keys, are
@@ -244,32 +244,32 @@ fun codec pub db key value decls =
     S.join
       ""
       (V.map
-        (\d -> "\n    | ${key}.${upperFirst (declName d)} x -> LinguaQ.tagged \"${declName d}\" x")
-        written)
+         (\d -> "\n    | ${key}.${upperFirst (declName d)} x -> LinguaQ.tagged \"${declName d}\" x")
+         written)
   in
   let encodeValue =
     S.join
       ""
       (V.map
-        (\d ->
-          "\n    | ${value}.${upperFirst (declName d)}Value x -> LinguaQ.tagged \"${declName d}\" x")
-        kept)
+         (\d ->
+           "\n    | ${value}.${upperFirst (declName d)}Value x -> LinguaQ.tagged \"${declName d}\" x")
+         kept)
   in
   let decodeKey =
     S.join
       ""
       (V.map
-        (\d ->
-          "if q == \"${declName d}\" then LinguaQ.readAs ${key}.${upperFirst (declName d)} x else ")
-        written)
+         (\d ->
+           "if q == \"${declName d}\" then LinguaQ.readAs ${key}.${upperFirst (declName d)} x else ")
+         written)
   in
   let decodeValue =
     S.join
       ""
       (V.map
-        (\d ->
-          "\n    | ${key}.${upperFirst (declName d)} _ -> (if q == \"${declName d}\" then LinguaQ.readAs ${value}.${upperFirst (declName d)}Value x else LinguaQ.notComputed ())")
-        kept)
+         (\d ->
+           "\n    | ${key}.${upperFirst (declName d)} _ -> (if q == \"${declName d}\" then LinguaQ.readAs ${value}.${upperFirst (declName d)}Value x else LinguaQ.notComputed ())")
+         kept)
   in
   let every = V.len written == V.len decls in
   let everyValue = V.len kept == V.len decls in
@@ -306,7 +306,6 @@ fun caseFirst (letters : String) (from : Int) (to : Int) (s : String) : String =
   if stringByteLength s == 0 then s
   else
     let b = toInt (stringByteAt s 0) in
-    (if b >= from and b <= to
-      then stringSlice letters (b - from) (b - from + 1)
-      else stringSlice s 0 1)
+    (if b >= from and b <= to then stringSlice letters (b - from) (b - from + 1)
+     else stringSlice s 0 1)
       ++ stringSlice s 1 (stringByteLength s)

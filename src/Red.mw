@@ -8,19 +8,8 @@
 
 use Std.Collections.Vector as V
 use Lingua.Green (
-  Green,
-  kindAt,
-  startAt,
-  endAt,
-  fromAt,
-  toAt,
-  isTokenAt,
-  parentAt,
-  childSlots,
-  textAt,
-  subtree,
-  firstChild,
-  nextSibling
+  Green, kindAt, startAt, endAt, fromAt, toAt, isTokenAt, parentAt, childSlots, textAt, subtree,
+  firstChild, nextSibling
 )
 
 use Syntax.*
@@ -67,7 +56,8 @@ use Syntax.*
 
 -- Its children -- nodes and tokens, trivia included -- each where it is.
 @pub fun children (s : Syntax k) : [Syntax k] =
-  match s with | Syntax g i -> V.map (\c -> Syntax g c) (childSlots g i)
+  match s with
+  | Syntax g i -> V.map (\c -> Syntax g c) (childSlots g i)
 
 -- Its children that are nodes.
 @pub fun nodes (s : Syntax k) : [Syntax k] = childrenWhere (\g c -> not (isTokenAt g c)) s
@@ -85,8 +75,7 @@ use Syntax.*
 
 -- Its first child whose slot `p` holds of, if one does -- found by stepping
 -- from slot to slot, making nothing for the children it passes.
-@pub fun childWhere (p : Green k -> Int -> Bool) (s : Syntax k) : Maybe
-    (Syntax k) =
+@pub fun childWhere (p : Green k -> Int -> Bool) (s : Syntax k) : Maybe (Syntax k) =
   match s with
   | Syntax g i ->
       let rec go c =
@@ -94,13 +83,11 @@ use Syntax.*
       in go (firstChild g i)
 
 -- Every child whose slot `p` holds of, in order.
-@pub fun childrenWhere (p : Green k -> Int -> Bool) (s : Syntax k) :
-    [Syntax k] =
+@pub fun childrenWhere (p : Green k -> Int -> Bool) (s : Syntax k) : [Syntax k] =
   match s with
   | Syntax g i ->
       let rec go c acc =
-        if c < 0
-        then acc
+        if c < 0 then acc
         else go (nextSibling g i c) (if p g c then V.pushBack acc (Syntax g c) else acc)
       in go (firstChild g i) []
 
@@ -134,19 +121,17 @@ use Std.Maybe as M
 
 -- `(1 + 2)`, with its spaces.
 def sample : Green String =
-  node
-    "Paren"
-    [
-      token "(" "(",
-      node "Sum" [
-        token "Num" "1",
-        token "Space" " ",
-        token "+" "+",
-        token "Space" " ",
-        token "Num" "2"
-      ],
-      token ")" ")"
-    ]
+  node "Paren" [
+    token "(" "(",
+    node "Sum" [
+      token "Num" "1",
+      token "Space" " ",
+      token "+" "+",
+      token "Space" " ",
+      token "Num" "2"
+    ],
+    token ")" ")"
+  ]
 
 @test fun aChildIsWhereItsElderSiblingsEnd () =
   let sum = V.getOr (root sample) (nodes (root sample)) 0 in

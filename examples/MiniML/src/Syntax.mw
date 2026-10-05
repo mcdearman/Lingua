@@ -46,10 +46,30 @@ use Lingua.Green (dump)
   lexer Token
   trivia { Whitespace, Comment }
   tokens {
-    "let" = Let, "rec" = Rec, "in" = In, "fun" = Fun, "if" = If, "then" = Then, "else" = Else,
-    "true" = True, "false" = False, "(" = LParen, ")" = RParen, "->" = Arrow, "=" = Equals,
-    "==" = EqEq, "<=" = Le, ">=" = Ge, "<" = Lt, ">" = Gt, "+" = Plus, "-" = Minus, "*" = Star, "/" = Slash,
-    "ident" = Ident _, "int_number" = Number _
+    "let" = Let,
+    "rec" = Rec,
+    "in" = In,
+    "fun" = Fun,
+    "if" = If,
+    "then" = Then,
+    "else" = Else,
+    "true" = True,
+    "false" = False,
+    "(" = LParen,
+    ")" = RParen,
+    "->" = Arrow,
+    "=" = Equals,
+    "==" = EqEq,
+    "<=" = Le,
+    ">=" = Ge,
+    "<" = Lt,
+    ">" = Gt,
+    "+" = Plus,
+    "-" = Minus,
+    "*" = Star,
+    "/" = Slash,
+    "ident" = Ident _,
+    "int_number" = Number _
   }
   precedence Expr { left "==" "<=" ">=" "<" ">", left "+" "-", left "*" "/", postfix App }
   grammar {
@@ -61,16 +81,16 @@ use Lingua.Green (dump)
     Bin = lhs:Expr op:("==" | "<=" | ">=" | "<" | ">" | "+" | "-" | "*" | "/") rhs:Expr
 
     Atom = Literal | BoolLit | NameRef | Paren
-    Literal   = "int_number"
-    BoolLit   = value:("true" | "false")
-    NameRef   = "ident"
+    Literal = "int_number"
+    BoolLit = value:("true" | "false")
+    NameRef = "ident"
     Paren = "(" Expr ")"
 
     Lam = "fun" params:Param* "->" body:Expr
     Let = "let" recursive:"rec"? name:Name params:Param* "=" value:Expr "in" body:Expr
-    If  = "if" cond:Expr "then" yes:Expr "else" no:Expr
+    If = "if" cond:Expr "then" yes:Expr "else" no:Expr
 
-    Name  = "ident"
+    Name = "ident"
     Param = "ident"
   }
 }
@@ -89,16 +109,14 @@ use Lingua.Green (dump)
   pub Style for Mini
   indent 2
   width 80
-    | Let   = "let" recursive name params "=" group(indent(line value) line "in") newline body
-    | Lam   = "fun" params "->" indent(line body)
-    | If    = "if" cond indent(line "then" yes) indent(line "else" no)
+    | Let = "let" recursive name params "=" group(indent(line value) line "in") newline body
+    | Lam = "fun" params "->" indent(line body)
+    | If = "if" cond indent(line "then" yes) indent(line "else" no)
     | Paren = "(" indent(cut expr) cut ")"
 }
 
 -- The tree of `input`, drawn.
-@pub fun drawn (input : String) : String =
-  match parseMini input with
-  | (g, errs) -> dump display g
+@pub fun drawn (input : String) : String = match parseMini input with | (g, errs) -> dump display g
 
 -- --- tests -------------------------------------------------------------------
 
@@ -140,18 +158,18 @@ format! {
   Narrow for Mini
   indent 2
   width 20
-    | Let   = "let" recursive name params "=" group(indent(line value) line "in") newline body
-    | Lam   = "fun" params "->" indent(line body)
-    | If    = "if" cond indent(line "then" yes) indent(line "else" no)
+    | Let = "let" recursive name params "=" group(indent(line value) line "in") newline body
+    | Lam = "fun" params "->" indent(line body)
+    | If = "if" cond indent(line "then" yes) indent(line "else" no)
     | Paren = "(" indent(cut expr) cut ")"
 }
 
 format! {
   Indents for Mini
   indent 2
-    | Let   = "let" recursive name params "=" indent(value) "in" body
-    | Lam   = "fun" params "->" indent(body)
-    | If    = "if" cond indent("then" yes) indent("else" no)
+    | Let = "let" recursive name params "=" indent(value) "in" body
+    | Lam = "fun" params "->" indent(body)
+    | If = "if" cond indent("then" yes) indent("else" no)
     | Paren = "(" indent(expr) ")"
 }
 
@@ -168,10 +186,10 @@ fun written (src : String) : String =
   S.join
     ""
     (V.concatMap
-      (\i ->
-        let c = stringSlice src i (i + 1) in
-        if c == " " or c == "\n" or c == "\t" then [] else [c])
-      (V.range 0 (stringByteLength src)))
+       (\i ->
+         let c = stringSlice src i (i + 1) in
+         if c == " " or c == "\n" or c == "\t" then [] else [c])
+       (V.range 0 (stringByteLength src)))
 
 @test fun whatFitsGoesOnOneLine () =
   assertEq
@@ -180,14 +198,15 @@ fun written (src : String) : String =
     "the value after its `=`, the body on a line of its own, and each of them whole"
 
 @test fun whatDoesNotFitBreaksWhereItsRuleSays () =
-  let a = assertEq
-  (narrow "let x = 1 + 2 in if x < 3 then (x) else fun y -> y")
-    "let x = 1 + 2 in\nif x < 3\n  then (x)\n  else fun y -> y"
-    "the `if` breaks before each branch, and each branch still fits" in
-  assertEq
-    (narrow "let total = (first + second + third) in total")
-    "let total =\n  (\n    first + second + third\n  )\nin\ntotal"
-    "the value under its `=`, and the parentheses around what they hold"
+  let a =
+    assertEq
+      (narrow "let x = 1 + 2 in if x < 3 then (x) else fun y -> y")
+      "let x = 1 + 2 in\nif x < 3\n  then (x)\n  else fun y -> y"
+      "the `if` breaks before each branch, and each branch still fits"
+  in assertEq
+       (narrow "let total = (first + second + third) in total")
+       "let total =\n  (\n    first + second + third\n  )\nin\ntotal"
+       "the value under its `=`, and the parentheses around what they hold"
 
 @test fun aNodeBreaksOnlyWhenItDoesNotFit () =
   -- The inner `let` has a body, which starts a line: so the outer value
@@ -220,9 +239,9 @@ fun written (src : String) : String =
       (V.map written srcs)
       "every token still there, in order, broken program or not"
   in assertEq
-    (V.map (\s -> narrow (narrow s)) srcs)
-    (V.map narrow srcs)
-    "and laid out twice is laid out once"
+       (V.map (\s -> narrow (narrow s)) srcs)
+       (V.map narrow srcs)
+       "and laid out twice is laid out once"
 
 @test fun everyLineIsSetInAsTheRulesSay () =
   assertEq
@@ -239,9 +258,9 @@ fun written (src : String) : String =
       "let f = fun y ->\n  y + 1\nin f 2"
       "one line, one level"
   in assertEq
-    (formatted "let f =\nfun y ->\ny + 1\nin f 2")
-    "let f =\n  fun y ->\n    y + 1\nin f 2"
-    "two lines, two"
+       (formatted "let f =\nfun y ->\ny + 1\nin f 2")
+       "let f =\n  fun y ->\n    y + 1\nin f 2"
+       "two lines, two"
 
 @test fun aFormattedProgramIsLeftAsItIs () =
   let src = "let x =\n  1 + 2 -- three\nin\n\nif x < 3\n  then x\n  else 0\n" in
@@ -256,20 +275,9 @@ fun written (src : String) : String =
 
 @test fun theNextLineStartsWhereTheFormatterWouldPutIt () =
   assertEq
-    (V.map
-      opens
-      [
-        "let x =",
-        "let x = 1 +",
-        "let x = 1 in",
-        "let f = fun y ->",
-        "let f =\n  fun y ->",
-        "if a",
-        "if a then",
-        "(",
-        "(a)",
-        "f x",
-        ""
-      ])
+    (V.map opens [
+       "let x =", "let x = 1 +", "let x = 1 in", "let f = fun y ->", "let f =\n  fun y ->", "if a",
+       "if a then", "(", "(a)", "f x", ""
+     ])
     ["  ", "  ", "", "  ", "    ", "  ", "  ", "  ", "", "", ""]
     "a level for each line a node still open began on"

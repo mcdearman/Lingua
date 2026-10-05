@@ -16,8 +16,7 @@ use Lingua.Green (isTokenAt, kindAt, firstChild, nextSibling)
 -- ones it hands to `cast` or answers.
 
 -- The `n`th child node, counting only those that cast.
-@pub fun nthChild (cast : Syntax k -> Maybe a) (n : Int) (s : Syntax k)
-    : Maybe a =
+@pub fun nthChild (cast : Syntax k -> Maybe a) (n : Int) (s : Syntax k) : Maybe a =
   match s with
   | Syntax g i -> nthCast cast g i (firstChild g i) n
 
@@ -32,15 +31,15 @@ fun nthCast cast g (p : Int) (c : Int) (m : Int) =
 -- The `n`th child node of any kind, if it casts: what tells apart two
 -- children whose types overlap -- `func:Expr arg:Atom`, where an `Atom` is an
 -- `Expr` too -- by where they are rather than by what they are.
-@pub fun nthNodeAs (cast : Syntax k -> Maybe a) (n : Int) (s : Syntax k)
-    : Maybe a =
+@pub fun nthNodeAs (cast : Syntax k -> Maybe a) (n : Int) (s : Syntax k) : Maybe a =
   match s with
   | Syntax g i -> nthNode cast g i (firstChild g i) n
 
 fun nthNode cast g (p : Int) (c : Int) (m : Int) =
   if c < 0 then None
   else if isTokenAt g c then nthNode cast g p (nextSibling g p c) m
-  else if m == 0 then cast (Syntax g c) else nthNode cast g p (nextSibling g p c) (m - 1)
+  else if m == 0 then cast (Syntax g c)
+  else nthNode cast g p (nextSibling g p c) (m - 1)
 
 -- Every child node that casts, in order.
 @pub fun childrenOf (cast : Syntax k -> Maybe a) (s : Syntax k) : [a] =
@@ -71,8 +70,7 @@ fun castAll cast g (p : Int) (c : Int) acc =
 @pub fun tokensOfFrom (ks : [k]) (n : Int) (s : Syntax k) : [Syntax k] = V.drop (tokensOf ks s) n
 
 -- Every child `cast` takes but the first `n`.
-@pub fun childrenOfFrom (cast : Syntax k -> Maybe a) (n : Int) (s : Syntax k) :
-    [a] =
+@pub fun childrenOfFrom (cast : Syntax k -> Maybe a) (n : Int) (s : Syntax k) : [a] =
   V.drop (childrenOf cast s) n
 
 -- --- tests -------------------------------------------------------------------

@@ -28,7 +28,11 @@ use Std.Collections.List as L
 use Std.String as S
 
 -- A type while it is inferred: a variable is a cell of the `runSt`'s.
-data MType s = Int | Bool | Fun (MType s) (MType s) | Var (StRef s (TyVar s))
+data MType s
+  = Int
+  | Bool
+  | Fun (MType s) (MType s)
+  | Var (StRef s (TyVar s))
 
 -- What a variable's cell holds: nothing yet -- its number, and the level of
 -- the `let` it was made under -- or the type it was unified with.
@@ -71,7 +75,10 @@ fun repr t =
   match t with
   | MType.Var r ->
       (match St.getRef r with
-       | Bound u -> (let v = repr u in let w = St.setRef r (Bound v) in v)
+       | Bound u ->
+           (let v = repr u in
+            let w = St.setRef r (Bound v) in
+            v)
        | Unbound _ _ -> t)
   | _ -> t
 
@@ -81,9 +88,7 @@ fun unify at a b =
   match (repr a, repr b) with
   | (MType.Int, MType.Int) -> ()
   | (MType.Bool, MType.Bool) -> ()
-  | (MType.Fun a1 b1, MType.Fun a2 b2) ->
-      let u = unify at a1 a2 in
-      unify at b1 b2
+  | (MType.Fun a1 b1, MType.Fun a2 b2) -> let u = unify at a1 a2 in unify at b1 b2
   | (MType.Var r, t) -> bindVar at r t
   | (t, MType.Var r) -> bindVar at r t
   | (x, y) -> raise (errorAt at "cannot unify ${typeName (frozen x)} with ${typeName (frozen y)}")
@@ -94,10 +99,7 @@ fun unify at a b =
 fun bindVar at r t =
   match St.getRef r with
   | Unbound id level ->
-      if isVar id t then ()
-      else
-        let u = adjust at id level t in
-        St.setRef r (Bound t)
+      if isVar id t then () else let u = adjust at id level t in St.setRef r (Bound t)
   | Bound u -> unify at u t
 
 fun isVar id t =
@@ -110,13 +112,11 @@ fun adjust at id level t =
   | MType.Var r ->
       (match St.getRef r with
        | Unbound j l ->
-           if j == id
-           then raise (errorAt at "occurs check: a type would contain itself")
-           else if l > level then St.setRef r (Unbound j level) else ()
+           if j == id then raise (errorAt at "occurs check: a type would contain itself")
+           else if l > level then St.setRef r (Unbound j level)
+           else ()
        | Bound _ -> ())
-  | MType.Fun a b ->
-      let u = adjust at id level a in
-      adjust at id level b
+  | MType.Fun a b -> let u = adjust at id level a in adjust at id level b
   | _ -> ()
 
 -- Generalize what `t` holds that was made deeper than `c`: those variables
@@ -127,9 +127,7 @@ fun generalize (c : Ctx s) t =
       (match St.getRef r with
        | Unbound j l -> if l > levelOf c then St.setRef r (Unbound j generic) else ()
        | Bound _ -> ())
-  | MType.Fun a b ->
-      let u = generalize c a in
-      generalize c b
+  | MType.Fun a b -> let u = generalize c a in generalize c b
   | _ -> ()
 
 -- `t` with a new variable for each generalized one -- the same new one
@@ -188,41 +186,40 @@ pass! {
          | None -> raise (errorAt here "no type for binder ${show id}: it was not resolved"))
     | Lam { param, later body } ->
         (let a = fresh ctx in
-          let b = body (bind ctx param a) in
-          Lam { param = param, body = b, ty = MType.Fun a (tyInferringExpr b) })
+         let b = body (bind ctx param a) in
+         Lam { param = param, body = b, ty = MType.Fun a (tyInferringExpr b) })
     | App { func, arg } ->
         (let out = fresh ctx in
-          let u = unify here (tyInferringExpr func) (MType.Fun (tyInferringExpr arg) out) in
-          App { func = func, arg = arg, ty = out })
+         let u = unify here (tyInferringExpr func) (MType.Fun (tyInferringExpr arg) out) in
+         App { func = func, arg = arg, ty = out })
     | Let { id, later value, later body } ->
         (let v = value (deeper ctx) in
-          let u = generalize ctx (tyInferringExpr v) in
-          let b = body (bind ctx id (tyInferringExpr v)) in
-          Let { id = id, value = v, body = b, ty = tyInferringExpr b })
+         let u = generalize ctx (tyInferringExpr v) in
+         let b = body (bind ctx id (tyInferringExpr v)) in
+         Let { id = id, value = v, body = b, ty = tyInferringExpr b })
     | LetRec { id, param, later value, later body } ->
         (let inner = deeper ctx in
-          let tf = fresh inner in
-          let ta = fresh inner in
-          let v = value (bind (bind inner id tf) param ta) in
-          let u = unify here tf (MType.Fun ta (tyInferringExpr v)) in
-          let w = generalize ctx tf in
-          let b = body (bind ctx id tf) in
-          LetRec { id = id, param = param, value = v, body = b, ty = tyInferringExpr b })
+         let tf = fresh inner in
+         let ta = fresh inner in
+         let v = value (bind (bind inner id tf) param ta) in
+         let u = unify here tf (MType.Fun ta (tyInferringExpr v)) in
+         let w = generalize ctx tf in
+         let b = body (bind ctx id tf) in
+         LetRec { id = id, param = param, value = v, body = b, ty = tyInferringExpr b })
     | If { cond, yes, no } ->
         (let u = unify (metaInferringExpr cond) (tyInferringExpr cond) MType.Bool in
-          let w = unify (metaInferringExpr no) (tyInferringExpr yes) (tyInferringExpr no) in
-          If { cond = cond, yes = yes, no = no, ty = tyInferringExpr yes })
+         let w = unify (metaInferringExpr no) (tyInferringExpr yes) (tyInferringExpr no) in
+         If { cond = cond, yes = yes, no = no, ty = tyInferringExpr yes })
     | Prim { op, args } ->
-        (if V.len args != 2
-          then raise (errorAt here "`${op}` wants two operands")
-          else
-            let u =
-              V.foldl (\acc a -> unify (metaInferringExpr a) (tyInferringExpr a) MType.Int) () args
-            in Prim {
-              op = op,
-              args = args,
-              ty = if V.elem op ["+", "-", "*", "/"] then MType.Int else MType.Bool
-            })
+        (if V.len args != 2 then raise (errorAt here "`${op}` wants two operands")
+         else
+           let u =
+             V.foldl (\acc a -> unify (metaInferringExpr a) (tyInferringExpr a) MType.Int) () args
+           in Prim {
+                op = op,
+                args = args,
+                ty = if V.elem op ["+", "-", "*", "/"] then MType.Int else MType.Bool
+              })
 }
 
 -- A type the tree holds is a cell inference may have written into since the
@@ -271,8 +268,7 @@ fun children (a : TypedArena) (e : TypedExpr) : [TypedExpr] =
 
 -- The same, with what another unit exports in scope, each at its type: the
 -- `i`th import is binder `i`, as `Names.resolved` entered it.
-@pub fun typedIn (imports : [Type]) (p : CoreProgram)
-    : Result Diagnostic TypedProgram =
+@pub fun typedIn (imports : [Type]) (p : CoreProgram) : Result Diagnostic TypedProgram =
   toResult (\() ->
     runSt (\() ->
       let start = Ctx [;] 0 (St.newRef 0) in
@@ -321,8 +317,9 @@ fun genericVar c =
 @pub fun annotated (src : String) (t : TypedProgram) : [String] =
   let a = typedArena t in
   V.map
-    (\x -> match metaTypedExpr a x with
-           | Meta i j -> "${S.trim (stringSlice src i j)} : ${typeName (tyTypedExpr a x)}")
+    (\x ->
+      match metaTypedExpr a x with
+      | Meta i j -> "${S.trim (stringSlice src i j)} : ${typeName (tyTypedExpr a x)}")
     (subexpressions a (typedExpr t))
 
 -- --- tests -------------------------------------------------------------------
@@ -401,10 +398,9 @@ use MiniML.Compiler (typeOfSource, annotatedSource)
   -- every node says `Int`.
   assertEq
     (annotatedSource "let rec f n = if n < 2 then n else f (n - 1) in f")
-    [ "let rec f n = if n < 2 then n else f (n - 1) in f : (Int -> Int)",
-      "if n < 2 then n else f (n - 1) : Int",
-      "n < 2 : Bool", "n : Int", "2 : Int",
-      "n : Int",
-      "f (n - 1) : Int", "f : (Int -> Int)", "n - 1 : Int", "n : Int", "1 : Int",
-      "f : (Int -> Int)" ]
+    [
+      "let rec f n = if n < 2 then n else f (n - 1) in f : (Int -> Int)",
+      "if n < 2 then n else f (n - 1) : Int", "n < 2 : Bool", "n : Int", "2 : Int", "n : Int",
+      "f (n - 1) : Int", "f : (Int -> Int)", "n - 1 : Int", "n : Int", "1 : Int", "f : (Int -> Int)"
+    ]
     "no variable left"

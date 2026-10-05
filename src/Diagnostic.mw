@@ -38,7 +38,8 @@ use Nettle.Write (render)
 
 -- What it is, what it says, where, what else it points at, and notes.
 @derive(Debug, PartialEq)
-@pub data Diagnostic = Diagnostic Severity String Meta [(Meta, String)] [String]
+@pub data Diagnostic
+  = Diagnostic Severity String Meta [(Meta, String)] [String]
 
 -- --- making them -------------------------------------------------------------
 
@@ -52,8 +53,7 @@ use Nettle.Write (render)
   Diagnostic Severity.Advice message at [] []
 
 -- `d`, pointing at `at` as well, with `message` beside it.
-@pub fun withLabel (at : Meta) (message : String) (d : Diagnostic)
-    : Diagnostic =
+@pub fun withLabel (at : Meta) (message : String) (d : Diagnostic) : Diagnostic =
   match d with
   | Diagnostic s m w ls ns -> Diagnostic s m w (V.pushBack ls (at, message)) ns
 
@@ -81,9 +81,7 @@ use Nettle.Write (render)
       match e with
       | (at, msg) ->
           let span =
-            (match R.tokenAt at (R.root g) with
-             | Just t -> R.range t
-             | None -> (at, at))
+            (match R.tokenAt at (R.root g) with | Just t -> R.range t | None -> (at, at))
           in errorAt (Meta (fst span) (snd span)) msg)
     errs
 
@@ -109,13 +107,11 @@ use Nettle.Write (render)
 
 -- Every diagnostic about `text`, the source called `path`, drawn one after
 -- another -- without colour, as a test or a log wants them.
-@pub fun renderAll (path : String) (text : String) (ds : [Diagnostic])
-    : String =
+@pub fun renderAll (path : String) (text : String) (ds : [Diagnostic]) : String =
   drawn False path text ds
 
 -- The same, in colour, for a terminal.
-@pub fun renderColored (path : String) (text : String) (ds : [Diagnostic])
-    : String =
+@pub fun renderColored (path : String) (text : String) (ds : [Diagnostic]) : String =
   drawn True path text ds
 
 -- The same, for standard output: in colour if it is a terminal and `NO_COLOR`
@@ -164,28 +160,28 @@ use Std.Test (assertEq)
 @test fun aDiagnosticIsDrawnWhereItIs () =
   assertEq
     (renderAll
-      "main.ml"
-      "let x = 1 + true in x"
-      [errorAt (Meta 12 16) "cannot unify Bool with Int"
-        |> withLabel (Meta 8 9) "this is an `Int`"])
+       "main.ml"
+       "let x = 1 + true in x"
+       [errorAt (Meta 12 16) "cannot unify Bool with Int"
+          |> withLabel (Meta 8 9) "this is an `Int`"])
     "Error: cannot unify Bool with Int\n   ╭─[ main.ml:1:13 ]\n   │\n 1 │ let x = 1 + true in x\n   │         ┬   ────  \n   │         ╰───────── this is an `Int`\n───╯\n"
     "the span, and the label beside it"
 
 @test fun collectKeepsWhatWasReported () =
   let got =
-    collect
-      (\() ->
-        let a = say (errorAt noMeta "one") in
-        let b = say (warningAt noMeta "two") in
-        3)
+    collect (\() ->
+      let a = say (errorAt noMeta "one") in
+      let b = say (warningAt noMeta "two") in
+      3)
   in assertEq
-    (match got with | (x, ds) -> (x, V.map message ds))
-    (3, ["one", "two"])
-    "the answer, and both, in order"
+       (match got with | (x, ds) -> (x, V.map message ds))
+       (3, ["one", "two"])
+       "the answer, and both, in order"
 
 @test fun aTerminalGetsColour () =
   let d = [errorAt (Meta 12 16) "cannot unify Bool with Int"] in
   assertEq
-    (renderColored "main.ml" "let x = 1 + true in x" d == renderAll "main.ml" "let x = 1 + true in x" d)
+    (renderColored "main.ml" "let x = 1 + true in x" d
+       == renderAll "main.ml" "let x = 1 + true in x" d)
     False
     "escapes, around the same drawing"

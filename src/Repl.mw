@@ -96,34 +96,33 @@ use Fuzzy as F
 
 -- The tree's text, its tokens coloured by what they are: as an editor
 -- colours them, the classes being the server's (`Lingua.Lsp`).
-@pub fun coloured (theme : Theme) (name : k -> String) (g : Green k)
-    : String =
+@pub fun coloured (theme : Theme) (name : k -> String) (g : Green k) : String =
   painted theme (G.text g) (classified name g)
 
 -- `text` with each of `classes` -- the bytes a token is from and to, and its
 -- class -- as `theme` shows that class: what a language server answers for a
 -- file's tokens, shown at a prompt. A line at a time, so that a token over
 -- several lines does not colour what starts the next.
-@pub fun painted (theme : Theme) (text : String) (classes : [(Int, Int, Int)])
-    : String =
-  let step = \acc x ->
-    match (acc, x) with
-    | ((out, at), (from, to, class)) ->
-        if from < at then (out, at)
-        else
-          let piece = stringSlice text from to in
-          let shown =
-            (match shownAs theme class with
-             | None -> piece
-             | Just on ->
-                 S.join
-                   "\n"
-                   (V.map
-                     (\l -> if S.isEmpty l then l else on ++ l ++ "\u{1b}[0m")
-                     (S.split "\n" piece)))
-          in (out ++ stringSlice text at from ++ shown, to)
+@pub fun painted (theme : Theme) (text : String) (classes : [(Int, Int, Int)]) : String =
+  let step =
+    \acc x ->
+      match (acc, x) with
+      | ((out, at), (from, to, class)) ->
+          if from < at then (out, at)
+          else
+            let piece = stringSlice text from to in
+            let shown =
+              (match shownAs theme class with
+               | None -> piece
+               | Just on ->
+                   S.join
+                     "\n"
+                     (V.map
+                        (\l -> if S.isEmpty l then l else on ++ l ++ "\u{1b}[0m")
+                        (S.split "\n" piece)))
+            in (out ++ stringSlice text at from ++ shown, to)
   in match V.foldl step ("", 0) classes with
-  | (out, at) -> out ++ stringSlice text at (stringByteLength text)
+     | (out, at) -> out ++ stringSlice text at (stringByteLength text)
 
 -- --- themes ------------------------------------------------------------------
 --
@@ -149,72 +148,62 @@ fun shownAs (theme : Theme) (class : Int) : Maybe String =
 @pub def themes : [Theme] =
   [
     -- Soft shades of the terminal's 256, the same whatever its own colours.
-    Theme
-      "soft"
-      [
-        ("keyword", "1;38;5;183"),
-        ("function", "38;5;117"),
-        ("type", "38;5;116"),
-        ("enumMember", "38;5;216"),
-        ("namespace", "38;5;245"),
-        ("number", "38;5;215"),
-        ("string", "38;5;150"),
-        ("comment", "3;38;5;245")
-      ],
+    Theme "soft" [
+      ("keyword", "1;38;5;183"),
+      ("function", "38;5;117"),
+      ("type", "38;5;116"),
+      ("enumMember", "38;5;216"),
+      ("namespace", "38;5;245"),
+      ("number", "38;5;215"),
+      ("string", "38;5;150"),
+      ("comment", "3;38;5;245")
+    ],
     -- A colour for everything name resolution tells apart.
-    Theme
-      "bright"
-      [
-        ("keyword", "1;35"),
-        ("function", "93"),
-        ("variable", "94"),
-        ("type", "36"),
-        ("enumMember", "34"),
-        ("namespace", "2;36"),
-        ("number", "33"),
-        ("string", "32"),
-        ("comment", "2")
-      ],
+    Theme "bright" [
+      ("keyword", "1;35"),
+      ("function", "93"),
+      ("variable", "94"),
+      ("type", "36"),
+      ("enumMember", "34"),
+      ("namespace", "2;36"),
+      ("number", "33"),
+      ("string", "32"),
+      ("comment", "2")
+    ],
     -- Few colours: a function, a type and what is written out stand out,
     -- and a keyword is bold. As readable on a light ground as a dark one.
-    Theme
-      "quiet"
-      [
-        ("keyword", "1"),
-        ("function", "34"),
-        ("type", "36"),
-        ("enumMember", "36"),
-        ("namespace", "2"),
-        ("number", "35"),
-        ("string", "32"),
-        ("comment", "2")
-      ],
+    Theme "quiet" [
+      ("keyword", "1"),
+      ("function", "34"),
+      ("type", "36"),
+      ("enumMember", "36"),
+      ("namespace", "2"),
+      ("number", "35"),
+      ("string", "32"),
+      ("comment", "2")
+    ],
     -- As an editor's dark theme has them: functions blue, types yellow.
-    Theme
-      "editor"
-      [
-        ("keyword", "1;35"),
-        ("function", "94"),
-        ("type", "33"),
-        ("enumMember", "92"),
-        ("namespace", "2;36"),
-        ("number", "91"),
-        ("string", "32"),
-        ("comment", "2;3")
-      ],
+    Theme "editor" [
+      ("keyword", "1;35"),
+      ("function", "94"),
+      ("type", "33"),
+      ("enumMember", "92"),
+      ("namespace", "2;36"),
+      ("number", "91"),
+      ("string", "32"),
+      ("comment", "2;3")
+    ],
     -- Warm: red keywords, yellow functions, and numbers apart from both.
-    Theme
-      "warm"
-      [
-        ("keyword", "1;31"),
-        ("function", "93"),
-        ("type", "92"),
-        ("enumMember", "33"),
-        ("namespace", "2;33"),
-        ("number", "36"),
-        ("string", "32"),
-        ("comment", "2")
-      ],
+    Theme "warm" [
+      ("keyword", "1;31"),
+      ("function", "93"),
+      ("type", "92"),
+      ("enumMember", "33"),
+      ("namespace", "2;33"),
+      ("number", "36"),
+      ("string", "32"),
+      ("comment", "2")
+    ],
     -- Nothing coloured.
     Theme "plain" []
   ]
@@ -227,33 +216,17 @@ fun shownAs (theme : Theme) (class : Int) : Maybe String =
 
 -- A line showing a theme: its name, and a word of each class as it shows it.
 fun sample (theme : Theme) : String =
-  let word = \class text ->
-    match shownAs theme (classOf class) with
-    | Just on -> on ++ text ++ "\u{1b}[0m"
-    | None -> text
-  in S.join
-    ""
-    [
-      word "keyword" "let",
-      " ",
-      word "function" "area",
-      " ",
-      word "variable" "r",
-      " : ",
-      word "type" "Float",
-      " = ",
-      word "namespace" "Math",
-      ".",
-      word "enumMember" "Pi",
-      " * ",
-      word "variable" "r",
-      " * ",
-      word "number" "2",
-      " ",
-      word "string" "\"cm\"",
-      " ",
-      word "comment" "-- area"
-    ]
+  let word =
+    \class text ->
+      match shownAs theme (classOf class) with
+      | Just on -> on ++ text ++ "\u{1b}[0m"
+      | None -> text
+  in S.join "" [
+       word "keyword" "let", " ", word "function" "area", " ", word "variable" "r", " : ",
+       word "type" "Float", " = ", word "namespace" "Math", ".", word "enumMember" "Pi", " * ",
+       word "variable" "r", " * ", word "number" "2", " ", word "string" "\"cm\"", " ",
+       word "comment" "-- area"
+     ]
 
 -- What a line that starts with `:` does: `:theme` says which themes there
 -- are, the one that is on marked; `:theme name` turns one on. What it says,
@@ -264,16 +237,16 @@ fun sample (theme : Theme) : String =
     S.join
       "\n"
       (V.map
-        (\t ->
-          "${if themeName t == themeName on then "*" else " "} ${themeName t}${S.repeat " " (8 - S.charLength (themeName t))}${sample t}")
-        themes)
+         (\t ->
+           "${if themeName t == themeName on then "*" else " "} ${themeName t}${S.repeat " " (8 - S.charLength (themeName t))}${sample t}")
+         themes)
   in match (V.getOr "" words 0, V.get words 1) with
-  | (":theme", None) -> (listed, on)
-  | (":theme", Just name) ->
-      (match themeNamed name with
-       | Just t -> ("${sample t}", t)
-       | None -> ("no theme is called `${name}`:\n${listed}", on))
-  | (other, _) -> ("`${other}` is not something this prompt does: it has `:theme`", on)
+     | (":theme", None) -> (listed, on)
+     | (":theme", Just name) ->
+         (match themeNamed name with
+          | Just t -> ("${sample t}", t)
+          | None -> ("no theme is called `${name}`:\n${listed}", on))
+     | (other, _) -> ("`${other}` is not something this prompt does: it has `:theme`", on)
 
 fun isNameChar (c : Char) : Bool = C.isAlphaNum c or C.code c == 95 or C.code c == 39
 
@@ -291,8 +264,7 @@ fun isNameChar (c : Char) : Bool = C.isAlphaNum c or C.code c == 95 or C.code c 
 
 -- What Tab offers: of everything that could be written at the cursor, what
 -- starts as the name before it does -- and where that name starts.
-@pub fun candidates (text : String) (at : Int) (all : [(String, String)]) :
-    (Int, [String]) =
+@pub fun candidates (text : String) (at : Int) (all : [(String, String)]) : (Int, [String]) =
   let from = nameStart text at in
   let typed = S.fromChars (V.drop (V.take (S.chars text) at) from) in
   (from, V.filter (\n -> S.startsWith typed n and n != typed) (V.map fst all))
@@ -328,18 +300,17 @@ use Found.*
       match key.code with
       | Escape -> (f, PutAway)
       | Enter ->
-          (match V.get (shownIn f) at with
-           | Just (n, _, _) -> (f, Chose n)
-           | None -> (f, PutAway))
+          (match V.get (shownIn f) at with | Just (n, _, _) -> (f, Chose n) | None -> (f, PutAway))
       | Up -> to (at - 1)
       | Down -> to (at + 1)
       | Backspace ->
           (Finder (S.fromChars (V.take (S.chars query) (S.charLength query - 1))) 0 decls, Looking)
       | Character c ->
           if key.ctrl then
-            (if c == "c" or c == "g" or c == "f"
-              then (f, PutAway)
-              else if c == "p" then to (at - 1) else if c == "n" then to (at + 1) else (f, Looking))
+            (if c == "c" or c == "g" or c == "f" then (f, PutAway)
+             else if c == "p" then to (at - 1)
+             else if c == "n" then to (at + 1)
+             else (f, Looking))
           else (Finder (query ++ c) 0 decls, Looking)
       | _ -> (f, Looking)
 
@@ -367,20 +338,19 @@ use Found.*
           at
           (D.invert D.style)
       in match V.get found at with
-      | None -> D.writeIn b3 about 0 0 (D.dimmed D.style) "nothing found"
-      | Just (n, what, said) ->
-          let b4 = D.writeIn b3 about 0 0 (D.bold D.style) n in
-          let b5 = D.paragraph b4 (D.rect about.x (about.y + 1) about.w 2) D.style what in
-          D.paragraph
-            b5
-            (D.rect about.x (about.y + 4) about.w (about.h - 4))
-            (D.dimmed D.style)
-            said
+         | None -> D.writeIn b3 about 0 0 (D.dimmed D.style) "nothing found"
+         | Just (n, what, said) ->
+             let b4 = D.writeIn b3 about 0 0 (D.bold D.style) n in
+             let b5 = D.paragraph b4 (D.rect about.x (about.y + 1) about.w 2) D.style what in
+             D.paragraph
+               b5
+               (D.rect about.x (about.y + 4) about.w (about.h - 4))
+               (D.dimmed D.style)
+               said
 
 -- The finder shown under the cursor's line until a name is chosen or it is
 -- put away, and then gone: the name, if one was.
-@pub fun find (decls : [(String, String, String)])
-    : Maybe String ! { Console | e } =
+@pub fun find (decls : [(String, String, String)]) : Maybe String ! { Console | e } =
   finding (finder decls)
 
 fun finding (f : Finder) : Maybe String ! { Console | e } =
@@ -401,41 +371,35 @@ fun finding (f : Finder) : Maybe String ! { Console | e } =
 -- the parser's errors are, what a kind is called, what the next line opens
 -- with, what could be written at a byte of it, and what there is to find --
 -- none, for a prompt with no finder.
-@pub fun editorOf
-    theme
-    (prompt : String)
-    paint
-    treeOf
-    errorsOf
-    name
-    indentOf
-    completionsOf
+@pub fun editorOf theme (prompt : String) paint treeOf errorsOf name indentOf completionsOf
     declsOf =
-  let found = \text at ->
-    match find (declsOf text) with
-    | Just n ->
-        let cs = S.chars text in
-        let from = nameStart text at in
-        Bound.Edited
-          (S.fromChars (V.concat [V.take cs from, S.chars n, V.drop cs at]))
-          (from + S.charLength n)
-    | None -> Bound.Kept in
-  { LE.editor |
-    prompt = prompt,
-    continued = S.repeat " " (S.charLength prompt),
-    -- A line for the prompt itself -- `:theme` -- is not the language's
-    -- to colour, or to call unfinished.
-    highlight =
-      \t ->
-        if isCommand t then t
-        else
-          match paint with
-          | Just shown -> shown (getRef theme) t
-          | None -> coloured (getRef theme) name (treeOf t),
-    finished = \t -> isCommand t or not (unfinished t (errorsOf t)),
-    indent = \t -> indentOf (treeOf t),
-    complete = \t at -> candidates t at (completionsOf t (byteAt t at)),
-    bindings = [(T.ctrl "f", found)] }
+  let found =
+    \text at ->
+      match find (declsOf text) with
+      | Just n ->
+          let cs = S.chars text in
+          let from = nameStart text at in
+          Bound.Edited
+            (S.fromChars (V.concat [V.take cs from, S.chars n, V.drop cs at]))
+            (from + S.charLength n)
+      | None -> Bound.Kept
+  in {
+       LE.editor | prompt = prompt,
+       continued = S.repeat " " (S.charLength prompt),
+       -- A line for the prompt itself -- `:theme` -- is not the language's
+       -- to colour, or to call unfinished.
+       highlight =
+         \t ->
+           if isCommand t then t
+           else
+             match paint with
+             | Just shown -> shown (getRef theme) t
+             | None -> coloured (getRef theme) name (treeOf t),
+       finished = \t -> isCommand t or not (unfinished t (errorsOf t)),
+       indent = \t -> indentOf (treeOf t),
+       complete = \t at -> candidates t at (completionsOf t (byteAt t at)),
+       bindings = [(T.ctrl "f", found)]
+     }
 
 -- Entries read with `editor` and each printed as `eval` says, until there
 -- are no more: kept in the file `history`, when it names one.
@@ -502,15 +466,7 @@ def replCall : Parser Tokens (Bool, String, String, String, [ReplFeature]) =
 
 def replFeatures : [String] =
   [
-    "text",
-    "eval",
-    "tree",
-    "errors",
-    "completion",
-    "declarations",
-    "indent",
-    "prompt",
-    "history",
+    "text", "eval", "tree", "errors", "completion", "declarations", "indent", "prompt", "history",
     "theme"
   ]
 
@@ -524,29 +480,26 @@ def replWritten : [String] = ["prompt", "history", "theme"]
       match V.find (\f -> not (V.elem (fst (fst f)) replFeatures)) fs with
       | Just f ->
           [Fail
-            "a prompt has no `${fst (fst f)}`: it has ${S.join ", " (V.map (\x -> "`${x}`") replFeatures)}"
-            (snd (fst f))]
+             "a prompt has no `${fst (fst f)}`: it has ${S.join ", " (V.map (\x -> "`${x}`") replFeatures)}"
+             (snd (fst f))]
       | None ->
           match V.find (\f -> V.elem (fst (fst f)) replWritten != snd (snd f)) fs with
           | Just f ->
               [Fail
-                (if snd (snd f)
-                  then "`${fst (fst f)}` is a function's name, not text in quotes"
+                 (if snd (snd f) then "`${fst (fst f)}` is a function's name, not text in quotes"
                   else "`${fst (fst f)}` is text, in quotes")
-                (snd (fst f))]
+                 (snd (fst f))]
           | None ->
               match V.find (\k -> not (V.any (\f -> fst (fst f) == k) fs)) ["text", "eval"] with
               | Just k ->
                   [Fail
-                    "a prompt needs `${k}`: ${if k == "text" then "how what is typed is given to the compiler" else "what entering it prints"}"
-                    Nowhere]
+                     "a prompt needs `${k}`: ${if k == "text" then "how what is typed is given to the compiler" else "what entering it prints"}"
+                     Nowhere]
               | None ->
                   -- The database's language server, if one is declared: a
                   -- prompt colours what is typed as it colours a file.
                   let server =
-                    (match lookupAs (serverOf db) with
-                     | Ok s -> Just s
-                     | Err _ -> None)
+                    (match lookupAs (serverOf db) with | Ok s -> Just s | Err _ -> None)
                   in [Code (replCode (if pub then "@pub " else "") name lang db server fs)]
 
 fun replCode pub name lang db (server : Maybe String) fs =
@@ -572,9 +525,7 @@ fun replCode pub name lang db (server : Maybe String) fs =
      | None -> "(\\t -> [])")
   in
   let indent =
-    (match given "indent" with
-     | Just f -> "(\\g -> ${f} g)"
-     | None -> "(\\g -> \"\")")
+    (match given "indent" with | Just f -> "(\\g -> ${f} g)" | None -> "(\\g -> \"\")")
   in
   let completion =
     (match given "completion" with
@@ -599,32 +550,34 @@ ${pub}fun run${name} () =
 
 fun quoted (s : String) : String =
   "\""
-    ++ S.join "" (V.map (\i -> let c = stringSlice s i (i + 1) in if c == "\"" then "\\\"" else if c == "\\" then "\\\\" else if c == "$" then "\\$" else c) (V.range 0 (stringByteLength s)))
+    ++ S.join
+      ""
+      (V.map
+         (\i ->
+           let c = stringSlice s i (i + 1) in
+           if c == "\"" then "\\\""
+           else if c == "\\" then "\\\\"
+           else if c == "$" then "\\$"
+           else c)
+         (V.range 0 (stringByteLength s)))
     ++ "\""
 
 -- The editor a prompt is given: `editorOf`, or -- with no tree to ask -- one
 -- that colours nothing and takes every entry as finished.
-@pub fun editorFor
-    theme
-    (prompt : String)
-    paint
-    treeOf
-    errorsOf
-    name
-    indentOf
-    completionsOf
+@pub fun editorFor theme (prompt : String) paint treeOf errorsOf name indentOf completionsOf
     declsOf =
   match treeOf with
   | Just tree -> editorOf theme prompt paint tree errorsOf name indentOf completionsOf declsOf
-  | None -> {
-    LE.editor | prompt = prompt,
-    continued = S.repeat " " (S.charLength prompt),
-    highlight =
-      \t ->
-        match paint with
-        | Just shown -> if isCommand t then t else shown (getRef theme) t
-        | None -> t
-  }
+  | None ->
+      {
+        LE.editor | prompt = prompt,
+        continued = S.repeat " " (S.charLength prompt),
+        highlight =
+          \t ->
+            match paint with
+            | Just shown -> if isCommand t then t else shown (getRef theme) t
+            | None -> t
+      }
 
 -- --- tests -------------------------------------------------------------------
 
@@ -639,9 +592,11 @@ use Std.Console (withOutput)
   assertEq (unfinished "1 + 2" []) False "and none is finished"
 
 @test fun tabOffersWhatStartsAsTheNameDoes () =
-  let all = [("length", "function"), ("lines", "function"), ("let", "keyword"), ("map", "function")]
+  let all =
+    [("length", "function"), ("lines", "function"), ("let", "keyword"), ("map", "function")]
   in
-  let a = assertEq (candidates "x + le" 6 all) (4, ["length", "let"]) "from where the name starts"
+  let a =
+    assertEq (candidates "x + le" 6 all) (4, ["length", "let"]) "from where the name starts"
   in
   let b = assertEq (candidates "le" 2 all) (0, ["length", "let"]) "at the text's start" in
   let c = assertEq (candidates "let" 3 all) (0, []) "nothing for what is whole" in
@@ -685,7 +640,8 @@ fun after (ks : [Key]) : (Finder, Found) =
       (Chose "lines")
       "no further down than the last"
   in
-  let c = assertEq (snd (after (V.append (keys "ma") [T.key Enter]))) (Chose "map") "the one found"
+  let c =
+    assertEq (snd (after (V.append (keys "ma") [T.key Enter]))) (Chose "map") "the one found"
   in
   let d = assertEq (snd (after [T.key Escape])) PutAway "Escape puts it away" in
   assertEq
@@ -705,7 +661,7 @@ fun after (ks : [Key]) : (Finder, Found) =
   let c =
     assertEq
       (S.contains "lines" (V.getOr "" drawn 3)
-        and S.contains "String -> [String]" (V.getOr "" drawn 3))
+         and S.contains "String -> [String]" (V.getOr "" drawn 3))
       True
       "the chosen name's row, and what it is beside the list"
   in assertEq (V.len drawn) 12 "twelve rows of it"
@@ -718,24 +674,28 @@ fun after (ks : [Key]) : (Finder, Found) =
 @test fun whatAServerClassifiesIsPaintedWhereItIs () =
   -- A keyword, a name and a number, and an operator, which has no colour.
   let bright = themeOr "bright" in
-  let a = assertEq
-  (painted
-      bright
-      "let x = 12"
-      [ (0, 3, classOf "keyword"), (4, 5, classOf "variable"), (8, 10, classOf "number") ])
-    "\u{1b}[1;35mlet\u{1b}[0m \u{1b}[94mx\u{1b}[0m = \u{1b}[33m12\u{1b}[0m"
-    "each token in its class's colour, and what is between them as it was" in
-  assertEq
-    (painted bright "a -- one\nb" [(2, 8, classOf "comment")])
-    "a \u{1b}[2m-- one\u{1b}[0m\nb"
-    "and nothing of a line's colour on the next"
+  let a =
+    assertEq
+      (painted bright "let x = 12" [
+         (0, 3, classOf "keyword"),
+         (4, 5, classOf "variable"),
+         (8, 10, classOf "number")
+       ])
+      "\u{1b}[1;35mlet\u{1b}[0m \u{1b}[94mx\u{1b}[0m = \u{1b}[33m12\u{1b}[0m"
+      "each token in its class's colour, and what is between them as it was"
+  in assertEq
+       (painted bright "a -- one\nb" [(2, 8, classOf "comment")])
+       "a \u{1b}[2m-- one\u{1b}[0m\nb"
+       "and nothing of a line's colour on the next"
 
 @test fun aThemeSaysHowEachClassIsShown () =
   let classes = [(0, 3, classOf "keyword"), (4, 5, classOf "variable")] in
-  let a = assertEq
-  (painted (themeOr "quiet") "let x" classes)
-    "\u{1b}[1mlet\u{1b}[0m x"
-    "a keyword bold, and a name as it is" in
+  let a =
+    assertEq
+      (painted (themeOr "quiet") "let x" classes)
+      "\u{1b}[1mlet\u{1b}[0m x"
+      "a keyword bold, and a name as it is"
+  in
   let b = assertEq (painted (themeOr "plain") "let x" classes) "let x" "nothing coloured" in
   assertEq (themeName (themeOr "no such theme")) "soft" "and a theme nobody has is the first"
 
@@ -768,6 +728,6 @@ fun after (ks : [Key]) : (Finder, Found) =
       ("bright", True)
       "one nobody has changes nothing, and is said"
   in assertEq
-    (S.startsWith "`:quit` is not something this prompt does" (fst (command ":quit" on)))
-    True
-    "and what is not a command is said not to be"
+       (S.startsWith "`:quit` is not something this prompt does" (fst (command ":quit" on)))
+       True
+       "and what is not a command is said not to be"

@@ -25,11 +25,4 @@ use Std.Macro.Parse (Tokens)
 -- A name among a macro's tokens, and where it was written: what an error
 -- about it points at.
 @pub def named : Parser Tokens (String, Loc) =
-  P.label
-    "a name"
-    (P.token
-      (\t ->
-        match t with
-        | Word w at -> Just (w, at)
-        | _ -> None)
-      [])
+  P.label "a name" (P.token (\t -> match t with | Word w at -> Just (w, at) | _ -> None) [])

@@ -35,34 +35,41 @@ syntax! {
   lexer Token
   trivia { Whitespace, Comment }
   tokens {
-    "let" = Let, "=" = Equals, ";" = Semi, "(" = LParen, ")" = RParen, "," = Comma,
-    "+" = Plus, "-" = Minus, "*" = Star, "/" = Slash,
-    "ident" = Ident _, "int_number" = Number _
+    "let" = Let,
+    "=" = Equals,
+    ";" = Semi,
+    "(" = LParen,
+    ")" = RParen,
+    "," = Comma,
+    "+" = Plus,
+    "-" = Minus,
+    "*" = Star,
+    "/" = Slash,
+    "ident" = Ident _,
+    "int_number" = Number _
   }
   precedence Expr { left "+" "-", left "*" "/", postfix Call }
   grammar {
     File = Stmt*
 
     Stmt = Let | ExprStmt
-    Let  = "let" name:Name "=" value:Expr ";"
+    Let = "let" name:Name "=" value:Expr ";"
     ExprStmt = Expr ";"
 
     Expr = Literal | NameRef | Paren | Bin | Call
-    Literal   = "int_number"
-    NameRef   = "ident"
+    Literal = "int_number"
+    NameRef = "ident"
     Paren = "(" Expr ")"
-    Bin   = lhs:Expr op:("+" | "-" | "*" | "/") rhs:Expr
-    Call  = callee:Expr ArgList
-    ArgList   = "(" args:(Expr ("," Expr)*)? ")"
+    Bin = lhs:Expr op:("+" | "-" | "*" | "/") rhs:Expr
+    Call = callee:Expr ArgList
+    ArgList = "(" args:(Expr ("," Expr)*)? ")"
 
     Name = "ident"
   }
 }
 
 -- The tree of `input`, drawn.
-@pub fun drawn (input : String) : String =
-  match parseCalc input with
-  | (g, errs) -> dump display g
+@pub fun drawn (input : String) : String = match parseCalc input with | (g, errs) -> dump display g
 
 fun main () =
   let input = "let rate = 2 * (x + 40); // how much\nf(rate, 1);\n" in
@@ -134,13 +141,13 @@ def given : [(Token, Int, Int, String)] =
         V.getOr
           (R.root g)
           (V.filter
-            (\s -> R.kindOf s == Calc.NodeBin)
-            (R.nodes (V.getOr (R.root g) (R.nodes (R.root g)) 0)))
+             (\s -> R.kindOf s == Calc.NodeBin)
+             (R.nodes (V.getOr (R.root g) (R.nodes (R.root g)) 0)))
           0
       in assertEq
-        (R.range bin, V.map R.range (R.tokens bin))
-        ((3, 10), [(1, 2), (0, 20), (3, 4)])
-        "the sum from the `x` to the `1`; its `+` where the call is, the spaces where they are"
+           (R.range bin, V.map R.range (R.tokens bin))
+           ((3, 10), [(1, 2), (0, 20), (3, 4)])
+           "the sum from the `x` to the `1`; its `+` where the call is, the spaces where they are"
 
 @test fun anErrorInGivenTokensIsWhereTheyStand () =
   match parseCalcTokens [
@@ -187,9 +194,7 @@ fun value env (e : CalcExpr) : Int =
        | Just t -> (match S.toInt (R.text t) with | Just n -> n | None -> 0)
        | None -> 0)
   | CalcExpr.NameRef n ->
-      (match calcNameRefIdentToken n with
-       | Just t -> lookup env (R.text t)
-       | None -> 0)
+      (match calcNameRefIdentToken n with | Just t -> lookup env (R.text t) | None -> 0)
   | CalcExpr.Paren p -> (match calcParenExpr p with | Just x -> value env x | None -> 0)
   | CalcExpr.Bin b ->
       (match (calcBinLhs b, calcBinOp b, calcBinRhs b) with
@@ -197,7 +202,10 @@ fun value env (e : CalcExpr) : Int =
        | _ -> 0)
   | CalcExpr.Call c -> 0
 
-fun lookup env name = match V.find (\p -> fst p == name) env with | Just p -> snd p | None -> 0
+fun lookup env name =
+  match V.find (\p -> fst p == name) env with
+  | Just p -> snd p
+  | None -> 0
 
 fun apply op a b =
   if op == "+" then a + b else if op == "-" then a - b else if op == "*" then a * b else a / b
@@ -254,9 +262,7 @@ fun core (input : String) : Maybe CoreProgram =
 -- and -- in `evalCore` -- by asking which production it is and reading its
 -- fields, which makes nothing at all.
 fun runCore (input : String) : [(String, Int)] =
-  match core input with
-  | Just p -> bindingsOf p
-  | None -> []
+  match core input with | Just p -> bindingsOf p | None -> []
 
 fun bindingsOf (p : CoreProgram) : [(String, Int)] =
   let a = coreArena p in
@@ -276,9 +282,9 @@ fun evalCore (a : CoreArena) env (e : CoreExpr) : Int =
   | CoreExprKind.Paren -> evalCore a env (coreExprParenExpr a e)
   | CoreExprKind.Prim ->
       (let args = coreExprPrimArgs a e in
-        match (V.get args 0, V.get args 1) with
-        | (Just x, Just y) -> apply (coreExprPrimOp a e) (evalCore a env x) (evalCore a env y)
-        | _ -> 0)
+       match (V.get args 0, V.get args 1) with
+       | (Just x, Just y) -> apply (coreExprPrimOp a e) (evalCore a env x) (evalCore a env y)
+       | _ -> 0)
   | CoreExprKind.Call -> 0
 
 @test fun aPassRewritesWhatChangedAndCopiesTheRest () =
@@ -291,12 +297,12 @@ fun evalCore (a : CoreArena) env (e : CoreExpr) : Int =
   match core "let x = 1 + 2;" with
   | Just p ->
       (let a = coreArena p in
-        match viewCoreFile a (coreRoot p) with
-        | CoreFileView.File r ->
-            (match M.map (viewCoreStmt a) (V.get r.stmts 0) with
-             | Just (CoreStmtView.Let l) ->
-                 assertEq (metaCoreExpr a l.value) (Meta.Meta 8 13) "the bytes of `1 + 2`"
-             | _ -> assertEq 0 1 "a let"))
+       match viewCoreFile a (coreRoot p) with
+       | CoreFileView.File r ->
+           (match M.map (viewCoreStmt a) (V.get r.stmts 0) with
+            | Just (CoreStmtView.Let l) ->
+                assertEq (metaCoreExpr a l.value) (Meta.Meta 8 13) "the bytes of `1 + 2`"
+            | _ -> assertEq 0 1 "a let"))
   | None -> assertEq 0 1 "a program"
 
 -- A case that looks at a child before translating it: `0 + e` is `e`, and
@@ -306,14 +312,15 @@ pass! {
   pub lowerFolding : Surface -> Core
     | Bin { raw lhs, op, rhs } ->
         (if kindSurfaceExpr src lhs == SurfaceExprKind.Literal
-          and surfaceExprLiteralNumber src lhs == "0"
-          and op == "+"
-          then rhs
-          else Prim { op = op, args = [lowerFoldingExpr src out lhs, rhs] })
+           and surfaceExprLiteralNumber src lhs == "0"
+           and op == "+" then rhs
+         else Prim { op = op, args = [lowerFoldingExpr src out lhs, rhs] })
 }
 
 @test fun aTablePassCaseMayTakeAChildRaw () =
-  match M.map lowerFolding (surfaceFromCalc (fst (parseCalc "let x = 0 + 2 * 3;\nlet y = 1 + x;"))) with
+  match M.map
+    lowerFolding
+    (surfaceFromCalc (fst (parseCalc "let x = 0 + 2 * 3;\nlet y = 1 + x;"))) with
   | Just p ->
       let a = coreArena p in
       let top =
@@ -321,9 +328,7 @@ pass! {
          | CoreFileView.File r -> M.map (viewCoreStmt a) (V.get r.stmts 0))
       in
       let folded =
-        (match top with
-         | Just (CoreStmtView.Let l) -> coreExprPrimOp a l.value
-         | _ -> "")
+        (match top with | Just (CoreStmtView.Let l) -> coreExprPrimOp a l.value | _ -> "")
       in
       let u = assertEq folded "*" "`0 +` is gone" in
       assertEq (bindingsOf p) [("x", 6), ("y", 7)] "and the rest lowered as before"
@@ -356,9 +361,8 @@ lang! {
 pass! {
   pub pairUp : Calc -> Paired
     | Bin { lhs, raw op, rhs } ->
-        (if R.text op == "+"
-          then Pair { left = lhs, right = rhs }
-          else Bin { lhs = lhs, op = LinguaW.kept op, rhs = rhs })
+        (if R.text op == "+" then Pair { left = lhs, right = rhs }
+         else Bin { lhs = lhs, op = LinguaW.kept op, rhs = rhs })
 }
 
 @test fun aPassWritesATreeKeepingEveryByte () =
@@ -369,13 +373,13 @@ pass! {
       let a = assertEq (text h) input "every byte, in order" in
       assertEq
         (V.map
-          (\s ->
-            match s with
-            | PairedLet n (PairedPair l (PairedBin x op y)) ->
-                "${R.text n} = ${R.text l} and ${R.text x} ${R.text op} ${R.text y}"
-            | PairedLet n v -> "${R.text n} = ${R.text v}"
-            | _ -> "?")
-          (R.nodes (R.root h)))
+           (\s ->
+             match s with
+             | PairedLet n (PairedPair l (PairedBin x op y)) ->
+                 "${R.text n} = ${R.text l} and ${R.text x} ${R.text op} ${R.text y}"
+             | PairedLet n v -> "${R.text n} = ${R.text v}"
+             | _ -> "?")
+           (R.nodes (R.root h)))
         ["x = 1 and 2 * 3", "y = x"]
         "the sum a pair, the product as it was"
 
@@ -399,8 +403,7 @@ pass! {
   | (g, _) ->
       match surfaceFromCalc g with
       | Just s ->
-          (match runState 0 (\() -> lowerCounting s) with
-           | (_, n) -> assertEq n 2 "two operators")
+          (match runState 0 (\() -> lowerCounting s) with | (_, n) -> assertEq n 2 "two operators")
       | None -> assertEq 0 1 "a program"
 
 -- --- queries -----------------------------------------------------------------
@@ -418,9 +421,12 @@ database! {
   pub Session
     | input source (file : Int) : String
     | query tree (file : Int) : Green Calc = fst (parseCalc (querySource file))
-    | query program (file : Int) : Maybe CoreProgram = M.map lower (surfaceFromCalc (queryTree file))
-    | query bindings (file : Int) : [(String, Int)] = (match queryProgram file with | Just p -> bindingsOf p | None -> [])
-    | persisted query sum (files : [Int]) : Int = V.foldl (\acc bs -> acc + V.foldl (\a b -> a + snd b) 0 bs) 0 (queryBindingsEach files)
+    | query program (file : Int) : Maybe CoreProgram =
+        M.map lower (surfaceFromCalc (queryTree file))
+    | query bindings (file : Int) : [(String, Int)] =
+        (match queryProgram file with | Just p -> bindingsOf p | None -> [])
+    | persisted query sum (files : [Int]) : Int =
+        V.foldl (\acc bs -> acc + V.foldl (\a b -> a + snd b) 0 bs) 0 (queryBindingsEach files)
 }
 
 fun twoFiles () =
@@ -436,7 +442,8 @@ fun twoFiles () =
   let a = setSessionSource db 1 "let x = 2 * 3;" in
   let b = setSessionSource db 2 "let y = 10 - 1;" in
   let c = assertEq (toResult (\() -> sessionSum db [1, 2])) (Ok 15) "6 + 9" in
-  let d = assertEq (V.len (Q.takeLog db)) 7 "tree, program and bindings for each file, and the sum"
+  let d =
+    assertEq (V.len (Q.takeLog db)) 7 "tree, program and bindings for each file, and the sum"
   in
   let e = assertEq (toResult (\() -> sessionSum db [1, 2])) (Ok 15) "asked again" in
   assertEq (Q.takeLog db) [] "and nothing run for it"
@@ -495,12 +502,12 @@ fun twoFiles () =
   | (g, _) ->
       assertEq
         (V.map
-          (\s ->
-            match s with
-            | CalcLet n (CalcBin l op r) -> "${R.text n} = ${R.text l} ${R.text op} ${R.text r}"
-            | CalcLet n v -> "${R.text n} = ${R.text v}"
-            | _ -> "?")
-          (R.nodes (R.root g)))
+           (\s ->
+             match s with
+             | CalcLet n (CalcBin l op r) -> "${R.text n} = ${R.text l} ${R.text op} ${R.text r}"
+             | CalcLet n v -> "${R.text n} = ${R.text v}"
+             | _ -> "?")
+           (R.nodes (R.root g)))
         ["x = 1 + 2", "y = x"]
         "both lets, the first's value taken apart"
 
@@ -639,8 +646,10 @@ fun exprOf (g : Green Calc) (i : Int) : Maybe (Syntax Calc) =
            in
            let a = coreArena p in
            assertEq
-             ( kindCoreExpr a (coreRoot p),
-               V.map (coreExprLiteralNumber a) (coreExprPrimArgs a (coreRoot p)) )
+             (
+               kindCoreExpr a (coreRoot p),
+               V.map (coreExprLiteralNumber a) (coreExprPrimArgs a (coreRoot p))
+             )
              (CoreExprKind.Prim, ["40@11", "2@16"])
              "the sum, its numbers each with where its node was")
 
@@ -669,6 +678,6 @@ pass! {
           let a = freezeCore b in
           V.map (kindCoreExpr a) rows)
       in assertEq
-        got
-        [CoreExprKind.Literal, CoreExprKind.Prim, CoreExprKind.Prim]
-        "the `let`'s value, and the sum twice"
+           got
+           [CoreExprKind.Literal, CoreExprKind.Prim, CoreExprKind.Prim]
+           "the `let`'s value, and the sum twice"

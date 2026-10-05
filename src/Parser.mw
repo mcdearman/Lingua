@@ -40,11 +40,7 @@ use Parser.*
 
 -- An event, one at a time: what a test compares a parse against. A parse
 -- itself keeps its events as `Events`.
-@pub data Event k
-  = Open k
-  | Close
-  | Advance
-  | Error String
+@pub data Event k = Open k | Close | Advance | Error String
 
 -- Everything a parse said, in order, as tables: what each event is -- one of
 -- the numbers below -- the kind of each `Open`, and for each `Error` which of
@@ -70,7 +66,8 @@ def opError : Int = 3
       let op = arrayGet ops i in
       if op == opOpen then Open (arrayGet ks i)
       else if op == opClose then Close
-      else if op == opAdvance then Advance else Error (arrayGet msgs (arrayGet args i))
+      else if op == opAdvance then Advance
+      else Error (arrayGet msgs (arrayGet args i))
 
 -- Whether event `i` opens a node, closes one, takes a token or says what is
 -- wrong -- without making an `Event` to ask.
@@ -78,17 +75,20 @@ def opError : Int = 3
   match es with | Events ops _ _ _ -> arrayGet ops i == opOpen
 
 @pub fun isCloseAt (es : Events k) (i : Int) : Bool =
-  match es with | Events ops _ _ _ -> arrayGet ops i == opClose
+  match es with
+  | Events ops _ _ _ -> arrayGet ops i == opClose
 
 @pub fun isAdvanceAt (es : Events k) (i : Int) : Bool =
-  match es with | Events ops _ _ _ -> arrayGet ops i == opAdvance
+  match es with
+  | Events ops _ _ _ -> arrayGet ops i == opAdvance
 
 -- The kind an `Open` at `i` opens.
 @pub fun openKindAt (es : Events k) (i : Int) : k = match es with | Events _ ks _ _ -> arrayGet ks i
 
 -- The message an `Error` at `i` says.
 @pub fun messageAt (es : Events k) (i : Int) : String =
-  match es with | Events _ _ args msgs -> arrayGet msgs (arrayGet args i)
+  match es with
+  | Events _ _ args msgs -> arrayGet msgs (arrayGet args i)
 
 -- Every event, in order.
 @pub fun eventList (es : Events k) : [Event k] = V.map (eventAt es) (V.range 0 (eventCount es))
@@ -98,8 +98,8 @@ def opError : Int = 3
 -- messages; the kinds that stand for the end of the input and for a node of
 -- errors; how a kind is named in a message; and how many nodes are open, with
 -- the fewest there have been since the last token was taken.
-@pub data Parser s k =
-  Parser
+@pub data Parser s k
+  = Parser
     #[k]
     (StRef s Int)
     (StRef s Int)
@@ -141,10 +141,7 @@ def fuelMax : Int = 256
         -- Stuck: said once, and from then on the input has ended, so every
         -- loop waiting for something else stops.
         let said =
-          if f == 0
-          then
-            (let u = stSetRef fuel (0 - 1) in
-              error p "the parser is stuck here")
+          if f == 0 then (let u = stSetRef fuel (0 - 1) in error p "the parser is stuck here")
           else ()
         in eofK
       else
@@ -204,8 +201,10 @@ def fuelMax : Int = 256
 
 -- Take a `k`, or say one was expected and take nothing.
 @pub fun expect (p : Parser s k) (k : k) : () ! { St s | e } =
-  if eat p k then () else match p with
-                          | Parser _ _ _ _ _ _ _ _ _ name _ _ -> error p "expected ${name k}"
+  if eat p k then ()
+  else
+    match p with
+    | Parser _ _ _ _ _ _ _ _ _ name _ _ -> error p "expected ${name k}"
 
 -- Say what is wrong here, taking nothing.
 @pub fun error (p : Parser s k) (msg : String) : () ! { St s | e } =
@@ -249,11 +248,9 @@ fun mark ops args absorbed (i : Int) (n : Int) =
 
 -- Event `i` on, written from slot `o` on: an `Open` some chain took in is
 -- written with that chain, and one that starts a chain writes all of it.
-fun lay ops kinds args absorbed outOps outKinds outArgs (i : Int) (o : Int)
-    (n : Int) =
+fun lay ops kinds args absorbed outOps outKinds outArgs (i : Int) (o : Int) (n : Int) =
   if i >= n then ()
-  else if stGetArray absorbed i
-  then lay ops kinds args absorbed outOps outKinds outArgs (i + 1) o n
+  else if stGetArray absorbed i then lay ops kinds args absorbed outOps outKinds outArgs (i + 1) o n
   else
     let op = B.at ops i in
     if op == opOpen then
@@ -319,19 +316,19 @@ use Std.Test (assertEq)
       let c = expect p "num" in
       let d = close p sum "Sum" in
       let e = close p root "File" in
-      eventList (events p)) in
-  assertEq
-  said
-  [Open "File", Open "Sum", Open "Lit", Advance, Close, Advance, Advance, Close, Close]
-  "the sum holds the literal"
+      eventList (events p))
+  in assertEq
+       said
+       [Open "File", Open "Sum", Open "Lit", Advance, Close, Advance, Advance, Close, Close]
+       "the sum holds the literal"
 
 @test fun whatIsMissingIsSaidAndNothingIsTaken () =
   let said =
     runSt (\() ->
       let p = parser #["+"] "eof" "error" (\k -> "`${k}`") in
       let a = expect p "num" in
-      eventList (events p)) in
-  assertEq said [Error "expected `num`"] "an error, and the `+` still there"
+      eventList (events p))
+  in assertEq said [Error "expected `num`"] "an error, and the `+` still there"
 
 @test fun aLoopThatStopsMovingIsStopped () =
   let said =
@@ -339,41 +336,45 @@ use Std.Test (assertEq)
       let p = parser #["x"] "eof" "error" (\k -> k) in
       let rec spin n = if at p "eof" then n else spin (n + 1) in
       let n = spin 0 in
-      eventList (events p)) in
-  assertEq (V.last said) (Just (Error "the parser is stuck here")) "stuck, said, and over"
+      eventList (events p))
+  in assertEq (V.last said) (Just (Error "the parser is stuck here")) "stuck, said, and over"
 
 @test fun openingAndClosingOnTheSpotIsStuckToo () =
   let said =
     runSt (\() ->
       let p = parser #["x"] "eof" "error" (\k -> k) in
       let rec spin n =
-        if at p "eof" then n else (let m = open p in let c = close p m "node" in spin (n + 1))
+        if at p "eof" then n
+        else
+          (let m = open p in
+           let c = close p m "node" in
+           spin (n + 1))
       in
       let n = spin 0 in
-      eventList (events p)) in
-  assertEq (V.last said) (Just (Error "the parser is stuck here")) "no deeper, and no further"
+      eventList (events p))
+  in assertEq (V.last said) (Just (Error "the parser is stuck here")) "no deeper, and no further"
 
 @test fun unwindingDeepNestingAtTheEndIsNotStuck () =
   let said =
     runSt (\() ->
       let p = parser #["x"] "eof" "error" (\k -> k) in
       let rec down n =
-        if n == 0
-        then (let a = advance p in ())
+        if n == 0 then (let a = advance p in ())
         else
           (let m = open p in
-            let u = down (n - 1) in
-            let peek = V.map (\i -> nth p 0) (V.range 0 10) in
-            let c = close p m "node" in
-            ())
+           let u = down (n - 1) in
+           let peek = V.map (\i -> nth p 0) (V.range 0 10) in
+           let c = close p m "node" in
+           ())
       in
       let u = down 1000 in
-      eventList (events p)) in
-  assertEq
-    (V.any
-      (\e -> match e with
-             | Error m -> m == "the parser is stuck here"
-             | _ -> False)
-      said)
-    False
-    "a thousand levels, each looking ten times"
+      eventList (events p))
+  in assertEq
+       (V.any
+          (\e ->
+            match e with
+            | Error m -> m == "the parser is stuck here"
+            | _ -> False)
+          said)
+       False
+       "a thousand levels, each looking ten times"

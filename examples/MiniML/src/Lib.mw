@@ -104,26 +104,26 @@ fun command (cli : Cli) =
   | Cli.Lsp -> serveServer ()
   | Cli.Bench r ->
       (let n = M.unwrapOr 2000 (M.andThen S.toInt r.lines) in
-        let u = benchmark n in
-        drivers 8 (n / 8))
+       let u = benchmark n in
+       drivers 8 (n / 8))
 
 -- End with status 1 when something went wrong.
 fun finish (ok : Bool) = if ok then () else exit 1
 
 -- Each of `paths` read into `db` -- as file 1, 2, … -- or why one could not
 -- be.
-fun load db (paths : [String]) : Result String
-    [(Int, String, String)] ! { Fs, Thread, Mut | e } =
+fun load db (paths : [String]) : Result String [(Int, String, String)] ! { Fs, Thread, Mut | e } =
   V.foldl
-    (\acc p -> match acc with
-               | Err why -> Err why
-               | Ok done ->
-                   (match readToString p with
-                    | Err why -> Err "cannot read ${p}: ${why}"
-                    | Ok text ->
-                        (let i = V.len done + 1 in
-                          let u = setSessionSource db i text in
-                          Ok (V.pushBack done (i, p, text)))))
+    (\acc p ->
+      match acc with
+      | Err why -> Err why
+      | Ok done ->
+          (match readToString p with
+           | Err why -> Err "cannot read ${p}: ${why}"
+           | Ok text ->
+               (let i = V.len done + 1 in
+                let u = setSessionSource db i text in
+                Ok (V.pushBack done (i, p, text)))))
     (Ok [])
     paths
 
@@ -138,11 +138,12 @@ fun checkFiles (paths : [String]) =
   | Ok files ->
       let typed = sessionTypedEach db (V.map (\f -> match f with | (i, _, _) -> i) files) in
       V.foldl
-        (\ok i -> match (V.get files i, V.get typed i) with
-                  | (Just (_, p, _), Just (Ok ty)) -> (let u = println "${p}: ${ty}" in ok)
-                  | (Just (_, p, text), Just (Err ds)) ->
-                      (let u = writeOutput (renderToOutput p text ds) in False)
-                  | _ -> ok)
+        (\ok i ->
+          match (V.get files i, V.get typed i) with
+          | (Just (_, p, _), Just (Ok ty)) -> (let u = println "${p}: ${ty}" in ok)
+          | (Just (_, p, text), Just (Err ds)) ->
+              (let u = writeOutput (renderToOutput p text ds) in False)
+          | _ -> ok)
         True
         (V.range 0 (V.len files))
 
@@ -154,9 +155,7 @@ fun runFile (path : String) =
   | Ok files ->
       match sessionResult db 1 with
       | Ok out -> (let u = println out in True)
-      | Err ds ->
-          (let u = writeOutput (renderToOutput path (sessionSource db 1) ds) in
-            False)
+      | Err ds -> (let u = writeOutput (renderToOutput path (sessionSource db 1) ds) in False)
 
 -- What the REPL prints for a line: `replLine`, its diagnostics in colour
 -- where `renderToOutput` says so.
@@ -169,17 +168,12 @@ fun shown (src : String) =
   | Err e -> show e
 
 fun demo () =
-  V.foldl
-    (\u src -> println "> ${src}\n${shown src}\n")
-    ()
-    [ "let rec fact n = if n < 2 then 1 else n * fact (n - 1) in fact 10",
-      "let id = fun x -> x in if id true then id 1 else 2",
-      "let add = fun x y -> x + y in let inc = add 1 in inc 41",
-      "fun x -> x x",
-      "1 + true",
-      "1 / 0",
-      "let x = in 1",
-      "let rec loop = loop in loop" ]
+  V.foldl (\u src -> println "> ${src}\n${shown src}\n") () [
+    "let rec fact n = if n < 2 then 1 else n * fact (n - 1) in fact 10",
+    "let id = fun x -> x in if id true then id 1 else 2",
+    "let add = fun x y -> x + y in let inc = add 1 in inc 41", "fun x -> x x", "1 + true", "1 / 0",
+    "let x = in 1", "let rec loop = loop in loop"
+  ]
 
 -- --- tests -------------------------------------------------------------------
 
@@ -211,37 +205,40 @@ fun asked args =
 @test fun helpIsAskedForAndGiven () =
   assertEq
     (V.map asked [[], ["help"], ["--help"], ["help", "run"], ["run", "--help"]])
-    [ "miniml -- MiniML, typed and run by a compiler written with Lingua",
+    [
+      "miniml -- MiniML, typed and run by a compiler written with Lingua",
       "miniml -- MiniML, typed and run by a compiler written with Lingua",
       "miniml -- MiniML, typed and run by a compiler written with Lingua",
       "miniml run -- Run a program and say its value and type",
-      "miniml run -- Run a program and say its value and type" ]
+      "miniml run -- Run a program and say its value and type"
+    ]
     "the program's help, or the command's"
 
 @test fun aMistakeIsSaidWhereItIs () =
-  let a = assertEq
-  (V.map
-    asked
-    [
-      ["chek", "a.ml"],
-      ["run"],
-      ["run", "a.ml", "b.ml"],
-      ["run", "--fast", "a.ml"],
-      ["completions", "fish"]
-    ])
-    [ "there is no command `chek`",
-      "`run` needs <file>",
-      "`run` takes nothing more",
-      "`run` has no flag `--fast`",
-      "there are no completions for `fish`" ]
-    "each mistake" in
-  match askCli ["run", "--fast", "a.ml"] with
-  | Err (Wrong d line) ->
-      assertEq
-        (renderAll "command line" line [d])
-        "Error: `run` has no flag `--fast`\n   ╭─[ command line:1:12 ]\n   │\n 1 │ miniml run --fast a.ml\n   │            ───┬──  \n   │               ╰──── `run` has no flag `--fast`\n   │ \n   │ Note: `run` takes no flags\n───╯\n"
-        "drawn under the flag"
-  | _ -> assertEq True False "a mistake"
+  let a =
+    assertEq
+      (V.map asked [
+         ["chek", "a.ml"],
+         ["run"],
+         ["run", "a.ml", "b.ml"],
+         ["run", "--fast", "a.ml"],
+         ["completions", "fish"]
+       ])
+      [
+        "there is no command `chek`",
+        "`run` needs <file>",
+        "`run` takes nothing more",
+        "`run` has no flag `--fast`",
+        "there are no completions for `fish`"
+      ]
+      "each mistake"
+  in match askCli ["run", "--fast", "a.ml"] with
+     | Err (Wrong d line) ->
+         assertEq
+           (renderAll "command line" line [d])
+           "Error: `run` has no flag `--fast`\n   ╭─[ command line:1:12 ]\n   │\n 1 │ miniml run --fast a.ml\n   │            ───┬──  \n   │               ╰──── `run` has no flag `--fast`\n   │ \n   │ Note: `run` takes no flags\n───╯\n"
+           "drawn under the flag"
+     | _ -> assertEq True False "a mistake"
 
 @test fun aCompletionScriptNamesTheCommands () =
   match askCli ["completions", "bash"] with

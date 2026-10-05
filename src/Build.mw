@@ -29,15 +29,15 @@ use Lingua.Buf (Buf)
 -- for one that stands where it is, or no tables at all for text.
 use Lexemes.*
 
-@pub data Lexemes k = Lexemes String #[k] #[Int] #[Bool] #[k] #[Int] #[Int]
+@pub data Lexemes k
+  = Lexemes String #[k] #[Int] #[Bool] #[k] #[Int] #[Int]
 
-@pub fun lexemesOf (text : String) (kinds : #[k]) (ends : #[Int])
-    (trivia : #[Bool]) : Lexemes k =
+@pub fun lexemesOf (text : String) (kinds : #[k]) (ends : #[Int]) (trivia : #[Bool]) : Lexemes k =
   let parsed =
     V.toArray
       (V.map
-        (\i -> arrayGet kinds i)
-        (V.filter (\i -> not (arrayGet trivia i)) (V.range 0 (arrayLen kinds))))
+         (\i -> arrayGet kinds i)
+         (V.filter (\i -> not (arrayGet trivia i)) (V.range 0 (arrayLen kinds))))
   in Lexemes text kinds ends trivia parsed #[] #[]
 
 -- A lexer's tables, written a token at a time inside a `runSt`: the kinds,
@@ -45,14 +45,14 @@ use Lexemes.*
 -- and where each stands, for tokens given with that.
 use Lexing.*
 
-@pub data Lexing s k = Lexing (Buf s k) (Buf s Int) (Buf s Bool) (Buf s k) (Buf s Int) (Buf s Int)
+@pub data Lexing s k
+  = Lexing (Buf s k) (Buf s Int) (Buf s Bool) (Buf s k) (Buf s Int) (Buf s Int)
 
 @pub fun lexing (filler : k) : Lexing s k ! { St s | e } =
   Lexing (B.buffer ()) (B.buffer ()) (B.buffer ()) (B.buffer ()) (B.buffer ()) (B.buffer ())
 
 -- One more token, of kind `k`, ending at byte `stop`.
-@pub fun lexed (l : Lexing s k) (k : k) (stop : Int) (trivia : Bool) :
-    () ! { St s | e } =
+@pub fun lexed (l : Lexing s k) (k : k) (stop : Int) (trivia : Bool) : () ! { St s | e } =
   match l with
   | Lexing ks es ts ps _ _ ->
       let _ = B.push ks k in
@@ -64,8 +64,8 @@ use Lexing.*
 -- The same, standing for bytes `from` to `to` of somewhere else: -1 for a
 -- token that stands where it is. Every token of a lexing is written with
 -- this, or none is.
-@pub fun lexedAt (l : Lexing s k) (k : k) (stop : Int) (trivia : Bool)
-    (from : Int) (to : Int) : () ! { St s | e } =
+@pub fun lexedAt (l : Lexing s k) (k : k) (stop : Int) (trivia : Bool) (from : Int) (to : Int)
+    : () ! { St s | e } =
   match l with
   | Lexing _ _ _ _ os oe ->
       let _ = lexed l k stop trivia in
@@ -73,8 +73,7 @@ use Lexing.*
       let _ = B.push oe to in
       ()
 
-@pub fun lexemesFrom (text : String) (l : Lexing s k)
-    : Lexemes k ! { St s | e } =
+@pub fun lexemesFrom (text : String) (l : Lexing s k) : Lexemes k ! { St s | e } =
   match l with
   | Lexing ks es ts ps os oe ->
       Lexemes
@@ -95,7 +94,8 @@ use Lexing.*
 -- reads the tree's text reads them apart; the spaces are trivia of kind
 -- `filler`, standing where they are.
 @pub fun tokenLexemes (filler : k) (isTrivia : k -> Bool) (kinds : [k])
-    (tokens : [(Int, Int, String)]) : Lexemes k =
+    (tokens : [(Int, Int, String)])
+    : Lexemes k =
   let texts = V.map (\x -> match x with | (_, _, t) -> t) tokens in
   runSt (\() ->
     let l = lexing filler in
@@ -105,7 +105,8 @@ use Lexing.*
 -- Token `i` of `tokens` laid down at byte `at`, after a space if it is not
 -- the first: where it ends.
 fun laid (l : Lexing s k) (filler : k) (isTrivia : k -> Bool) (kinds : [k])
-    (tokens : [(Int, Int, String)]) (at : Int) (i : Int) : Int ! { St s | e } =
+    (tokens : [(Int, Int, String)]) (at : Int) (i : Int)
+    : Int ! { St s | e } =
   match V.get tokens i with
   | Just (from, to, t) ->
       let start =
@@ -125,13 +126,25 @@ fun laid (l : Lexing s k) (filler : k) (isTrivia : k -> Bool) (kinds : [k])
 -- root has closed.
 use Builder.*
 
-data Builder s k = Builder (Buf s k) (Buf s Int) (Buf s Int) (Buf s Int) (Buf s Int) (StRef s Int) (StRef s Int) (Buf s Int) (StRef s Int) (Buf s Int) (Buf s String) (StRef s Bool)
+data Builder s k
+  = Builder
+    (Buf s k)
+    (Buf s Int)
+    (Buf s Int)
+    (Buf s Int)
+    (Buf s Int)
+    (StRef s Int)
+    (StRef s Int)
+    (Buf s Int)
+    (StRef s Int)
+    (Buf s Int)
+    (Buf s String)
+    (StRef s Bool)
 
 -- The tree the events describe over `lexemes`, and every error with the byte
 -- it was said at. `root` is the kind of the whole file, for the tree of a
 -- parse that said nothing at all.
-@pub fun build (root : k) (events : Events k) (lexemes : Lexemes k) :
-    (Green k, [(Int, String)]) =
+@pub fun build (root : k) (events : Events k) (lexemes : Lexemes k) : (Green k, [(Int, String)]) =
   match lexemes with
   | Lexemes text _ _ _ _ los loe ->
       runSt (\() ->
@@ -154,52 +167,56 @@ data Builder s k = Builder (Buf s k) (Buf s Int) (Buf s Int) (Buf s Int) (Buf s 
         let _ = closeAll b lexemes in
         -- A parse that opened nothing: one root, holding every token.
         let _ =
-          if B.len (kindsOf b) == 0
-          then
+          if B.len (kindsOf b) == 0 then
             (let _ = openSlot b root in
-              let _ = remaining b lexemes in
-              closeTop b)
+             let _ = remaining b lexemes in
+             closeTop b)
           else ()
         in match b with
-        | Builder kinds starts stops sizes parents _ _ _ _ errAt errMsg _ ->
-            let errs = V.map (\i -> (B.at errAt i, B.at errMsg i)) (V.range 0 (B.len errAt)) in
-            if arrayLen los == 0
-            then
-              (
-                fromTables text (B.freeze kinds) (B.freeze starts) (B.freeze stops) (B.freeze sizes) (B.freeze parents),
-                errs
-              )
-            else
-              -- Each token where its lexeme stands, each node where its tokens
-              -- do, and each error where the token it was said at stands.
-              let ks = B.freeze kinds in
-              let ss = B.freeze starts in
-              let zs = B.freeze sizes in
-              let lexeme = \at -> placeOf lexemes at in
-              let froms =
-                V.toArray
-                  (V.map
-                    (\i -> if arrayGet zs i == 0
-                      then
-                        M.unwrapOr
-                        (0 - 1)
-                        (M.map (\j -> arrayGet los j) (lexeme (arrayGet ss i)))
-                      else 0 - 1)
-                    (V.range 0 (arrayLen ks)))
-              in
-              let tos =
-                V.toArray
-                  (V.map
-                    (\i -> if arrayGet zs i == 0
-                      then
-                        M.unwrapOr
-                        (0 - 1)
-                        (M.map (\j -> arrayGet loe j) (lexeme (arrayGet ss i)))
-                      else 0 - 1)
-                    (V.range 0 (arrayLen ks)))
-              in
-              let g = fromTablesAt text ks ss (B.freeze stops) zs (B.freeze parents) froms tos in
-              (g, V.map (\e -> (errorPlace lexemes (fst e), snd e)) errs))
+           | Builder kinds starts stops sizes parents _ _ _ _ errAt errMsg _ ->
+               let errs = V.map (\i -> (B.at errAt i, B.at errMsg i)) (V.range 0 (B.len errAt)) in
+               if arrayLen los == 0 then
+                 (
+                   fromTables
+                     text
+                     (B.freeze kinds)
+                     (B.freeze starts)
+                     (B.freeze stops)
+                     (B.freeze sizes)
+                     (B.freeze parents),
+                   errs
+                 )
+               else
+                 -- Each token where its lexeme stands, each node where its tokens
+                 -- do, and each error where the token it was said at stands.
+                 let ks = B.freeze kinds in
+                 let ss = B.freeze starts in
+                 let zs = B.freeze sizes in
+                 let lexeme = \at -> placeOf lexemes at in
+                 let froms =
+                   V.toArray
+                     (V.map
+                        (\i ->
+                          if arrayGet zs i == 0 then
+                            M.unwrapOr
+                              (0 - 1)
+                              (M.map (\j -> arrayGet los j) (lexeme (arrayGet ss i)))
+                          else 0 - 1)
+                        (V.range 0 (arrayLen ks)))
+                 in
+                 let tos =
+                   V.toArray
+                     (V.map
+                        (\i ->
+                          if arrayGet zs i == 0 then
+                            M.unwrapOr
+                              (0 - 1)
+                              (M.map (\j -> arrayGet loe j) (lexeme (arrayGet ss i)))
+                          else 0 - 1)
+                        (V.range 0 (arrayLen ks)))
+                 in
+                 let g = fromTablesAt text ks ss (B.freeze stops) zs (B.freeze parents) froms tos in
+                 (g, V.map (\e -> (errorPlace lexemes (fst e), snd e)) errs))
 
 fun kindsOf b = match b with | Builder kinds _ _ _ _ _ _ _ _ _ _ _ -> kinds
 
@@ -219,8 +236,7 @@ fun step b lexemes events (i : Int) =
       else if isAdvanceAt events i then
         let _ = trivia b lexemes in
         if stGetRef cursor < lexemeCount lexemes then take b lexemes else ()
-      else if isCloseAt events i then
-        if stGetRef depth <= 1 then closeAll b lexemes else closeTop b
+      else if isCloseAt events i then if stGetRef depth <= 1 then closeAll b lexemes else closeTop b
       else
         let _ = trivia b lexemes in
         let _ = B.push errAt (stGetRef offset) in
@@ -236,11 +252,10 @@ fun placeOf (ls : Lexemes k) (at : Int) : Maybe Int =
       let n = arrayLen ends in
       -- The first lexeme ending after `at` is the one it is in.
       let rec first lo hi =
-        if lo >= hi
-        then lo
+        if lo >= hi then lo
         else
           (let mid = (lo + hi) / 2 in
-            if arrayGet ends mid <= at then first (mid + 1) hi else first lo mid)
+           if arrayGet ends mid <= at then first (mid + 1) hi else first lo mid)
       in
       let j = first 0 n in
       if j < n and (if j == 0 then 0 else arrayGet ends (j - 1)) == at then Just j else None
@@ -324,15 +339,12 @@ fun closeAll b lexemes =
         let _ = remaining b lexemes in
         let _ = closeTop b in
         stSetRef closed True
-      else
-        let _ = closeTop b in
-        closeAll b lexemes
+      else let _ = closeTop b in closeAll b lexemes
 
 fun remaining b lexemes =
   match b with
   | Builder _ _ _ _ _ cursor _ _ _ _ _ _ ->
-      if stGetRef cursor < lexemeCount lexemes
-      then (let _ = take b lexemes in remaining b lexemes)
+      if stGetRef cursor < lexemeCount lexemes then (let _ = take b lexemes in remaining b lexemes)
       else ()
 
 -- --- tests -------------------------------------------------------------------
@@ -358,17 +370,17 @@ fun said (script : [Int]) : Events String =
     let _ =
       V.foldl
         (\u s ->
-          if s == 0
-          then (let m = open p in stSetRef marks (V.pushBack (stGetRef marks) m))
+          if s == 0 then (let m = open p in stSetRef marks (V.pushBack (stGetRef marks) m))
           else if s == 1 then advance p
           else if s == 2 then error p "expected `=`"
           else
             let ms = stGetRef marks in
-            let _ = close p (V.getOr 0 ms (V.len ms - 1)) (if V.len ms == 1 then "File" else "Let")
+            let _ =
+              close p (V.getOr 0 ms (V.len ms - 1)) (if V.len ms == 1 then "File" else "Let")
             in stSetRef marks (V.popBack ms))
         ()
-        script in
-    events p)
+        script
+    in events p)
 
 @test fun everyByteIsInTheTree () =
   match build "File" (said [0, 0, 1, 1, 3, 3]) sample with
@@ -415,7 +427,7 @@ fun said (script : [Int]) : Events String =
 -- Whether the token at `r` is on a path that ends in a token `isEnd` holds of,
 -- a segment each side of each separator: `a.b.c!` -- each of `a`, `b` and `c`
 -- is. What `syntax!`'s `context` entries `ending … via …` ask.
-@pub fun onPath (isEnd : Int -> Bool) (isSep : Int -> Bool)
-    (isSeg : Int -> Bool) (r : Int) : Bool =
+@pub fun onPath (isEnd : Int -> Bool) (isSep : Int -> Bool) (isSeg : Int -> Bool) (r : Int) : Bool =
   if isEnd (r + 1) then True
-  else if isSep (r + 1) and isSeg (r + 2) then onPath isEnd isSep isSeg (r + 2) else False
+  else if isSep (r + 1) and isSeg (r + 2) then onPath isEnd isSep isSeg (r + 2)
+  else False

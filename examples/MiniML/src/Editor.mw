@@ -66,9 +66,8 @@ fun errorsOf db file = answered [] (\() -> V.map fst (snd (sessionParsed db file
 -- each is.
 fun declarationsOf db file =
   V.concatMap
-    (\(b : Binder) -> if b.kind == "import"
-      then []
-      else [(b.name, b.kind, "Bound in what is being typed.")])
+    (\(b : Binder) ->
+      if b.kind == "import" then [] else [(b.name, b.kind, "Bound in what is being typed.")])
     (bindersOf db file)
 
 -- The file as MiniML's formatter sets it out (`format!`, in `Syntax`).
@@ -94,8 +93,8 @@ fun hoverAt db file at =
         let around =
           V.filter (\x -> contains (metaTypedExpr a x) at) (subexpressions a (typedExpr t))
         in match V.get around (V.len around - 1) with
-        | Just x -> Just (metaTypedExpr a x, "```\n${typeName (tyTypedExpr a x)}\n```")
-        | None -> None)
+           | Just x -> Just (metaTypedExpr a x, "```\n${typeName (tyTypedExpr a x)}\n```")
+           | None -> None)
 
 -- The binders of a file: the side table name resolution filled.
 fun bindersOf db file = answered [] (\() -> sessionNames db file)
@@ -124,16 +123,15 @@ fun completionAt db file at =
   let seen = V.filter (\(b : Binder) -> V.any (\s -> contains s at) b.scopes) (bindersOf db file) in
   let named =
     V.foldr
-      (\(b : Binder) acc -> if V.any (\x -> fst x == b.name) acc
-        then acc
-        else V.pushBack acc (b.name, b.kind))
+      (\(b : Binder) acc ->
+        if V.any (\x -> fst x == b.name) acc then acc else V.pushBack acc (b.name, b.kind))
       []
       seen
   in V.append
-    named
-    (V.map
-      (\k -> (k, "keyword"))
-      ["let", "rec", "in", "fun", "if", "then", "else", "true", "false"])
+       named
+       (V.map (\k -> (k, "keyword")) [
+          "let", "rec", "in", "fun", "if", "then", "else", "true", "false"
+        ])
 
 -- What name resolution knows of a name that its spelling does not: a name
 -- bound to a function is a function's, where it is bound and wherever it is
@@ -166,8 +164,8 @@ fun written (g : Green Mini) : [(Int, String)] =
             (match miniLetName l with
              | None -> []
              | Just n ->
-                 if not (V.isEmpty (miniLetParams l)) or isFun (miniLetValue l)
-                 then [syntaxMiniName n]
+                 if not (V.isEmpty (miniLetParams l)) or isFun (miniLetValue l) then
+                   [syntaxMiniName n]
                  else []))
       nodes
   in
@@ -175,16 +173,13 @@ fun written (g : Green Mini) : [(Int, String)] =
   V.append
     (V.map (\n -> (R.offset n, "function")) bound)
     (V.concatMap
-      (\s ->
-        match asMiniNameRef s with
-        | Just _ -> if V.elem (R.text s) names then [(R.offset s, "function")] else []
-        | None -> [])
-      nodes)
+       (\s ->
+         match asMiniNameRef s with
+         | Just _ -> if V.elem (R.text s) names then [(R.offset s, "function")] else []
+         | None -> [])
+       nodes)
 
-fun isFun (v : Maybe MiniExpr) : Bool =
-  match v with
-  | Just (MiniExpr.Lam _) -> True
-  | _ -> False
+fun isFun (v : Maybe MiniExpr) : Bool = match v with | Just (MiniExpr.Lam _) -> True | _ -> False
 
 fun everyNode (s : Syntax Mini) : [Syntax Mini] =
   if R.isTokenOf s then [] else V.pushFront (V.concatMap everyNode (R.children s)) s
@@ -192,9 +187,8 @@ fun everyNode (s : Syntax Mini) : [Syntax Mini] =
 -- Everything a `let` binds.
 fun symbolsOf db file =
   V.concatMap
-    (\(b : Binder) -> if b.kind == "parameter" or b.kind == "import"
-      then []
-      else [(b.name, b.kind, b.at)])
+    (\(b : Binder) ->
+      if b.kind == "parameter" or b.kind == "import" then [] else [(b.name, b.kind, b.at)])
     (bindersOf db file)
 
 -- --- tests -------------------------------------------------------------------
@@ -211,7 +205,11 @@ fun editing src =
   db
 
 fun spelled src (ps : [(Int, Meta)]) =
-  V.map (\p -> match snd p with | Meta a b -> "${stringSlice src a b}@${show a}") ps
+  V.map
+    (\p ->
+      match snd p with
+      | Meta a b -> "${stringSlice src a b}@${show a}")
+    ps
 
 @test fun aNameGoesToItsBinder () =
   let src = "let x = 1 in let x = x + 1 in x" in
@@ -257,11 +255,12 @@ fun spelled src (ps : [(Int, Meta)]) =
       "let x = 1 in\nx"
       "the value after its `=`, and the body on its own line"
   in
-  let b = assertEq
-  (J.render (formatReply src (formattedOf db 1)))
-    "[{\"range\":{\"start\":{\"line\":0,\"character\":0},\"end\":{\"line\":2,\"character\":4}},\"newText\":\"let x = 1 in\\nx\"}]"
-    "the whole file, replaced" in
-  assertEq (J.render (formatReply "1" "1")) "[]" "and nothing to do for one already set out"
+  let b =
+    assertEq
+      (J.render (formatReply src (formattedOf db 1)))
+      "[{\"range\":{\"start\":{\"line\":0,\"character\":0},\"end\":{\"line\":2,\"character\":4}},\"newText\":\"let x = 1 in\\nx\"}]"
+      "the whole file, replaced"
+  in assertEq (J.render (formatReply "1" "1")) "[]" "and nothing to do for one already set out"
 
 -- The prompt, given keys.
 
@@ -313,15 +312,19 @@ fun prompted (keys : [Key]) =
   -- Ctrl-F, `tot` to find `total`, Enter to take it, Enter to enter the entry.
   let out =
     prompted
-      (V.concat
-        [typing "let total = 7 in to", [T.ctrl "f"], typing "tot", [T.key Enter, T.key Enter]])
+      (V.concat [
+         typing "let total = 7 in to",
+         [T.ctrl "f"],
+         typing "tot",
+         [T.key Enter, T.key Enter]
+       ])
   in assertEq (S.contains "7 : Int" out) True "`to` became `total`"
 
 @test fun tabCompletesANameThatCanBeSeen () =
   assertEq
     (S.contains
-      "7 : Int"
-      (prompted (V.concat [typing "let total = 7 in tot", [T.key Tab, T.key Enter]])))
+       "7 : Int"
+       (prompted (V.concat [typing "let total = 7 in tot", [T.key Tab, T.key Enter]])))
     True
     "the one way it could go on"
 
@@ -338,7 +341,8 @@ use Lingua.Lsp (classOf)
   let at =
     \from -> V.concatMap (\c -> match c with | (a, _, k) -> if a == from then [k] else []) classes
   in
-  let a = assertEq (at 4, at 22) ([classOf "function"], [classOf "function"]) "`f`, bound and used"
+  let a =
+    assertEq (at 4, at 22) ([classOf "function"], [classOf "function"]) "`f`, bound and used"
   in
   let b = assertEq (at 12, at 17) ([classOf "variable"], [classOf "variable"]) "`x`, a parameter" in
   assertEq
@@ -359,26 +363,29 @@ use Lingua.Lsp (classOf)
   in
   let bright =
     prompted
-      (V.concat
-        [ typing ":theme bright",
-          [T.key Enter],
-          typing "let f = fun x -> x in f 1",
-          [T.key Enter] ])
+      (V.concat [
+         typing ":theme bright",
+         [T.key Enter],
+         typing "let f = fun x -> x in f 1",
+         [T.key Enter]
+       ])
   in assertEq
-    ( S.contains "\u{1b}[93mf\u{1b}[0m" bright, S.contains "\u{1b}[94mx\u{1b}[0m" bright )
-    (True, True)
-    "and in `bright`, a colour each"
+       (S.contains "\u{1b}[93mf\u{1b}[0m" bright, S.contains "\u{1b}[94mx\u{1b}[0m" bright)
+       (True, True)
+       "and in `bright`, a colour each"
 
 @test fun anUnfinishedEntrysFunctionsAreColouredAsTheyAreWritten () =
   -- No `in` yet, so nothing is resolved: a `let` with parameters after its
   -- name, a `let rec`, and a `let` of a `fun` are functions by how they are
   -- written, and so is a use of one.
-  let functions = \src ->
-    V.concatMap
-      (\c -> match c with
-             | (a, b, k) ->
-                 if k == classOf "function" then ["${stringSlice src a b}@${show a}"] else [])
-      (tokensServer (editing src) 1)
+  let functions =
+    \src ->
+      V.concatMap
+        (\c ->
+          match c with
+          | (a, b, k) ->
+              if k == classOf "function" then ["${stringSlice src a b}@${show a}"] else [])
+        (tokensServer (editing src) 1)
   in
   let a = assertEq (functions "let foo a = a") ["foo@4"] "parameters after the name" in
   let b =
@@ -397,15 +404,14 @@ use Lingua.Lsp (classOf)
   -- magenta, where it was orange.
   let out =
     prompted
-      (V.concat
-        [
-          typing "12",
-          [T.key Enter],
-          typing ":theme quiet",
-          [T.key Enter],
-          typing "34",
-          [T.key Enter]
-        ])
+      (V.concat [
+         typing "12",
+         [T.key Enter],
+         typing ":theme quiet",
+         [T.key Enter],
+         typing "34",
+         [T.key Enter]
+       ])
   in
   let a =
     assertEq

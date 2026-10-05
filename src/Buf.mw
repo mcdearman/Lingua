@@ -68,13 +68,13 @@ use Std.Test (assertEq)
       let rec fill i = if i >= 200 then () else (let _ = push b (i * 2) in fill (i + 1)) in
       let _ = fill 0 in
       let _ = put b 3 7 in
-      (len b, at b 199, freeze b)) in
-  match got with
-  | (n, last, xs) ->
-      assertEq
-        (n, last, arrayLen xs, arrayGet xs 3, arrayGet xs 4)
-        (200, 398, 200, 7, 8)
-        "every push kept, in order"
+      (len b, at b 199, freeze b))
+  in match got with
+     | (n, last, xs) ->
+         assertEq
+           (n, last, arrayLen xs, arrayGet xs 3, arrayGet xs 4)
+           (200, 398, 200, 7, 8)
+           "every push kept, in order"
 
 @test fun anEmptyBufferFreezesEmpty () =
   assertEq (arrayLen (runSt (\() -> freeze (buffer ())))) 0 "nothing pushed, nothing there"

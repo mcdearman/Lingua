@@ -30,7 +30,11 @@ use Part.*
 -- The tree a pass reads: the tree, its tokens' slots in order -- for the
 -- tokens between two pieces to be found without walking it -- and what each of
 -- its kinds is in the tree being written.
-@pub record Origin k j = { tree : Green k, toks : #[Int], conv : k -> j }
+@pub record Origin k j = {
+  tree : Green k,
+  toks : #[Int],
+  conv : k -> j
+}
 
 -- A tree, read to write a tree of the same kinds.
 @pub fun source (g : Green k) : Origin k k = sourceWith (\x -> x) g
@@ -51,7 +55,8 @@ use Part.*
 
 -- A slot of the source, kept.
 @pub fun kept (s : Syntax k) : Part j =
-  match s with | Syntax g i -> Kept i (startAt g i) (endAt g i)
+  match s with
+  | Syntax g i -> Kept i (startAt g i) (endAt g i)
 
 @pub fun from (p : Part j) : Int = match p with | Kept _ a _ -> a | Made _ a _ -> a
 
@@ -97,20 +102,18 @@ use Part.*
     let g = src.tree in
     -- The first token starting at or after `a`.
     let rec first lo hi =
-      if lo >= hi
-      then lo
+      if lo >= hi then lo
       else
         (let mid = (lo + hi) / 2 in
-          if startAt g (arrayGet src.toks mid) < a then first (mid + 1) hi else first lo mid)
+         if startAt g (arrayGet src.toks mid) < a then first (mid + 1) hi else first lo mid)
     in
     let rec take j acc =
       if j >= n then acc
       else
         let i = arrayGet src.toks j in
-        if endAt g i > b
-        then acc
-        else take (j + 1) (V.pushBack acc (Kept i (startAt g i) (endAt g i))) in
-    take (first 0 n) []
+        if endAt g i > b then acc
+        else take (j + 1) (V.pushBack acc (Kept i (startAt g i) (endAt g i)))
+    in take (first 0 n) []
 
 -- A node of kind `k` over `children`, in the order given, and between two of
 -- them the source's tokens there: a node a pass builds of its fields. A node
@@ -120,17 +123,18 @@ use Part.*
   let filled =
     fst
       (V.foldl
-        (\acc c ->
-          match acc with
-          | (done, last) ->
-              if isEmpty c then (V.pushBack done c, last)
-              else
-                (match last with
-                 | Just before ->
-                     (V.pushBack (V.append done (tokensIn src (to before) (from c))) c, Just c)
-                 | None -> (V.pushBack done c, Just c)))
-        ([], None)
-        children) in
+         (\acc c ->
+           match acc with
+           | (done, last) ->
+               if isEmpty c then (V.pushBack done c, last)
+               else
+                 (match last with
+                  | Just before ->
+                      (V.pushBack (V.append done (tokensIn src (to before) (from c))) c, Just c)
+                  | None -> (V.pushBack done c, Just c)))
+         ([], None)
+         children)
+  in
   let placed = V.filter (\c -> not (isEmpty c)) filled in
   let a = M.unwrapOr (0 - 1) (M.map from (V.get placed 0)) in
   let b = M.unwrapOr (0 - 1) (M.map to (V.get placed (V.len placed - 1))) in
@@ -155,15 +159,14 @@ fun isEmpty (p : Part j) : Bool = from p < 0
         let whole = V.concat [before, V.filter (\c -> not (isEmpty c)) [p], after] in
         Made
           (G.node
-            (G.kind g)
-            (V.concat [V.map (green src) before, G.children g, V.map (green src) after]))
+             (G.kind g)
+             (V.concat [V.map (green src) before, G.children g, V.map (green src) after]))
           (M.unwrapOr (0 - 1) (M.map from (V.get whole 0)))
           (M.unwrapOr (0 - 1) (M.map to (V.get whole (V.len whole - 1))))
 
 -- Node `x` with each of its node children as `f` answers it, its tokens as
 -- they were: kept, if `f` kept every one.
-@pub fun rebuild (src : Origin k j) (f : Syntax k -> Part j ! e) (x : Syntax k)
-    : Part j ! e =
+@pub fun rebuild (src : Origin k j) (f : Syntax k -> Part j ! e) (x : Syntax k) : Part j ! e =
   match x with
   | Syntax g i ->
       let pieces =
@@ -173,9 +176,10 @@ fun isEmpty (p : Part j) : Bool = from p < 0
       in
       let same =
         V.all
-          (\j -> match (V.get pieces j, V.get (childSlots g i) j) with
-                 | (Just (Kept s _ _), Just c) -> s == c
-                 | _ -> False)
+          (\j ->
+            match (V.get pieces j, V.get (childSlots g i) j) with
+            | (Just (Kept s _ _), Just c) -> s == c
+            | _ -> False)
           (V.range 0 (V.len pieces))
       in if same then Kept i (startAt g i) (endAt g i)
          else
@@ -192,19 +196,10 @@ use Lingua.Red as R
 
 -- `1 + 2 * 3`, flat, as a parser that knows no fixities reads it.
 def flat : Green String =
-  G.node
-    "Chain"
-    [
-      token "Num" "1",
-      token "Space" " ",
-      token "Op" "+",
-      token "Space" " ",
-      token "Num" "2",
-      token "Space" " ",
-      token "Op" "*",
-      token "Space" " ",
-      token "Num" "3"
-    ]
+  G.node "Chain" [
+    token "Num" "1", token "Space" " ", token "Op" "+", token "Space" " ", token "Num" "2",
+    token "Space" " ", token "Op" "*", token "Space" " ", token "Num" "3"
+  ]
 
 @test fun aBuiltNodeKeepsWhatWasBetweenItsPieces () =
   let src = source flat in
@@ -240,8 +235,7 @@ def flat : Green String =
 -- hold: the `(` and `,` a rule writes but nothing names, and the separators
 -- between the children a field holds several of. What a tree
 -- language's patterns read a node with.
-@pub fun slotsOf (trivia : k -> Bool) (wants : [(k -> Bool, Bool)])
-    (s : Syntax k) : [[Syntax k]] =
+@pub fun slotsOf (trivia : k -> Bool) (wants : [(k -> Bool, Bool)]) (s : Syntax k) : [[Syntax k]] =
   let cs = V.filter (\c -> not (trivia (R.kindOf c))) (R.children s) in
   let n = V.len cs in
   let later =
@@ -258,9 +252,9 @@ def flat : Green String =
           match V.get cs j with
           | None -> (got, j)
           | Just c ->
-              if accepts (R.kindOf c)
-              then (if many then take (j + 1) (V.pushBack got c) else (V.pushBack got c, j + 1))
-              else if later i c then (got, j) else take (j + 1) got
-        in (match take at [] with
-            | (got, next) -> field (i + 1) next (V.pushBack acc got))
+              if accepts (R.kindOf c) then
+                (if many then take (j + 1) (V.pushBack got c) else (V.pushBack got c, j + 1))
+              else if later i c then (got, j)
+              else take (j + 1) got
+        in (match take at [] with | (got, next) -> field (i + 1) next (V.pushBack acc got))
   in if n == 0 then V.map (\w -> []) wants else field 0 0 []

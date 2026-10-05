@@ -36,13 +36,14 @@ impl Reflect Interface {
     match d with
     | Datum.List ds ->
         V.foldl
-          (\acc x -> match (acc, x) with
-                     | (Ok (Interface.Interface xs), Datum.Tag n ts) ->
-                         (match M.map fromDatum (V.get ts 0) with
-                          | Just (Ok t) -> Ok (Interface.Interface (V.pushBack xs (n, t)))
-                          | _ -> Err "an export's type")
-                     | (Err e, _) -> Err e
-                     | _ -> Err "an export")
+          (\acc x ->
+            match (acc, x) with
+            | (Ok (Interface.Interface xs), Datum.Tag n ts) ->
+                (match M.map fromDatum (V.get ts 0) with
+                 | Just (Ok t) -> Ok (Interface.Interface (V.pushBack xs (n, t)))
+                 | _ -> Err "an export's type")
+            | (Err e, _) -> Err e
+            | _ -> Err "an export")
           (Ok (Interface.Interface []))
           ds
     | _ -> Err "not an interface"
@@ -55,8 +56,7 @@ fun exports (i : Interface) : [(String, Type)] = match i with | Interface.Interf
 -- passes run straight through, one file after another, with nothing kept for
 -- the next build. Whether a unit is compiled at all is the build's to say,
 -- and it is the build that runs units at once.
-fun compileUnit (u : Given Interface)
-    : Result String Interface ! { Thread, Mut, Fs | e } =
+fun compileUnit (u : Given Interface) : Result String Interface ! { Thread, Mut, Fs | e } =
   match toResult (\() -> compiling u) with
   | Ok r -> r
   | Err why -> Err "${show why}\n"
@@ -73,27 +73,28 @@ fun compiling (u : Given Interface) =
   let named =
     V.map (\i -> Path.fileStem (fst (V.getOr ("", "") sources i))) (V.range 0 (V.len sources))
   in if V.all M.isSome exported then
-    (let interface =
-        V.map
-          (\i -> (V.getOr "" named i, M.unwrapOr Type.Int (V.getOr None exported i)))
-          (V.range 0 (V.len named))
-      in
-      let e =
-        writeString
-          (
+       (let interface =
+          V.map
+            (\i -> (V.getOr "" named i, M.unwrapOr Type.Int (V.getOr None exported i)))
+            (V.range 0 (V.len named))
+        in
+        let e =
+          writeString (
             Path.join (unitOut u) "types",
             S.join "" (V.map (\x -> "${fst x} : ${typeName (snd x)}\n") interface)
           )
-      in Ok (Interface.Interface interface))
+        in Ok (Interface.Interface interface))
      else
        let linked = sessionLinkedEach db files in
        Err
-         (S.join ""
-           (V.map
-             (\i -> match (V.get sources i, V.get linked i) with
-                    | (Just (path, text), Just (Err ds)) -> renderToOutput path text ds
-                    | _ -> "")
-             (V.range 0 (V.len sources))))
+         (S.join
+            ""
+            (V.map
+               (\i ->
+                 match (V.get sources i, V.get linked i) with
+                 | (Just (path, text), Just (Err ds)) -> renderToOutput path text ds
+                 | _ -> "")
+               (V.range 0 (V.len sources))))
 
 -- --- tests -------------------------------------------------------------------
 
@@ -130,10 +131,12 @@ fun write dir file text =
   let h = write lib "double.ml" "fun x -> x + x" in
   assertEq
     [first, second, third, fourth]
-    [ (True, ["   Compiled lib", "   Compiled app"]),
+    [
+      (True, ["   Compiled lib", "   Compiled app"]),
       (True, ["   Fresh lib", "   Fresh app"]),
       (True, ["   Compiled lib", "   Fresh app"]),
-      (True, ["   Compiled lib", "   Compiled app"]) ]
+      (True, ["   Compiled lib", "   Compiled app"])
+    ]
     "each build"
 
 @test fun aUnitThatFailsBlocksWhatDependsOnIt () =
@@ -171,15 +174,18 @@ make! {
   let e = write (Path.join root "app") "Unit" "../one\n../two\n" in
   let f = write (Path.join root "app") "main.ml" "double (id 21)" in
   let lines =
-    \r -> match r with
-          | (ok, said) -> (ok, V.filter (\l -> S.startsWith "   " l) (S.lines said))
+    \r ->
+      match r with
+      | (ok, said) -> (ok, V.filter (\l -> S.startsWith "   " l) (S.lines said))
   in
   let first = lines (withOutput (\() -> buildInTurn (Path.join root "app"))) in
   let second = lines (withOutput (\() -> buildInTurn (Path.join root "app"))) in
   assertEq
     [first, second]
-    [ (True, ["   Compiled one", "   Compiled two", "   Compiled app"]),
-      (True, ["   Fresh one", "   Fresh two", "   Fresh app"]) ]
+    [
+      (True, ["   Compiled one", "   Compiled two", "   Compiled app"]),
+      (True, ["   Fresh one", "   Fresh two", "   Fresh app"])
+    ]
     "each unit, one after another"
 
 @test fun aUnitStartsWhenWhatItDependsOnIsDone () =

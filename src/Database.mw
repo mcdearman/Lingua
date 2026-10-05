@@ -66,15 +66,7 @@ use Std.Macro (TokenTree, Delim, Loc, isPunct, isWord)
 use Std.Macro.TokenTree.*
 use Std.Macro.Loc.*
 use Std.Macro.Delim.*
-use Std.Macro.Parse (
-  Tokens,
-  parseTokens,
-  ident,
-  keyword,
-  punct,
-  group,
-  treesUntil
-)
+use Std.Macro.Parse (Tokens, parseTokens, ident, keyword, punct, group, treesUntil)
 use Std.String.Parse as P
 use Std.String.Parse (Parser)
 use Std.String.Parse (keep, skip)
@@ -97,10 +89,7 @@ def kind : Parser Tokens Bool =
 def param : Parser Tokens (String, [TokenTree]) =
   group
     Paren
-    (P.pure (\p t -> (p, t))
-      |> keep ident
-      |> skip (punct ":")
-      |> keep (treesUntil (\t -> False)))
+    (P.pure (\p t -> (p, t)) |> keep ident |> skip (punct ":") |> keep (treesUntil (\t -> False)))
 
 -- What a declaration is read as, before it is known to be one: an input has
 -- no body, and a query has to have one -- which depends on what was read,
@@ -165,9 +154,9 @@ fun problems (decls : [Decl]) : Maybe [TokenTree] =
                  else []
              | None -> [])
       (V.range 0 (V.len decls)) in
-    match V.get wrong 0 with
-    | Just f -> Just [f]
-    | None -> None
+  match V.get wrong 0 with
+  | Just f -> Just [f]
+  | None -> None
 
 fun declName d = match d with | Decl _ _ n _ _ _ _ _ -> n
 
@@ -201,11 +190,7 @@ fun cases (f : Decl -> (String, [TokenTree])) (decls : [Decl]) : [TokenTree] =
       match V.get decls i with
       | Just d ->
           (match f d with
-           | (c, ty) ->
-               [
-                 Code "${if i > 0 then " | " else ""}${c} ",
-                 Group Paren ty Nowhere
-               ])
+           | (c, ty) -> [Code "${if i > 0 then " | " else ""}${c} ", Group Paren ty Nowhere])
       | None -> [])
     (V.range 0 (V.len decls))
 
@@ -228,8 +213,7 @@ fun accessor pub key value several d =
 
 fun computeArm key value d =
   match d with
-  | Decl True _ n _ p _ _ _ ->
-      [Code "\n  | ${key}.${upperFirst n} ${p} -> LinguaQ.notComputed ()"]
+  | Decl True _ n _ p _ _ _ -> [Code "\n  | ${key}.${upperFirst n} ${p} -> LinguaQ.notComputed ()"]
   | Decl False _ n _ p _ _ body ->
       [
         Code "\n  | ${key}.${upperFirst n} ${p} -> LinguaQ.computedAs ${value}.${upperFirst n}Value",
@@ -244,12 +228,11 @@ fun outside pub db key value several d =
       let asker = "${lowerFirst db}${q}" in
       let ask =
         "\n-- `${n}`, asked of a `${db}` database.\n${pub}fun ${asker} db key = match LinguaQ.get db (${key}.${q} key)${unwrap value several n}\n\n-- `${n}` of each of `keys`, asked at once.\n${pub}fun ${asker}Each db keys = LinguaV.map ${unwrapping value several n} (LinguaQ.getAll db (LinguaV.map ${key}.${q} keys))\n"
-      in
-      if input
-      then
-        [Code
-          "\n-- Set input `${n}` for `key`.\n${pub}fun set${db}${q} db key x = LinguaQ.set db (${key}.${q} key) (${value}.${q}Value x)\n${ask}"]
-      else [Code ask]
+      in if input
+         then
+           [Code
+             "\n-- Set input `${n}` for `key`.\n${pub}fun set${db}${q} db key x = LinguaQ.set db (${key}.${q} key) (${value}.${q}Value x)\n${ask}"]
+         else [Code ask]
 
 -- How the `persisted` queries' keys and answers, and the inputs' keys, are
 -- written down and read back; and saving and loading with it.
@@ -261,8 +244,7 @@ fun codec pub db key value decls =
     S.join
       ""
       (V.map
-        (\d ->
-          "\n    | ${key}.${upperFirst (declName d)} x -> LinguaQ.tagged \"${declName d}\" x")
+        (\d -> "\n    | ${key}.${upperFirst (declName d)} x -> LinguaQ.tagged \"${declName d}\" x")
         written)
   in
   let encodeValue =
@@ -316,11 +298,9 @@ ${pub}fun save${db} db path = LinguaQ.saveTo lingua${db}_codec db path
 ${pub}fun load${db} db path = LinguaQ.loadFrom lingua${db}_codec db path
 "
 
-fun upperFirst (s : String) : String =
-  caseFirst "ABCDEFGHIJKLMNOPQRSTUVWXYZ" 97 122 s
+fun upperFirst (s : String) : String = caseFirst "ABCDEFGHIJKLMNOPQRSTUVWXYZ" 97 122 s
 
-fun lowerFirst (s : String) : String =
-  caseFirst "abcdefghijklmnopqrstuvwxyz" 65 90 s
+fun lowerFirst (s : String) : String = caseFirst "abcdefghijklmnopqrstuvwxyz" 65 90 s
 
 fun caseFirst (letters : String) (from : Int) (to : Int) (s : String) : String =
   if stringByteLength s == 0 then s

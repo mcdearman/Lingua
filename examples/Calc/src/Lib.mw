@@ -113,10 +113,7 @@ fun lines (s : String) : [String] = S.split "\n" s
   match parseCalc "let x = ;\nlet y = 2;" with
   | (g, errs) ->
       let a = assertEq (text g) "let x = ;\nlet y = 2;" "still every byte" in
-      assertEq
-        errs
-        [(8, "expected Expr")]
-        "at the `;`, and the next statement still parses"
+      assertEq errs [(8, "expected Expr")] "at the `;`, and the next statement still parses"
 
 -- `x + 1;` as a macro might write it: the `x` and the `1` from its call, the
 -- rest from its template, standing where the call is.
@@ -140,8 +137,7 @@ def given : [(Token, Int, Int, String)] =
             (\s -> R.kindOf s == Calc.NodeBin)
             (R.nodes (V.getOr (R.root g) (R.nodes (R.root g)) 0)))
           0
-      in
-      assertEq
+      in assertEq
         (R.range bin, V.map R.range (R.tokens bin))
         ((3, 10), [(1, 2), (0, 20), (3, 4)])
         "the sum from the `x` to the `1`; its `+` where the call is, the spaces where they are"
@@ -162,10 +158,7 @@ def given : [(Token, Int, Int, String)] =
   match parseCalc ") 1;" with
   | (g, errs) ->
       let a = assertEq (V.len errs) 1 "one error" in
-      assertEq
-        (V.any (\l -> l == "  ExprStmt") (lines (dump display g)))
-        True
-        "the `1;` after it"
+      assertEq (V.any (\l -> l == "  ExprStmt") (lines (dump display g))) True "the `1;` after it"
 
 -- --- the typed AST -----------------------------------------------------------
 
@@ -183,8 +176,7 @@ fun step env s =
   match s with
   | CalcStmt.Let l ->
       (match (calcLetName l, calcLetValue l) with
-       | (Just n, Just v) ->
-           V.pushBack env (R.text (syntaxCalcName n), value env v)
+       | (Just n, Just v) -> V.pushBack env (R.text (syntaxCalcName n), value env v)
        | _ -> env)
   | CalcStmt.ExprStmt _ -> env
 
@@ -198,26 +190,17 @@ fun value env (e : CalcExpr) : Int =
       (match calcNameRefIdentToken n with
        | Just t -> lookup env (R.text t)
        | None -> 0)
-  | CalcExpr.Paren p ->
-      (match calcParenExpr p with | Just x -> value env x | None -> 0)
+  | CalcExpr.Paren p -> (match calcParenExpr p with | Just x -> value env x | None -> 0)
   | CalcExpr.Bin b ->
       (match (calcBinLhs b, calcBinOp b, calcBinRhs b) with
-       | (Just l, Just op, Just r) ->
-           apply (R.text op) (value env l) (value env r)
+       | (Just l, Just op, Just r) -> apply (R.text op) (value env l) (value env r)
        | _ -> 0)
   | CalcExpr.Call c -> 0
 
-fun lookup env name =
-  match V.find (\p -> fst p == name) env with | Just p -> snd p | None -> 0
+fun lookup env name = match V.find (\p -> fst p == name) env with | Just p -> snd p | None -> 0
 
 fun apply op a b =
-  if op == "+"
-  then a + b
-  else if op == "-"
-  then a - b
-  else if op == "*"
-  then a * b
-  else a / b
+  if op == "+" then a + b else if op == "-" then a - b else if op == "*" then a * b else a / b
 
 @test fun theTypedTreeIsReadByLabel () =
   assertEq
@@ -235,8 +218,7 @@ fun apply op a b =
                (match calcExprStmtExpr s with
                 | Just (CalcExpr.Call c) ->
                     (match calcCallArgList c with
-                     | Just args ->
-                         assertEq (V.len (calcArgListArgs args)) 3 "three"
+                     | Just args -> assertEq (V.len (calcArgListArgs args)) 3 "three"
                      | None -> assertEq 0 1 "an argument list")
                 | _ -> assertEq 0 1 "a call")
            | _ -> assertEq 0 1 "a statement")
@@ -283,8 +265,7 @@ fun bindingsOf (p : CoreProgram) : [(String, Int)] =
 
 fun stepCore a env s =
   match viewCoreStmt a s with
-  | CoreStmtView.Let r ->
-      V.pushBack env (coreNameIdent a r.name, evalCore a env r.value)
+  | CoreStmtView.Let r -> V.pushBack env (coreNameIdent a r.name, evalCore a env r.value)
   | CoreStmtView.ExprStmt _ -> env
 
 fun evalCore (a : CoreArena) env (e : CoreExpr) : Int =
@@ -296,8 +277,7 @@ fun evalCore (a : CoreArena) env (e : CoreExpr) : Int =
   | CoreExprKind.Prim ->
       (let args = coreExprPrimArgs a e in
         match (V.get args 0, V.get args 1) with
-        | (Just x, Just y) ->
-            apply (coreExprPrimOp a e) (evalCore a env x) (evalCore a env y)
+        | (Just x, Just y) -> apply (coreExprPrimOp a e) (evalCore a env x) (evalCore a env y)
         | _ -> 0)
   | CoreExprKind.Call -> 0
 
@@ -315,10 +295,7 @@ fun evalCore (a : CoreArena) env (e : CoreExpr) : Int =
         | CoreFileView.File r ->
             (match M.map (viewCoreStmt a) (V.get r.stmts 0) with
              | Just (CoreStmtView.Let l) ->
-                 assertEq
-                   (metaCoreExpr a l.value)
-                   (Meta.Meta 8 13)
-                   "the bytes of `1 + 2`"
+                 assertEq (metaCoreExpr a l.value) (Meta.Meta 8 13) "the bytes of `1 + 2`"
              | _ -> assertEq 0 1 "a let"))
   | None -> assertEq 0 1 "a program"
 
@@ -349,10 +326,7 @@ pass! {
          | _ -> "")
       in
       let u = assertEq folded "*" "`0 +` is gone" in
-      assertEq
-        (bindingsOf p)
-        [("x", 6), ("y", 7)]
-        "and the rest lowered as before"
+      assertEq (bindingsOf p) [("x", 6), ("y", 7)] "and the rest lowered as before"
   | None -> assertEq 0 1 "a program"
 
 -- The same, read straight off the tree: no `Surface` tables in between.
@@ -407,11 +381,7 @@ pass! {
 
 @test fun aProgramWithSomethingMissingHasNoSurface () =
   match parseCalc "let x = ;" with
-  | (g, _) ->
-      assertEq
-        (M.isSome (surfaceFromCalc g))
-        False
-        "the tree has an error in it"
+  | (g, _) -> assertEq (M.isSome (surfaceFromCalc g)) False "the tree has an error in it"
 
 -- A pass may do anything an ordinary function may: this one counts the
 -- operators it lowers, with `Std.State`.
@@ -421,8 +391,7 @@ fun tick () = put (get () + 1)
 
 pass! {
   pub lowerCounting : Surface -> Core
-    | Bin { lhs, op, rhs } ->
-        (let u = tick () in Prim { op = op, args = [lhs, rhs] })
+    | Bin { lhs, op, rhs } -> (let u = tick () in Prim { op = op, args = [lhs, rhs] })
 }
 
 @test fun aPassMayPerformEffects () =
@@ -467,15 +436,9 @@ fun twoFiles () =
   let a = setSessionSource db 1 "let x = 2 * 3;" in
   let b = setSessionSource db 2 "let y = 10 - 1;" in
   let c = assertEq (toResult (\() -> sessionSum db [1, 2])) (Ok 15) "6 + 9" in
-  let d =
-    assertEq
-      (V.len (Q.takeLog db))
-      7
-      "tree, program and bindings for each file, and the sum"
+  let d = assertEq (V.len (Q.takeLog db)) 7 "tree, program and bindings for each file, and the sum"
   in
-  let e =
-    assertEq (toResult (\() -> sessionSum db [1, 2])) (Ok 15) "asked again"
-  in
+  let e = assertEq (toResult (\() -> sessionSum db [1, 2])) (Ok 15) "asked again" in
   assertEq (Q.takeLog db) [] "and nothing run for it"
 
 @test fun anEditReRunsOnlyTheFileItIsIn () =
@@ -484,12 +447,7 @@ fun twoFiles () =
   let b = assertEq (toResult (\() -> sessionSum db [1, 2])) (Ok 14) "6 + 8" in
   assertEq
     (Q.takeLog db)
-    [
-      SessionKey.Tree 2,
-      SessionKey.Program 2,
-      SessionKey.Bindings 2,
-      SessionKey.Sum [1, 2]
-    ]
+    [SessionKey.Tree 2, SessionKey.Program 2, SessionKey.Bindings 2, SessionKey.Sum [1, 2]]
     "the first file untouched"
 
 @test fun aCommentStopsWhereTheAnswersAreTheSame () =
@@ -497,9 +455,7 @@ fun twoFiles () =
   -- change; what the file binds does not, so the sum is not run again.
   let db = twoFiles () in
   let a = setSessionSource db 1 "let x = 2 * 3; // six" in
-  let b =
-    assertEq (toResult (\() -> sessionSum db [1, 2])) (Ok 15) "still 15"
-  in
+  let b = assertEq (toResult (\() -> sessionSum db [1, 2])) (Ok 15) "still 15" in
   assertEq
     (Q.takeLog db)
     [SessionKey.Tree 1, SessionKey.Program 1, SessionKey.Bindings 1]
@@ -516,26 +472,18 @@ fun twoFiles () =
   let b = setSessionSource db2 1 "let x = 2 * 3;" in
   let c = setSessionSource db2 2 "let y = 10 - 1;" in
   let d = assertEq (loadSession db2 path) (Ok 1) "the sum, read back" in
-  let e =
-    assertEq (toResult (\() -> sessionSum db2 [1, 2])) (Ok 15) "the same answer"
-  in
+  let e = assertEq (toResult (\() -> sessionSum db2 [1, 2])) (Ok 15) "the same answer" in
   let f = assertEq (Q.takeLog db2) [] "and nothing run for it" in
   -- A file that changed since is worked out again, as far as it has to be.
   let db3 = newSession () in
   let g = setSessionSource db3 1 "let x = 2 * 4;" in
   let h = setSessionSource db3 2 "let y = 10 - 1;" in
   let i = loadSession db3 path in
-  assertEq
-    (toResult (\() -> sessionSum db3 [1, 2]))
-    (Ok 17)
-    "8 + 9, from the new file"
+  assertEq (toResult (\() -> sessionSum db3 [1, 2])) (Ok 17) "8 + 9, from the new file"
 
 @test fun aFileNobodySetIsSaidToBe () =
   let db = twoFiles () in
-  assertEq
-    (toResult (\() -> sessionSum db [1, 3]))
-    (Err (Unset (SessionKey.Source 3)))
-    "file 3"
+  assertEq (toResult (\() -> sessionSum db [1, 3])) (Err (Unset (SessionKey.Source 3))) "file 3"
 
 -- --- the abstract syntax, as patterns ----------------------------------------
 
@@ -549,8 +497,7 @@ fun twoFiles () =
         (V.map
           (\s ->
             match s with
-            | CalcLet n (CalcBin l op r) ->
-                "${R.text n} = ${R.text l} ${R.text op} ${R.text r}"
+            | CalcLet n (CalcBin l op r) -> "${R.text n} = ${R.text l} ${R.text op} ${R.text r}"
             | CalcLet n v -> "${R.text n} = ${R.text v}"
             | _ -> "?")
           (R.nodes (R.root g)))
@@ -584,8 +531,7 @@ lang! {
 pass! {
   deepen : Shapes -> Depths with depth
     | Expr.Var { name } -> Var { name = name, depth = depth }
-    | Lam { param, later body } ->
-        Lam { param = param, body = body (depth + 1) }
+    | Lam { param, later body } -> Lam { param = param, body = body (depth + 1) }
 }
 
 -- `fun x -> fun _ -> x`, written with the language's names by module:
@@ -626,10 +572,7 @@ fun bound (a : ShapesArena) (p : ShapesPat) : [String] =
   match (shapesArena p, shapesRoot p) with
   | ShapesExprLam param _ ->
       assertEq
-        (
-          Shapes.Pat.varName (shapesArena p) param,
-          shapesPatVarName (shapesArena p) param
-        )
+        (Shapes.Pat.varName (shapesArena p) param, shapesPatVarName (shapesArena p) param)
         ("x", "x")
         "a field, read either way"
   | _ -> assertEq "a lam" "" "the root"
@@ -639,15 +582,10 @@ fun bound (a : ShapesArena) (p : ShapesPat) : [String] =
   let a = shapesArena p in
   match (a, shapesRoot p) with
   | ShapesExprLam param body ->
-      let k =
-        assertEq (Shapes.Pat.kind a param) ShapesPatKind.Var "the pattern's"
-      in
+      let k = assertEq (Shapes.Pat.kind a param) ShapesPatKind.Var "the pattern's" in
       (match (a, body) with
        | ShapesExprLam _ inner ->
-           assertEq
-             (Shapes.Expr.kind a inner)
-             ShapesExprKind.Var
-             "the expression's"
+           assertEq (Shapes.Expr.kind a inner) ShapesExprKind.Var "the expression's"
        | _ -> assertEq "a lam" "" "the inner function")
   | _ -> assertEq "a lam" "" "the root"
 
@@ -678,8 +616,7 @@ fun bound (a : ShapesArena) (p : ShapesPat) : [String] =
 pass! {
   onlyExprs : Calc -> Core from Expr
     | Bin { lhs, op, rhs } -> Prim { op = op, args = [lhs, rhs] }
-    | Literal { number } ->
-        Literal { number = "${number}@${show (R.offset node)}" }
+    | Literal { number } -> Literal { number = "${number}@${show (R.offset node)}" }
 }
 
 -- The expression of the statement `i` of a file, if it is one.
@@ -731,8 +668,7 @@ pass! {
           let rows = spreadFile () b (R.root g) in
           let a = freezeCore b in
           V.map (kindCoreExpr a) rows)
-      in
-      assertEq
+      in assertEq
         got
         [CoreExprKind.Literal, CoreExprKind.Prim, CoreExprKind.Prim]
         "the `let`'s value, and the sum twice"

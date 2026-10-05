@@ -51,9 +51,7 @@ use Lingua.Green (dump)
     "==" = EqEq, "<=" = Le, ">=" = Ge, "<" = Lt, ">" = Gt, "+" = Plus, "-" = Minus, "*" = Star, "/" = Slash,
     "ident" = Ident _, "int_number" = Number _
   }
-  precedence
-    Expr
-    { left "==" "<=" ">=" "<" ">", left "+" "-", left "*" "/", postfix App }
+  precedence Expr { left "==" "<=" ">=" "<" ">", left "+" "-", left "*" "/", postfix App }
   grammar {
     File = Expr
 
@@ -117,26 +115,18 @@ use Std.Result.Result.*
       (text (fst (parseMini "let rec f n = f n in f 1 -- loops\n")))
       "let rec f n = f n in f 1 -- loops\n"
       "a comment kept"
-  in
-  assertEq
-    (text (fst (parseMini "let x = in (1")))
-    "let x = in (1"
-    "and a broken one"
+  in assertEq (text (fst (parseMini "let x = in (1"))) "let x = in (1" "and a broken one"
 
 @test fun applicationTakesOneAtom () =
   -- `f x + 1` is `(f x) + 1`: the argument is an atom, and application binds
   -- tighter than any operator.
   assertEq
-    (V.len
-      (V.filter (\l -> S.trim l == "App") (S.split "\n" (drawn "f x + 1"))))
+    (V.len (V.filter (\l -> S.trim l == "App") (S.split "\n" (drawn "f x + 1"))))
     1
     "one application, under the `+`"
 
 @test fun keywordsAreNotIdentifiers () =
-  assertEq
-    (typeOfSource "letter")
-    (Err "unbound variable: letter")
-    "`let` is a prefix of `letter`"
+  assertEq (typeOfSource "letter") (Err "unbound variable: letter") "`let` is a prefix of `letter`"
 
 @test fun aMissingPieceIsAnErrorWhereItWouldBe () =
   match parseMini "let x = in 1" with
@@ -180,15 +170,12 @@ fun written (src : String) : String =
     (V.concatMap
       (\i ->
         let c = stringSlice src i (i + 1) in
-        if c == " " or c == "\n" or c == "\t"
-        then []
-        else [c])
+        if c == " " or c == "\n" or c == "\t" then [] else [c])
       (V.range 0 (stringByteLength src)))
 
 @test fun whatFitsGoesOnOneLine () =
   assertEq
-    (laidOut
-      "let x =\n1 + 2\nin\n      if x < 3\nthen (\nx\n)\nelse fun y ->\ny\n")
+    (laidOut "let x =\n1 + 2\nin\n      if x < 3\nthen (\nx\n)\nelse fun y ->\ny\n")
     "let x = 1 + 2 in\nif x < 3 then (x) else fun y -> y\n"
     "the value after its `=`, the body on a line of its own, and each of them whole"
 
@@ -232,16 +219,14 @@ fun written (src : String) : String =
       (V.map (\s -> written (narrow s)) srcs)
       (V.map written srcs)
       "every token still there, in order, broken program or not"
-  in
-  assertEq
+  in assertEq
     (V.map (\s -> narrow (narrow s)) srcs)
     (V.map narrow srcs)
     "and laid out twice is laid out once"
 
 @test fun everyLineIsSetInAsTheRulesSay () =
   assertEq
-    (formatted
-      "let x =\n1 + 2\nin\n      if x < 3\nthen (\nx\n)\nelse fun y ->\ny\n")
+    (formatted "let x =\n1 + 2\nin\n      if x < 3\nthen (\nx\n)\nelse fun y ->\ny\n")
     "let x =\n  1 + 2\nin\nif x < 3\n  then (\n    x\n  )\n  else fun y ->\n    y\n"
     "a level for the value, the branches, the parentheses and the body"
 
@@ -253,8 +238,7 @@ fun written (src : String) : String =
       (formatted "let f = fun y ->\ny + 1\nin f 2")
       "let f = fun y ->\n  y + 1\nin f 2"
       "one line, one level"
-  in
-  assertEq
+  in assertEq
     (formatted "let f =\nfun y ->\ny + 1\nin f 2")
     "let f =\n  fun y ->\n    y + 1\nin f 2"
     "two lines, two"
@@ -268,10 +252,7 @@ fun written (src : String) : String =
     "and doing it twice is doing it once"
 
 @test fun aBrokenProgramIsFormattedAsFarAsItReads () =
-  assertEq
-    (formatted "let x =\n(1 +\nin x")
-    "let x =\n  (1 +\nin x"
-    "the value still a level in"
+  assertEq (formatted "let x =\n(1 +\nin x") "let x =\n  (1 +\nin x" "the value still a level in"
 
 @test fun theNextLineStartsWhereTheFormatterWouldPutIt () =
   assertEq

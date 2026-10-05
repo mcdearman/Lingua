@@ -16,15 +16,7 @@ use Std.Collections.Vector as V
 use Std.String as S
 use Std.Maybe as M
 use Lingua.Green (Green, fromTables, fromTablesAt)
-use Lingua.Parser (
-  Events,
-  eventCount,
-  isOpenAt,
-  isCloseAt,
-  isAdvanceAt,
-  openKindAt,
-  messageAt
-)
+use Lingua.Parser (Events, eventCount, isOpenAt, isCloseAt, isAdvanceAt, openKindAt, messageAt)
 use Lingua.Buf as B
 use Lingua.Buf (Buf)
 
@@ -45,28 +37,18 @@ use Lexemes.*
     V.toArray
       (V.map
         (\i -> arrayGet kinds i)
-        (V.filter
-          (\i -> not (arrayGet trivia i))
-          (V.range 0 (arrayLen kinds))))
-  in
-  Lexemes text kinds ends trivia parsed #[] #[]
+        (V.filter (\i -> not (arrayGet trivia i)) (V.range 0 (arrayLen kinds))))
+  in Lexemes text kinds ends trivia parsed #[] #[]
 
 -- A lexer's tables, written a token at a time inside a `runSt`: the kinds,
 -- where each ends, whether each is trivia, the kinds of those that are not,
 -- and where each stands, for tokens given with that.
 use Lexing.*
 
-@pub data Lexing s k =
-  Lexing (Buf s k) (Buf s Int) (Buf s Bool) (Buf s k) (Buf s Int) (Buf s Int)
+@pub data Lexing s k = Lexing (Buf s k) (Buf s Int) (Buf s Bool) (Buf s k) (Buf s Int) (Buf s Int)
 
 @pub fun lexing (filler : k) : Lexing s k ! { St s | e } =
-  Lexing
-    (B.buffer ())
-    (B.buffer ())
-    (B.buffer ())
-    (B.buffer ())
-    (B.buffer ())
-    (B.buffer ())
+  Lexing (B.buffer ()) (B.buffer ()) (B.buffer ()) (B.buffer ()) (B.buffer ()) (B.buffer ())
 
 -- One more token, of kind `k`, ending at byte `stop`.
 @pub fun lexed (l : Lexing s k) (k : k) (stop : Int) (trivia : Bool) :
@@ -105,8 +87,7 @@ use Lexing.*
         (B.freeze oe)
 
 -- The tokens a parser reads: the kinds of those that are not trivia.
-@pub fun parsedKinds (ls : Lexemes k) : #[k] =
-  match ls with | Lexemes _ _ _ _ ps _ _ -> ps
+@pub fun parsedKinds (ls : Lexemes k) : #[k] = match ls with | Lexemes _ _ _ _ ps _ _ -> ps
 
 -- Tokens given rather than lexed -- what a macro wrote -- as lexemes: each of
 -- kind `kinds` says, standing for the bytes it came with, its text the one it
@@ -118,9 +99,7 @@ use Lexing.*
   let texts = V.map (\x -> match x with | (_, _, t) -> t) tokens in
   runSt (\() ->
     let l = lexing filler in
-    let _ =
-      V.foldl (laid l filler isTrivia kinds tokens) 0 (V.range 0 (V.len tokens))
-    in
+    let _ = V.foldl (laid l filler isTrivia kinds tokens) 0 (V.range 0 (V.len tokens)) in
     lexemesFrom (S.join " " texts) l)
 
 -- Token `i` of `tokens` laid down at byte `at`, after a space if it is not
@@ -130,9 +109,7 @@ fun laid (l : Lexing s k) (filler : k) (isTrivia : k -> Bool) (kinds : [k])
   match V.get tokens i with
   | Just (from, to, t) ->
       let start =
-        if i > 0
-        then (let _ = lexedAt l filler (at + 1) True (0 - 1) (0 - 1) in at + 1)
-        else at
+        if i > 0 then (let _ = lexedAt l filler (at + 1) True (0 - 1) (0 - 1) in at + 1) else at
       in
       let k = V.getOr filler kinds i in
       let stop = start + stringByteLength t in
@@ -183,14 +160,9 @@ data Builder s k = Builder (Buf s k) (Buf s Int) (Buf s Int) (Buf s Int) (Buf s 
               let _ = remaining b lexemes in
               closeTop b)
           else ()
-        in
-        match b with
+        in match b with
         | Builder kinds starts stops sizes parents _ _ _ _ errAt errMsg _ ->
-            let errs =
-              V.map
-                (\i -> (B.at errAt i, B.at errMsg i))
-                (V.range 0 (B.len errAt))
-            in
+            let errs = V.map (\i -> (B.at errAt i, B.at errMsg i)) (V.range 0 (B.len errAt)) in
             if arrayLen los == 0
             then
               (
@@ -211,9 +183,7 @@ data Builder s k = Builder (Buf s k) (Buf s Int) (Buf s Int) (Buf s Int) (Buf s 
                       then
                         M.unwrapOr
                         (0 - 1)
-                        (M.map
-                          (\j -> arrayGet los j)
-                          (lexeme (arrayGet ss i)))
+                        (M.map (\j -> arrayGet los j) (lexeme (arrayGet ss i)))
                       else 0 - 1)
                     (V.range 0 (arrayLen ks)))
               in
@@ -224,23 +194,11 @@ data Builder s k = Builder (Buf s k) (Buf s Int) (Buf s Int) (Buf s Int) (Buf s 
                       then
                         M.unwrapOr
                         (0 - 1)
-                        (M.map
-                          (\j -> arrayGet loe j)
-                          (lexeme (arrayGet ss i)))
+                        (M.map (\j -> arrayGet loe j) (lexeme (arrayGet ss i)))
                       else 0 - 1)
                     (V.range 0 (arrayLen ks)))
               in
-              let g =
-                fromTablesAt
-                  text
-                  ks
-                  ss
-                  (B.freeze stops)
-                  zs
-                  (B.freeze parents)
-                  froms
-                  tos
-              in
+              let g = fromTablesAt text ks ss (B.freeze stops) zs (B.freeze parents) froms tos in
               (g, V.map (\e -> (errorPlace lexemes (fst e), snd e)) errs))
 
 fun kindsOf b = match b with | Builder kinds _ _ _ _ _ _ _ _ _ _ _ -> kinds
@@ -282,14 +240,10 @@ fun placeOf (ls : Lexemes k) (at : Int) : Maybe Int =
         then lo
         else
           (let mid = (lo + hi) / 2 in
-            if arrayGet ends mid <= at
-            then first (mid + 1) hi
-            else first lo mid)
+            if arrayGet ends mid <= at then first (mid + 1) hi else first lo mid)
       in
       let j = first 0 n in
-      if j < n and (if j == 0 then 0 else arrayGet ends (j - 1)) == at
-      then Just j
-      else None
+      if j < n and (if j == 0 then 0 else arrayGet ends (j - 1)) == at then Just j else None
 
 -- Where an error said at byte `at` of the text stands: where the next token
 -- with a place does, or the last one's end.
@@ -315,11 +269,7 @@ fun openSlot b k =
       let _ = B.push stops at in
       let _ = B.push sizes 1 in
       let _ = B.push parents parent in
-      let _ =
-        if d < B.len stack
-        then B.put stack d slot
-        else (let _ = B.push stack slot in ())
-      in
+      let _ = if d < B.len stack then B.put stack d slot else (let _ = B.push stack slot in ()) in
       stSetRef depth (d + 1)
 
 -- The innermost node open, closed here.
@@ -339,26 +289,17 @@ fun trivia b lexemes =
   match (b, lexemes) with
   | (Builder _ _ _ _ _ cursor _ _ _ _ _ _, Lexemes _ _ _ ts _ _ _) ->
       let c = stGetRef cursor in
-      if c < arrayLen ts and arrayGet ts c
-      then (let _ = take b lexemes in trivia b lexemes)
-      else ()
+      if c < arrayLen ts and arrayGet ts c then (let _ = take b lexemes in trivia b lexemes) else ()
 
 -- The next token, into the node being read -- nowhere, if none is open.
 fun take b lexemes =
   match (b, lexemes) with
-  | (
-    Builder _ _ _ _ _ cursor offset stack depth _ _ _,
-    Lexemes _ ks ends _ _ _ _
-  ) ->
+  | (Builder _ _ _ _ _ cursor offset stack depth _ _ _, Lexemes _ ks ends _ _ _ _) ->
       let c = stGetRef cursor in
       let from = stGetRef offset in
       let to = arrayGet ends c in
       let d = stGetRef depth in
-      let _ =
-        if d > 0
-        then tokenSlot b (arrayGet ks c) from to (B.at stack (d - 1))
-        else ()
-      in
+      let _ = if d > 0 then tokenSlot b (arrayGet ks c) from to (B.at stack (d - 1)) else () in
       let _ = stSetRef cursor (c + 1) in
       stSetRef offset to
 
@@ -418,22 +359,16 @@ fun said (script : [Int]) : Events String =
       V.foldl
         (\u s ->
           if s == 0
-          then
-            (let m = open p in stSetRef marks (V.pushBack (stGetRef marks) m))
+          then (let m = open p in stSetRef marks (V.pushBack (stGetRef marks) m))
           else if s == 1 then advance p
           else if s == 2 then error p "expected `=`"
           else
             let ms = stGetRef marks in
-            let _ =
-              close
-                p
-                (V.getOr 0 ms (V.len ms - 1))
-                (if V.len ms == 1 then "File" else "Let")
-            in
-            stSetRef marks (V.popBack ms))
+            let _ = close p (V.getOr 0 ms (V.len ms - 1)) (if V.len ms == 1 then "File" else "Let")
+            in stSetRef marks (V.popBack ms))
         ()
         script in
-      events p)
+    events p)
 
 @test fun everyByteIsInTheTree () =
   match build "File" (said [0, 0, 1, 1, 3, 3]) sample with
@@ -446,28 +381,18 @@ fun said (script : [Int]) : Events String =
 
 @test fun anErrorIsAtTheByteItWasSaid () =
   match build "File" (said [0, 1, 2, 3]) sample with
-  | (g, errs) ->
-      assertEq errs [(5, "expected `=`")] "where the `x` starts, past the space"
+  | (g, errs) -> assertEq errs [(5, "expected `=`")] "where the `x` starts, past the space"
 
 @test fun tokensNeverTakenStillBelong () =
   match build "File" (said [0, 1, 3]) sample with
-  | (g, errs) ->
-      assertEq (text g) " let x\n" "the `x` the parser never read is there too"
+  | (g, errs) -> assertEq (text g) " let x\n" "the `x` the parser never read is there too"
 
 @test fun givenTokensStandWhereTheyCameFrom () =
-  let ls =
-    tokenLexemes
-      "ws"
-      (\k -> k == "ws")
-      ["let", "ident"]
-      [(100, 103, "let"), (7, 8, "x")]
-  in
+  let ls = tokenLexemes "ws" (\k -> k == "ws") ["let", "ident"] [(100, 103, "let"), (7, 8, "x")] in
   match build "File" (said [0, 0, 1, 1, 3, 3]) ls with
   | (g, errs) ->
       let a = assertEq (text g) "let x" "their texts, a space apart" in
-      let b =
-        assertEq (fromAt g 4, toAt g 4) (7, 8) "the `x` where it came from"
-      in
+      let b = assertEq (fromAt g 4, toAt g 4) (7, 8) "the `x` where it came from" in
       let c = assertEq (fromAt g 3, toAt g 3) (3, 4) "the space where it is" in
       assertEq
         (fromAt g 1, toAt g 1)
@@ -475,13 +400,7 @@ fun said (script : [Int]) : Events String =
         "and the node from the first's start to the last's end"
 
 @test fun anErrorInGivenTokensIsWhereTheyStand () =
-  let ls =
-    tokenLexemes
-      "ws"
-      (\k -> k == "ws")
-      ["let", "ident"]
-      [(100, 103, "let"), (7, 8, "x")]
-  in
+  let ls = tokenLexemes "ws" (\k -> k == "ws") ["let", "ident"] [(100, 103, "let"), (7, 8, "x")] in
   match build "File" (said [0, 1, 2, 3]) ls with
   | (g, errs) -> assertEq errs [(7, "expected `=`")] "where the `x` stands"
 
@@ -499,5 +418,4 @@ fun said (script : [Int]) : Events String =
 @pub fun onPath (isEnd : Int -> Bool) (isSep : Int -> Bool)
     (isSeg : Int -> Bool) (r : Int) : Bool =
   if isEnd (r + 1) then True
-  else if isSep (r + 1) and isSeg (r + 2) then onPath isEnd isSep isSeg (r + 2)
-  else False
+  else if isSep (r + 1) and isSeg (r + 2) then onPath isEnd isSep isSeg (r + 2) else False

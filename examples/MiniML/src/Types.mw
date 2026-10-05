@@ -46,12 +46,7 @@ fun freeVars t =
 
 -- How a type is written, its variables named in the order they appear.
 @pub fun typeName (t : Type) : String =
-  shown
-    (V.foldl
-      (\acc v -> if V.elem v acc then acc else V.pushBack acc v)
-      []
-      (freeVars t))
-    t
+  shown (V.foldl (\acc v -> if V.elem v acc then acc else V.pushBack acc v) [] (freeVars t)) t
 
 fun shown vars t =
   match t with

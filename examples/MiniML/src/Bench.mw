@@ -42,17 +42,14 @@ fun line (i : Int) : String =
   let kind = i - (i / 4) * 4 in
   if kind == 0 then "let f${k} = fun x -> ${prev} x + ${k} in\n"
   else if kind == 1
-  then
-    "let f${k} = fun x -> if x < ${k} then ${prev} x else ${prev} (x - 1) in\n"
+  then "let f${k} = fun x -> if x < ${k} then ${prev} x else ${prev} (x - 1) in\n"
   else if kind == 2
-  then
-    "let f${k} = let id = fun y -> y in fun x -> if id true then ${prev} (id x) else 0 in\n"
+  then "let f${k} = let id = fun y -> y in fun x -> if id true then ${prev} (id x) else 0 in\n"
   else "let rec f${k} n = if n < 2 then ${prev} n else f${k} (n - 1) in\n"
 
 -- Each phase once per sample, three samples: a phase on a big program takes
 -- long enough that calibrating further only adds to the wait.
-def config : BenchConfig =
-  BenchConfig { warmupNanos = 0, sampleNanos = 1, samples = 3 }
+def config : BenchConfig = BenchConfig { warmupNanos = 0, sampleNanos = 1, samples = 3 }
 
 -- Time every phase on a program of `n` `let`s, and say how it went.
 @pub fun benchmark (n : Int) =
@@ -65,13 +62,8 @@ def config : BenchConfig =
       println "the generated program does not parse: ${show errs}"
   | (_, None) -> println "the generated program has no surface"
   | (_, Just surface) ->
-      let core =
-        fst
-          (fst (collect (\() -> tabled (\() -> desugar (resolved [] surface)))))
-      in
-      let a =
-        println "it is ${show (typeOf core)}, and runs to ${show (run core)}\n"
-      in
+      let core = fst (fst (collect (\() -> tabled (\() -> desugar (resolved [] surface))))) in
+      let a = println "it is ${show (typeOf core)}, and runs to ${show (run core)}\n" in
       report
         [ benchUnitsWith config "parse" bytes (\() -> parseMini src),
           benchUnitsWith config "surface" bytes (\() -> surfaceFromMini (fst parsed)),
@@ -90,42 +82,36 @@ def config : BenchConfig =
   let srcs = V.map (\i -> program (n + i)) (V.range 0 files) in
   let ids = V.range 1 (files + 1) in
   let bytes = V.foldl (\acc s -> acc + stringByteLength s) 0 srcs in
-  let u =
-    println
-      "\n${show files} files of about ${show n} lets, ${show bytes} bytes\n"
-  in
+  let u = println "\n${show files} files of about ${show n} lets, ${show bytes} bytes\n" in
   let filled = \db ->
-    let u =
-      V.foldl (\acc i -> setSessionSource db i (V.getOr "" srcs (i - 1))) () ids
-    in
+    let u = V.foldl (\acc i -> setSessionSource db i (V.getOr "" srcs (i - 1))) () ids in
     db in
-    let fresh = \() -> filled (newSession ()) in
-    let batch = \() -> filled (batchSession ()) in
-    let warm = fresh () in
-    let w = toResult (\() -> sessionTypedEach warm ids) in
-    let first = V.getOr "" srcs 0 in
-    report
-    [ benchUnitsWith config "passes, in turn" bytes (\() -> V.map straight srcs),
-      benchUnitsWith config "passes, threads" bytes (\() -> Thread.parMap straight srcs),
-      benchUnitsWith config "batch, in turn" bytes (\() -> let db = batch () in toResult (\() -> sessionTypedEach db ids)),
-      benchUnitsWith config "batch, threads" bytes (\() -> let db = parallelSession (batch ()) in toResult (\() -> sessionTypedEach db ids)),
-      benchUnitsWith config "batch, shared" bytes (\() -> let db = sharedSession (batch ()) in toResult (\() -> sessionTypedEach db ids)),
-      benchUnitsWith config "queries, in turn" bytes (\() -> let db = fresh () in toResult (\() -> sessionTypedEach db ids)),
-      benchUnitsWith config "queries, threads" bytes (\() -> let db = parallelSession (fresh ()) in toResult (\() -> sessionTypedEach db ids)),
-      benchUnitsWith config "queries, unchanged" bytes (\() -> toResult (\() -> V.map (\i -> sessionTyped warm i) ids)),
-      benchUnitsWith config "queries, 2 edits" bytes
-        (\() ->
-          let a = setSessionSource warm 1 "${first} -- edited\n" in
-          let b = toResult (\() -> V.map (\i -> sessionTyped warm i) ids) in
-          let c = setSessionSource warm 1 first in
-          toResult (\() -> V.map (\i -> sessionTyped warm i) ids)) ]
+  let fresh = \() -> filled (newSession ()) in
+  let batch = \() -> filled (batchSession ()) in
+  let warm = fresh () in
+  let w = toResult (\() -> sessionTypedEach warm ids) in
+  let first = V.getOr "" srcs 0 in
+  report
+  [ benchUnitsWith config "passes, in turn" bytes (\() -> V.map straight srcs),
+    benchUnitsWith config "passes, threads" bytes (\() -> Thread.parMap straight srcs),
+    benchUnitsWith config "batch, in turn" bytes (\() -> let db = batch () in toResult (\() -> sessionTypedEach db ids)),
+    benchUnitsWith config "batch, threads" bytes (\() -> let db = parallelSession (batch ()) in toResult (\() -> sessionTypedEach db ids)),
+    benchUnitsWith config "batch, shared" bytes (\() -> let db = sharedSession (batch ()) in toResult (\() -> sessionTypedEach db ids)),
+    benchUnitsWith config "queries, in turn" bytes (\() -> let db = fresh () in toResult (\() -> sessionTypedEach db ids)),
+    benchUnitsWith config "queries, threads" bytes (\() -> let db = parallelSession (fresh ()) in toResult (\() -> sessionTypedEach db ids)),
+    benchUnitsWith config "queries, unchanged" bytes (\() -> toResult (\() -> V.map (\i -> sessionTyped warm i) ids)),
+    benchUnitsWith config "queries, 2 edits" bytes
+      (\() ->
+        let a = setSessionSource warm 1 "${first} -- edited\n" in
+        let b = toResult (\() -> V.map (\i -> sessionTyped warm i) ids) in
+        let c = setSessionSource warm 1 first in
+        toResult (\() -> V.map (\i -> sessionTyped warm i) ids)) ]
 
 -- A file's type by the passes alone: what the `typed` query answers, with
 -- nothing remembered.
 fun straight (src : String) : String =
   match compile [] (parseMini src) with
-  | (Just f, _, _) ->
-      (match typed f with | Ok t -> typeName (programType t) | Err _ -> "?")
+  | (Just f, _, _) -> (match typed f with | Ok t -> typeName (programType t) | Err _ -> "?")
   | _ -> "?"
 
 -- --- tests -------------------------------------------------------------------

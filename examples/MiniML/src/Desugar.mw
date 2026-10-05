@@ -45,23 +45,19 @@ pass! {
     | Let { recursive, id, params, value, body } ->
         (match (recursive, V.get params 0) with
          | (True, Just first) ->
-             LetRec
-               {
-                 id = id,
-                 param = first,
-                 value = lambdas out here (V.drop params 1) value,
-                 body = body
-               }
+             LetRec {
+               id = id,
+               param = first,
+               value = lambdas out here (V.drop params 1) value,
+               body = body
+             }
          | (True, None) ->
              (let u =
-               say
-                 (errorAt here "`let rec` needs an argument"
-                   |> withNote "a recursive value that is not a function has nothing to stand on: write `let rec f x = …`")
-in
-               Let { id = id, value = value, body = body })
-  | _ ->
-      Let
-               { id = id, value = lambdas out here params value, body = body })
+                 say
+                   (errorAt here "`let rec` needs an argument"
+                     |> withNote "a recursive value that is not a function has nothing to stand on: write `let rec f x = …`")
+               in Let { id = id, value = value, body = body })
+         | _ -> Let { id = id, value = lambdas out here params value, body = body })
 }
 
 -- `fun` of each of `params` in turn, around `body`: each where the node
@@ -76,17 +72,10 @@ fun atomExpr out (a : CoreAtom) =
   let e = coreEndIn out a in
   match kindCoreAtomIn out a with
   | CoreAtomKind.Literal ->
-      newCoreExprIntSpan
-        out
-        s
-        e
-        (M.unwrapOr 0 (S.toInt (coreAtomLiteralNumberIn out a)))
-  | CoreAtomKind.BoolLit ->
-      newCoreExprBoolSpan out s e (coreAtomBoolLitValueIn out a == "true")
-  | CoreAtomKind.NameRef ->
-      newCoreExprVarSpan out s e (coreAtomNameRefIdIn out a)
+      newCoreExprIntSpan out s e (M.unwrapOr 0 (S.toInt (coreAtomLiteralNumberIn out a)))
+  | CoreAtomKind.BoolLit -> newCoreExprBoolSpan out s e (coreAtomBoolLitValueIn out a == "true")
+  | CoreAtomKind.NameRef -> newCoreExprVarSpan out s e (coreAtomNameRefIdIn out a)
   | CoreAtomKind.Paren -> coreAtomParenExprIn out a
 
 -- The expression a program is.
-@pub fun programExpr (p : CoreProgram) : CoreExpr =
-  coreFileExpr (coreArena p) (coreRoot p)
+@pub fun programExpr (p : CoreProgram) : CoreExpr = coreFileExpr (coreArena p) (coreRoot p)

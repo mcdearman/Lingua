@@ -82,8 +82,7 @@ use Lingua.Red as R
   | Just n ->
       (match readExact n with
        | None -> None
-       | Just body ->
-           Just (match J.parse body with | Ok j -> j | Err _ -> J.jNull ()))
+       | Just body -> Just (match J.parse body with | Ok j -> j | Err _ -> J.jNull ()))
 
 fun contentLength (n : Int) : Maybe Int ! { Console | e } =
   match readLine () with
@@ -99,8 +98,7 @@ fun contentLength (n : Int) : Maybe Int ! { Console | e } =
   writeOutput "Content-Length: ${show (stringByteLength body)}\r\n\r\n${body}"
 
 fun reply id result =
-  send
-    (J.jObject [("jsonrpc", J.jString "2.0"), ("id", id), ("result", result)])
+  send (J.jObject [("jsonrpc", J.jString "2.0"), ("id", id), ("result", result)])
 
 fun replyError id code message =
   send
@@ -108,37 +106,23 @@ fun replyError id code message =
       [
         ("jsonrpc", J.jString "2.0"),
         ("id", id),
-        (
-          "error",
-          J.jObject [("code", J.jInt code), ("message", J.jString message)]
-        )
+        ("error", J.jObject [("code", J.jInt code), ("message", J.jString message)])
       ])
 
 fun notify method params =
-  send
-    (J.jObject
-      [
-        ("jsonrpc", J.jString "2.0"),
-        ("method", J.jString method),
-        ("params", params)
-      ])
+  send (J.jObject [("jsonrpc", J.jString "2.0"), ("method", J.jString method), ("params", params)])
 
 -- --- positions ---------------------------------------------------------------
 
 -- Where each line of `t` starts, in bytes.
 @pub fun lineStarts (t : String) : [Int] =
   V.foldl
-    (\acc i -> if toInt (stringByteAt t i) == 10
-      then V.pushBack acc (i + 1)
-      else acc)
+    (\acc i -> if toInt (stringByteAt t i) == 10 then V.pushBack acc (i + 1) else acc)
     [0]
     (V.range 0 (stringByteLength t))
 
 fun lineOf (starts : [Int]) (offset : Int) : Int =
-  V.foldl
-    (\acc i -> if V.getOr 0 starts i <= offset then i else acc)
-    0
-    (V.range 0 (V.len starts))
+  V.foldl (\acc i -> if V.getOr 0 starts i <= offset then i else acc) 0 (V.range 0 (V.len starts))
 
 -- How many UTF-16 code units `s` is: what the protocol counts a column in.
 fun units (s : String) : Int =
@@ -163,29 +147,19 @@ fun clamp t offset = max 0 (min offset (stringByteLength t))
                  | (u, b) ->
                      if u >= col
                      then acc
-                     else
-                       (
-                         u + (if C.code c >= 65536 then 2 else 1),
-                         b + utf8Len (C.code c)
-                       ))
+                     else (u + (if C.code c >= 65536 then 2 else 1), b + utf8Len (C.code c)))
       (0, 0)
       (S.chars (stringSlice t st stop)) in
-    st + snd walked
+  st + snd walked
 
-fun utf8Len n =
-  if n < 128 then 1 else if n < 2048 then 2 else if n < 65536 then 3 else 4
+fun utf8Len n = if n < 128 then 1 else if n < 2048 then 2 else if n < 65536 then 3 else 4
 
-fun posJson p =
-  J.jObject [("line", J.jInt (fst p)), ("character", J.jInt (snd p))]
+fun posJson p = J.jObject [("line", J.jInt (fst p)), ("character", J.jInt (snd p))]
 
 @pub fun rangeJson (t : String) (starts : [Int]) (m : Meta) : Json =
   match m with
   | Meta a b ->
-      J.jObject
-        [
-          ("start", posJson (position t starts a)),
-          ("end", posJson (position t starts b))
-        ]
+      J.jObject [("start", posJson (position t starts a)), ("end", posJson (position t starts b))]
 
 -- The byte a request's `position` is at.
 @pub fun offsetIn (t : String) (params : Json) : Int =
@@ -196,8 +170,7 @@ fun posJson p =
 -- --- the documents open ------------------------------------------------------
 
 -- Each open document's file and text, by its URI; and its URI, by its file.
-@pub data Docs =
-  Docs (HashMap String Int) (HashMap Int String) (HashMap Int String) Int
+@pub data Docs = Docs (HashMap String Int) (HashMap Int String) (HashMap Int String) Int
 
 fun emptyDocs () = Docs HashMap.empty HashMap.empty HashMap.empty 1
 
@@ -210,8 +183,7 @@ fun emptyDocs () = Docs HashMap.empty HashMap.empty HashMap.empty 1
 @pub fun fileOf (d : Docs) (uri : String) : Maybe Int =
   match d with | Docs f _ _ _ -> HashMap.lookup uri f
 
-@pub fun openFiles (d : Docs) : [Int] =
-  match d with | Docs _ u _ _ -> HashMap.keys u
+@pub fun openFiles (d : Docs) : [Int] = match d with | Docs _ u _ _ -> HashMap.keys u
 
 -- `uri` holding `text`: its file, a new one the first time.
 fun withText (d : Docs) (uri : String) (text : String) : (Docs, Int) =
@@ -242,66 +214,55 @@ fun loop name features setText diagnose answer docs =
       let method = M.unwrapOr "" (M.andThen J.asString (J.get "method" msg)) in
       let id = J.get "id" msg in
       let params = M.unwrapOr (J.jNull ()) (J.get "params" msg) in
-      let uri =
-        M.unwrapOr
-          ""
-          (M.andThen J.asString (J.path ["textDocument", "uri"] params))
-      in
+      let uri = M.unwrapOr "" (M.andThen J.asString (J.path ["textDocument", "uri"] params)) in
       if method == "exit" then ()
       else if method == "initialize" then
-        (let u =
-          reply (M.unwrapOr (J.jNull ()) id) (initialized name features)
-in
+        (let u = reply (M.unwrapOr (J.jNull ()) id) (initialized name features) in
           loop name features setText diagnose answer docs)
-else if method == "shutdown" then
-  (let u = reply (M.unwrapOr (J.jNull ()) id) (J.jNull ()) in
+      else if method == "shutdown" then
+        (let u = reply (M.unwrapOr (J.jNull ()) id) (J.jNull ()) in
           loop name features setText diagnose answer docs)
-else
-  if method == "textDocument/didOpen"
-  or method == "textDocument/didChange"
-  then
-    (let text =
-      (if method == "textDocument/didOpen"
-        then M.andThen J.asString (J.path ["textDocument", "text"] params)
-        else lastChange params)
-in
-          match text with
+      else
+        if method == "textDocument/didOpen"
+        or method == "textDocument/didChange"
+        then
+          (let text =
+              (if method == "textDocument/didOpen"
+                then M.andThen J.asString (J.path ["textDocument", "text"] params)
+                else lastChange params)
+            in match text with
+            | None -> loop name features setText diagnose answer docs
+            | Just t ->
+                (match withText docs uri t with
+                 | (d2, file) ->
+                     (let u = setText file t in
+                       let w = publishAll name diagnose d2 in
+                       loop name features setText diagnose answer d2)))
+        else if method == "textDocument/didClose" then
+          (let u =
+              notify
+                      "textDocument/publishDiagnostics"
+                      (J.jObject [("uri", J.jString uri), ("diagnostics", J.jArray [])])
+            in loop name features setText diagnose answer docs)
+        else
+          match id with
           | None -> loop name features setText diagnose answer docs
-          | Just t ->
-              (match withText docs uri t with
-               | (d2, file) ->
-                   (let u = setText file t in
-                     let w = publishAll name diagnose d2 in
-                     loop name features setText diagnose answer d2)))
-else if method == "textDocument/didClose" then
-  (let u =
-    notify
-            "textDocument/publishDiagnostics"
-            (J.jObject [("uri", J.jString uri), ("diagnostics", J.jArray [])])
-in
-          loop name features setText diagnose answer docs)
-else
-  match id with
-  | None -> loop name features setText diagnose answer docs
-  | Just i ->
-      (let u =
-        (match fileOf docs uri with
-         | None -> reply i (J.jNull ())
-         | Just file ->
-             (let t = textOf docs file in
-                     match answer docs method file t (offsetIn t params) params with
-                     | Just r -> reply i r
-                     | None ->
-                         replyError i (0 - 32601) "`${method}` is not something this server does")) in
-              loop name features setText diagnose answer docs)
+          | Just i ->
+              (let u =
+                  (match fileOf docs uri with
+                   | None -> reply i (J.jNull ())
+                   | Just file ->
+                       (let t = textOf docs file in
+                         match answer docs method file t (offsetIn t params) params with
+                         | Just r -> reply i r
+                         | None ->
+                             replyError i (0 - 32601) "`${method}` is not something this server does")) in
+                loop name features setText diagnose answer docs)
 
 -- The whole text of the last change: the server asks for whole documents.
 fun lastChange params =
   match M.andThen J.asArray (J.get "contentChanges" params) with
-  | Just cs ->
-      M.andThen
-        (\c -> M.andThen J.asString (J.get "text" c))
-        (V.get cs (V.len cs - 1))
+  | Just cs -> M.andThen (\c -> M.andThen J.asString (J.get "text" c)) (V.get cs (V.len cs - 1))
   | None -> None
 
 -- What is wrong in every open file: one edit can change what another says.
@@ -332,11 +293,7 @@ fun diagnosticJson name uri t starts (d : Diagnostic) =
                     [
                       (
                         "location",
-                        J.jObject
-                          [
-                            ("uri", J.jString uri),
-                            ("range", rangeJson t starts (fst l))
-                          ]
+                        J.jObject [("uri", J.jString uri), ("range", rangeJson t starts (fst l))]
                       ),
                       ("message", J.jString (snd l))
                     ])
@@ -359,10 +316,7 @@ fun initialized name features =
           (V.concat
             [[
               ("positionEncoding", J.jString "utf-16"),
-              (
-                "textDocumentSync",
-                J.jObject [("openClose", J.jBool True), ("change", J.jInt 1)]
-              )
+              ("textDocumentSync", J.jObject [("openClose", J.jBool True), ("change", J.jInt 1)])
             ],
               when "tree"
                 [(
@@ -373,10 +327,7 @@ fun initialized name features =
                         "legend",
                         J.jObject
                           [
-                            (
-                              "tokenTypes",
-                              J.jArray (V.map J.jString tokenTypes)
-                            ),
+                            ("tokenTypes", J.jArray (V.map J.jString tokenTypes)),
                             ("tokenModifiers", J.jArray [])
                           ]
                       ),
@@ -390,10 +341,7 @@ fun initialized name features =
               when "references" [
                 ("referencesProvider", J.jBool True),
                 ("documentHighlightProvider", J.jBool True),
-                (
-                  "renameProvider",
-                  J.jObject [("prepareProvider", J.jBool True)]
-                )
+                ("renameProvider", J.jObject [("prepareProvider", J.jBool True)])
               ],
               when "completion" [("completionProvider", J.jObject [])],
               when "symbols" [("documentSymbolProvider", J.jBool True)],
@@ -408,11 +356,7 @@ fun initialized name features =
   | Just (m, what) ->
       J.jObject
         [
-          (
-            "contents",
-            J.jObject
-              [("kind", J.jString "markdown"), ("value", J.jString what)]
-          ),
+          ("contents", J.jObject [("kind", J.jString "markdown"), ("value", J.jString what)]),
           ("range", rangeJson t (lineStarts t) m)
         ]
 
@@ -430,11 +374,7 @@ fun initialized name features =
 
 fun locationJson docs (p : (Int, Meta)) =
   let t = textOf docs (fst p) in
-  J.jObject
-    [
-      ("uri", J.jString (uriOf docs (fst p))),
-      ("range", rangeJson t (lineStarts t) (snd p))
-    ]
+  J.jObject [("uri", J.jString (uriOf docs (fst p))), ("range", rangeJson t (lineStarts t) (snd p))]
 
 @pub fun locationsReply (docs : Docs) (ps : [(Int, Meta)]) : Json =
   J.jArray (V.map (locationJson docs) ps)
@@ -461,13 +401,8 @@ fun within o m = match m with | Meta a b -> a <= o and o <= b
 
 -- Every one of `ps` made `name`.
 @pub fun renameReply (docs : Docs) (ps : [(Int, Meta)]) (name : String) : Json =
-  let files =
-    V.foldl
-      (\acc p -> if V.elem (fst p) acc then acc else V.pushBack acc (fst p))
-      []
-      ps
-  in
-  J.jObject
+  let files = V.foldl (\acc p -> if V.elem (fst p) acc then acc else V.pushBack acc (fst p)) [] ps
+  in J.jObject
     [ ("changes",
         J.jObject
           (V.map
@@ -480,21 +415,14 @@ fun within o m = match m with | Meta a b -> a <= o and o <= b
                   (V.map
                     (\p ->
                       J.jObject
-                        [
-                          ("range", rangeJson t starts (snd p)),
-                          ("newText", J.jString name)
-                        ])
+                        [("range", rangeJson t starts (snd p)), ("newText", J.jString name)])
                     (V.filter (\p -> fst p == f) ps))
               ))
             files)) ]
 
 @pub fun completionReply (items : [(String, String)]) : Json =
   J.jArray
-    (V.map
-      (\i ->
-        J.jObject
-          [("label", J.jString (fst i)), ("detail", J.jString (snd i))])
-      items)
+    (V.map (\i -> J.jObject [("label", J.jString (fst i)), ("detail", J.jString (snd i))]) items)
 
 @pub fun symbolsReply (t : String) (xs : [(String, String, Meta)]) : Json =
   let starts = lineStarts t in
@@ -516,14 +444,7 @@ fun symbolKind k =
   then 12
   else if k == "variable"
   then 13
-  else if k == "module"
-  then 2
-  else if k == "type"
-  then 5
-  else
-    if k == "constant"
-    then 14
-    else 13
+  else if k == "module" then 2 else if k == "type" then 5 else if k == "constant" then 14 else 13
 
 -- --- read off the tree -------------------------------------------------------
 
@@ -571,13 +492,9 @@ fun symbolKind k =
       else Just (classOf "operator")
 
 -- Every token of `s`, where it is.
-fun allTokens s =
-  if R.isTokenOf s then [s] else V.concatMap allTokens (R.children s)
+fun allTokens s = if R.isTokenOf s then [s] else V.concatMap allTokens (R.children s)
 
-fun allNodes s =
-  if R.isTokenOf s
-  then []
-  else V.pushFront (V.concatMap allNodes (R.children s)) s
+fun allNodes s = if R.isTokenOf s then [] else V.pushFront (V.concatMap allNodes (R.children s)) s
 
 -- The tokens of a tree that are coloured, in order: the bytes each is from
 -- and to, and which of `tokenTypes` it is. What an editor is told, and what
@@ -606,8 +523,7 @@ fun allNodes s =
         if c < 0 then m else HashMap.insert (fst r) c m)
       HashMap.empty
       resolved
-  in
-  V.map
+  in V.map
     (\x ->
       match x with
       | (a, b, c) -> (a, b, M.unwrapOr c (HashMap.lookup a known)))
@@ -621,12 +537,9 @@ fun allNodes s =
     V.concatMap
       (\x ->
         match x with
-        | (a, b, c) ->
-            V.map
-              (\seg -> (fst seg, snd seg, c))
-              (lineSegments t starts a b))
+        | (a, b, c) -> V.map (\seg -> (fst seg, snd seg, c)) (lineSegments t starts a b))
       classes in
-    J.jObject [("data", J.jArray (V.map J.jInt (encode pieces)))]
+  J.jObject [("data", J.jArray (V.map J.jInt (encode pieces)))]
 
 fun encode pieces =
   match
@@ -636,13 +549,7 @@ fun encode pieces =
                      (match pos with
                       | (l, col) ->
                           (
-                            V.append out [
-                              l - pl,
-                              (if l == pl then col - pc else col),
-                              len,
-                              c,
-                              0
-                            ],
+                            V.append out [l - pl, (if l == pl then col - pc else col), len, c, 0],
                             l,
                             col
                           )))
@@ -673,28 +580,16 @@ fun lineSegments t starts a b =
              | (a, b) ->
                  (let l1 = lineOf starts a in let l2 = lineOf starts (max a (b - 1)) in if l2 > l1 then [(l1, l2)] else []))
       (allNodes (R.root g)) in
-    let kept =
-      V.foldl
-        (\acc s -> if V.any (\k -> fst k == fst s) acc
-          then acc
-          else V.pushBack acc s)
-        []
-        spans
-    in
-    J.jArray
-      (V.map
-        (\s ->
-          J.jObject
-            [("startLine", J.jInt (fst s)), ("endLine", J.jInt (snd s))])
-        kept)
+  let kept =
+    V.foldl (\acc s -> if V.any (\k -> fst k == fst s) acc then acc else V.pushBack acc s) [] spans
+  in J.jArray
+    (V.map (\s -> J.jObject [("startLine", J.jInt (fst s)), ("endLine", J.jInt (snd s))]) kept)
 
 -- For each position asked about: the token there, and each node around it,
 -- innermost first -- what "expand selection" walks out through.
 @pub fun selectionReply (t : String) (g : Green k) (params : Json) : Json =
   let starts = lineStarts t in
-  let positions =
-    M.unwrapOr [] (M.andThen J.asArray (J.get "positions" params))
-  in
+  let positions = M.unwrapOr [] (M.andThen J.asArray (J.get "positions" params)) in
   let root = R.root g in
   J.jArray
     (V.map
@@ -708,13 +603,10 @@ fun lineSegments t starts a b =
         in
         let ranges =
           V.foldl
-            (\acc s -> if V.any (\r -> r == R.range s) acc
-              then acc
-              else V.pushBack acc (R.range s))
+            (\acc s -> if V.any (\r -> r == R.range s) acc then acc else V.pushBack acc (R.range s))
             []
             chain
-        in
-        V.foldr
+        in V.foldr
           (\r parent ->
             J.jObject
               (V.append
@@ -752,11 +644,7 @@ def features : [String] =
 
 -- `| hover = hoverAt`: a feature, where it was written, and the function.
 def featureP : Parser Tokens ((String, Loc), String) =
-  P.pure (\f fn -> (f, fn))
-    |> skip (punct "|")
-    |> keep named
-    |> skip (punct "=")
-    |> keep ident
+  P.pure (\f fn -> (f, fn)) |> skip (punct "|") |> keep named |> skip (punct "=") |> keep ident
 
 -- A feature as it is read: its name, where that was written, and the
 -- function it is.
@@ -784,9 +672,7 @@ def lspCall : Parser Tokens (Bool, String, String, String, [LspFeature]) =
       | None ->
           if not (V.any (\f -> fst (fst f) == "text") fs)
           then
-            [Fail
-              "a server needs `text`: how the editor's text is given to the compiler"
-              Nowhere]
+            [Fail "a server needs `text`: how the editor's text is given to the compiler" Nowhere]
           else if
           V.any (\f -> fst (fst f) == "resolved") fs
               and not (V.any (\f -> fst (fst f) == "tree") fs)
@@ -798,25 +684,18 @@ def lspCall : Parser Tokens (Bool, String, String, String, [LspFeature]) =
             -- A server that has the tree says so, for a prompt over the same
             -- database to colour what is typed as the editor would.
             let u =
-              if V.any (\f -> fst (fst f) == "tree") fs
-              then defineAs (serverOf db) name
-              else ()
-            in
-            [Code (lspCode (if pub then "@pub " else "") name lang db fs)]
+              if V.any (\f -> fst (fst f) == "tree") fs then defineAs (serverOf db) name else ()
+            in [Code (lspCode (if pub then "@pub " else "") name lang db fs)]
 
 -- What the server of database `db` is recorded under, for `repl!` to find.
 @pub fun serverOf (db : String) : String = "LinguaLspFor${db}"
 
 fun lspCode pub name lang db fs =
-  let fn =
-    \f -> M.unwrapOr "" (M.map snd (V.find (\x -> fst (fst x) == f) fs))
-  in
+  let fn = \f -> M.unwrapOr "" (M.map snd (V.find (\x -> fst (fst x) == f) fs)) in
   let has = \f -> V.any (\x -> fst (fst x) == f) fs in
   let arm =
     \f method reply -> if has f
-                       then
-                         "    else if method == \"${method}\" then Just (${reply})\n"
-                       else ""
+                       then "    else if method == \"${method}\" then Just (${reply})\n" else ""
   in
   let tree = "(${fn "tree"} db file)" in
   let refs = "(${fn "references"} db file offset)" in
@@ -852,8 +731,7 @@ use Std.Collections.HashMap (HashMap)
       (V.map (position t starts) [0, 2, 3, 7, 11, 12])
       [(0, 0), (0, 1), (0, 2), (1, 0), (1, 2), (1, 3)]
       "each byte's place"
-  in
-  assertEq
+  in assertEq
     (V.map (\p -> offsetOf t starts (fst p) (snd p)) [(0, 1), (1, 2), (1, 4)])
     [2, 11, 13]
     "and back"

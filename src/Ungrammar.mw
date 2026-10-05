@@ -57,17 +57,13 @@ data Piece
   | LTok String Int
   | LPunct String Int
 
-fun lexAt l =
-  match l with | LName _ at -> at | LTok _ at -> at | LPunct _ at -> at
+fun lexAt l = match l with | LName _ at -> at | LTok _ at -> at | LPunct _ at -> at
 
 fun byteAt (s : String) (i : Int) : Int =
   if i < stringByteLength s then toInt (stringByteAt s i) else 0 - 1
 
 fun isNameByte b =
-  (b >= 97 and b <= 122)
-    or (b >= 65 and b <= 90)
-    or (b >= 48 and b <= 57)
-    or b == 95
+  (b >= 97 and b <= 122) or (b >= 65 and b <= 90) or (b >= 48 and b <= 57) or b == 95
 
 fun isSpace b = b == 32 or b == 9 or b == 10 or b == 13
 
@@ -89,8 +85,7 @@ fun lexAll (s : String) (i : Int) (acc : [Piece]) : Result (Int, String)
   then lexAll s (i + 1) (V.pushBack acc (LPunct (stringSlice s i (i + 1)) i))
   else Err (i, "`${stringSlice s i (i + 1)}` is not ungrammar")
 
-fun lineEnd s i =
-  if byteAt s i < 0 or byteAt s i == 10 then i else lineEnd s (i + 1)
+fun lineEnd s i = if byteAt s i < 0 or byteAt s i == 10 then i else lineEnd s (i + 1)
 
 fun nameEnd s i = if isNameByte (byteAt s i) then nameEnd s (i + 1) else i
 
@@ -205,9 +200,7 @@ fun altLoop ls i stop acc =
       let acc2 = V.pushBack acc s in
       (match V.get ls j with
        | Just (LPunct "|" _) -> altLoop ls (j + 1) stop acc2
-       | _ ->
-           Ok
-             (if V.len acc2 == 1 then (V.getOr (Seq []) acc2 0, j) else (Alt acc2, j)))
+       | _ -> Ok (if V.len acc2 == 1 then (V.getOr (Seq []) acc2 0, j) else (Alt acc2, j)))
 
 fun sq ls i stop = seqLoop ls i stop []
 
@@ -277,29 +270,14 @@ use Std.Test (assertEq)
 @test fun anAlternationWithALeadingBar () =
   match parseGrammar "Expr =\n  | Lit // a number\n  | Name" with
   | Ok ds ->
-      assertEq
-        (V.map defBody ds)
-        [Alt [Ref "Lit" 11, Ref "Name" 31]]
-        "the comment is nothing"
+      assertEq (V.map defBody ds) [Alt [Ref "Lit" 11, Ref "Name" 31]] "the comment is nothing"
   | Err e -> assertEq e (0, "") "it reads"
 
 @test fun aTokenMayEscapeItsQuote () =
   match parseGrammar "Q = '\\'' '\\\\'" with
-  | Ok ds ->
-      assertEq
-        (V.map defBody ds)
-        [Seq [Tok "'" 4, Tok "\\" 9]]
-        "a quote and a backslash"
+  | Ok ds -> assertEq (V.map defBody ds) [Seq [Tok "'" 4, Tok "\\" 9]] "a quote and a backslash"
   | Err e -> assertEq e (0, "") "it reads"
 
 @test fun aMistakeIsSaidWhereItIs () =
-  let a =
-    assertEq
-      (parseGrammar "A = (B")
-      (Err (6, "expected `)`, not the end"))
-      "at the end"
-  in
-  assertEq
-    (parseGrammar "A = B ; C")
-    (Err (6, "`;` is not ungrammar"))
-    "at the `;`"
+  let a = assertEq (parseGrammar "A = (B") (Err (6, "expected `)`, not the end")) "at the end" in
+  assertEq (parseGrammar "A = B ; C") (Err (6, "`;` is not ungrammar")) "at the `;`"

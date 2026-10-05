@@ -16,16 +16,7 @@
 
 use Std.Collections.Vector as V
 use Std.Maybe as M
-use Lingua.Green (
-  Green,
-  kindAt,
-  startAt,
-  endAt,
-  isTokenAt,
-  childSlots,
-  subtree,
-  slots
-)
+use Lingua.Green (Green, kindAt, startAt, endAt, isTokenAt, childSlots, subtree, slots)
 use Lingua.Green as G
 use Lingua.Red (Syntax)
 use Lingua.Red.Syntax.*
@@ -46,16 +37,14 @@ use Part.*
 
 -- A tree, read to write one whose kinds `conv` says.
 @pub fun sourceWith (conv : k -> j) (g : Green k) : Origin k j =
-  Origin
-    {
-      tree = g,
-      toks = V.toArray (V.filter (\i -> isTokenAt g i) (V.range 0 (slots g))),
-      conv = conv
-    }
+  Origin {
+    tree = g,
+    toks = V.toArray (V.filter (\i -> isTokenAt g i) (V.range 0 (slots g))),
+    conv = conv
+  }
 
 -- The source a node of it is in.
-@pub fun sourceOf (s : Syntax k) : Origin k k =
-  match s with | Syntax g _ -> source g
+@pub fun sourceOf (s : Syntax k) : Origin k k = match s with | Syntax g _ -> source g
 
 @pub fun sourceOfWith (conv : k -> j) (s : Syntax k) : Origin k j =
   match s with | Syntax g _ -> sourceWith conv g
@@ -64,11 +53,9 @@ use Part.*
 @pub fun kept (s : Syntax k) : Part j =
   match s with | Syntax g i -> Kept i (startAt g i) (endAt g i)
 
-@pub fun from (p : Part j) : Int =
-  match p with | Kept _ a _ -> a | Made _ a _ -> a
+@pub fun from (p : Part j) : Int = match p with | Kept _ a _ -> a | Made _ a _ -> a
 
-@pub fun to (p : Part j) : Int =
-  match p with | Kept _ _ b -> b | Made _ _ b -> b
+@pub fun to (p : Part j) : Int = match p with | Kept _ _ b -> b | Made _ _ b -> b
 
 -- The piece as a tree of its own.
 @pub fun green (src : Origin k j) (p : Part j) : Green j =
@@ -92,20 +79,15 @@ use Part.*
 @pub fun childrenOf (src : Origin k j) (p : Part j) : [Part j] =
   match p with
   | Kept i _ _ ->
-      V.map
-        (\c -> Kept c (startAt src.tree c) (endAt src.tree c))
-        (childSlots src.tree i)
+      V.map (\c -> Kept c (startAt src.tree c) (endAt src.tree c)) (childSlots src.tree i)
   | Made g a _ ->
-      V.map
-        (\c -> Made (subtree g c) (a + startAt g c) (a + endAt g c))
-        (childSlots g 0)
+      V.map (\c -> Made (subtree g c) (a + startAt g c) (a + endAt g c)) (childSlots g 0)
 
 -- A field's pieces, as a node's children are listed: one, maybe one, or
 -- several.
 @pub fun one (p : Part j) : [Part j] = [p]
 
-@pub fun maybe (p : Maybe (Part j)) : [Part j] =
-  match p with | Just x -> [x] | None -> []
+@pub fun maybe (p : Maybe (Part j)) : [Part j] = match p with | Just x -> [x] | None -> []
 
 -- The source's tokens wholly between bytes `a` and `b`, kept.
 @pub fun tokensIn (src : Origin k j) (a : Int) (b : Int) : [Part j] =
@@ -119,9 +101,7 @@ use Part.*
       then lo
       else
         (let mid = (lo + hi) / 2 in
-          if startAt g (arrayGet src.toks mid) < a
-          then first (mid + 1) hi
-          else first lo mid)
+          if startAt g (arrayGet src.toks mid) < a then first (mid + 1) hi else first lo mid)
     in
     let rec take j acc =
       if j >= n then acc
@@ -130,7 +110,7 @@ use Part.*
         if endAt g i > b
         then acc
         else take (j + 1) (V.pushBack acc (Kept i (startAt g i) (endAt g i))) in
-        take (first 0 n) []
+    take (first 0 n) []
 
 -- A node of kind `k` over `children`, in the order given, and between two of
 -- them the source's tokens there: a node a pass builds of its fields. A node
@@ -147,17 +127,14 @@ use Part.*
               else
                 (match last with
                  | Just before ->
-                     (
-                       V.pushBack (V.append done (tokensIn src (to before) (from c))) c,
-                       Just c
-                     )
+                     (V.pushBack (V.append done (tokensIn src (to before) (from c))) c, Just c)
                  | None -> (V.pushBack done c, Just c)))
         ([], None)
         children) in
-    let placed = V.filter (\c -> not (isEmpty c)) filled in
-    let a = M.unwrapOr (0 - 1) (M.map from (V.get placed 0)) in
-    let b = M.unwrapOr (0 - 1) (M.map to (V.get placed (V.len placed - 1))) in
-    Made (G.node kind (V.map (green src) filled)) a b
+  let placed = V.filter (\c -> not (isEmpty c)) filled in
+  let a = M.unwrapOr (0 - 1) (M.map from (V.get placed 0)) in
+  let b = M.unwrapOr (0 - 1) (M.map to (V.get placed (V.len placed - 1))) in
+  Made (G.node kind (V.map (green src) filled)) a b
 
 -- Whether a piece covers nothing, and is nowhere.
 fun isEmpty (p : Part j) : Bool = from p < 0
@@ -175,18 +152,11 @@ fun isEmpty (p : Part j) : Bool = from p < 0
       let g = green src p in
       if G.isToken g then p
       else
-        let whole =
-          V.concat [before, V.filter (\c -> not (isEmpty c)) [p], after]
-        in
+        let whole = V.concat [before, V.filter (\c -> not (isEmpty c)) [p], after] in
         Made
           (G.node
             (G.kind g)
-            (V.concat
-              [
-                V.map (green src) before,
-                G.children g,
-                V.map (green src) after
-              ]))
+            (V.concat [V.map (green src) before, G.children g, V.map (green src) after]))
           (M.unwrapOr (0 - 1) (M.map from (V.get whole 0)))
           (M.unwrapOr (0 - 1) (M.map to (V.get whole (V.len whole - 1))))
 
@@ -198,9 +168,7 @@ fun isEmpty (p : Part j) : Bool = from p < 0
   | Syntax g i ->
       let pieces =
         V.map
-          (\c -> if isTokenAt g c
-            then Kept c (startAt g c) (endAt g c)
-            else f (Syntax g c))
+          (\c -> if isTokenAt g c then Kept c (startAt g c) (endAt g c) else f (Syntax g c))
           (childSlots g i)
       in
       let same =
@@ -209,13 +177,12 @@ fun isEmpty (p : Part j) : Bool = from p < 0
                  | (Just (Kept s _ _), Just c) -> s == c
                  | _ -> False)
           (V.range 0 (V.len pieces))
-      in
-      if same then Kept i (startAt g i) (endAt g i)
-      else
-        Made
-          (G.node (src.conv (kindAt g i)) (V.map (green src) pieces))
-          (startAt g i)
-          (endAt g i)
+      in if same then Kept i (startAt g i) (endAt g i)
+         else
+           Made
+             (G.node (src.conv (kindAt g i)) (V.map (green src) pieces))
+             (startAt g i)
+             (endAt g i)
 
 -- --- tests -------------------------------------------------------------------
 
@@ -259,9 +226,7 @@ def flat : Green String =
 
 @test fun aNodeOfNothingCoversTheNodeItStandsFor () =
   let unit = G.node "Unit" [token "(" "(", token ")" ")"] in
-  let src =
-    source (G.node "Params" [token "Name" "f", token "Space" " ", unit])
-  in
+  let src = source (G.node "Params" [token "Name" "f", token "Space" " ", unit]) in
   let empty = node src "Unit" [] in
   let a = assertEq (from empty) (0 - 1) "nowhere, until it is given a place" in
   assertEq
@@ -282,8 +247,7 @@ def flat : Green String =
   let later =
     \i c ->
       V.any
-        (\j ->
-          M.unwrapOr False (M.map (\w -> fst w (R.kindOf c)) (V.get wants j)))
+        (\j -> M.unwrapOr False (M.map (\w -> fst w (R.kindOf c)) (V.get wants j)))
         (V.range (i + 1) (V.len wants))
   in
   let rec field i at acc =
@@ -295,14 +259,8 @@ def flat : Green String =
           | None -> (got, j)
           | Just c ->
               if accepts (R.kindOf c)
-              then
-                (if many
-                  then take (j + 1) (V.pushBack got c)
-                  else (V.pushBack got c, j + 1))
-              else if later i c then (got, j)
-              else take (j + 1) got
-        in
-        (match take at [] with
-         | (got, next) -> field (i + 1) next (V.pushBack acc got))
-  in
-  if n == 0 then V.map (\w -> []) wants else field 0 0 []
+              then (if many then take (j + 1) (V.pushBack got c) else (V.pushBack got c, j + 1))
+              else if later i c then (got, j) else take (j + 1) got
+        in (match take at [] with
+            | (got, next) -> field (i + 1) next (V.pushBack acc got))
+  in if n == 0 then V.map (\w -> []) wants else field 0 0 []

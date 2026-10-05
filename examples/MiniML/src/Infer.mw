@@ -86,11 +86,7 @@ fun unify at a b =
       unify at b1 b2
   | (MType.Var r, t) -> bindVar at r t
   | (t, MType.Var r) -> bindVar at r t
-  | (x, y) ->
-      raise
-        (errorAt
-          at
-          "cannot unify ${typeName (frozen x)} with ${typeName (frozen y)}")
+  | (x, y) -> raise (errorAt at "cannot unify ${typeName (frozen x)} with ${typeName (frozen y)}")
 
 -- Write `t` into unbound variable `r` -- unless `t` is `r`, or holds it.
 -- What `t` holds is made no deeper than `r`: a `let` that cannot generalize
@@ -106,8 +102,7 @@ fun bindVar at r t =
 
 fun isVar id t =
   match t with
-  | MType.Var r ->
-      (match St.getRef r with | Unbound j _ -> j == id | Bound _ -> False)
+  | MType.Var r -> (match St.getRef r with | Unbound j _ -> j == id | Bound _ -> False)
   | _ -> False
 
 fun adjust at id level t =
@@ -117,8 +112,7 @@ fun adjust at id level t =
        | Unbound j l ->
            if j == id
            then raise (errorAt at "occurs check: a type would contain itself")
-           else if l > level then St.setRef r (Unbound j level)
-           else ()
+           else if l > level then St.setRef r (Unbound j level) else ()
        | Bound _ -> ())
   | MType.Fun a b ->
       let u = adjust at id level a in
@@ -131,8 +125,7 @@ fun generalize (c : Ctx s) t =
   match repr t with
   | MType.Var r ->
       (match St.getRef r with
-       | Unbound j l ->
-           if l > levelOf c then St.setRef r (Unbound j generic) else ()
+       | Unbound j l -> if l > levelOf c then St.setRef r (Unbound j generic) else ()
        | Bound _ -> ())
   | MType.Fun a b ->
       let u = generalize c a in
@@ -157,8 +150,7 @@ fun copy c t seen =
        | Bound _ -> (u, seen))
   | MType.Fun a b ->
       (match copy c a seen with
-       | (a2, s1) ->
-           (match copy c b s1 with | (b2, s2) -> (MType.Fun a2 b2, s2)))
+       | (a2, s1) -> (match copy c b s1 with | (b2, s2) -> (MType.Fun a2 b2, s2)))
   | _ -> (u, seen)
 
 -- `t` as it stands, every variable read out of its cell.
@@ -167,8 +159,7 @@ fun frozen t =
   | MType.Int -> Type.Int
   | MType.Bool -> Type.Bool
   | MType.Fun a b -> Type.Fun (frozen a) (frozen b)
-  | MType.Var r ->
-      (match St.getRef r with | Unbound j _ -> Type.Var j | Bound u -> frozen u)
+  | MType.Var r -> (match St.getRef r with | Unbound j _ -> Type.Var j | Bound u -> frozen u)
 
 -- `Core`, every expression holding its type as inference has it so far.
 lang! {
@@ -194,21 +185,14 @@ pass! {
     | Var { id } ->
         (match L.lookupAssoc id (envOf ctx) with
          | Just t -> Var { id = id, ty = instantiate ctx t }
-         | None ->
-             raise
-               (errorAt here "no type for binder ${show id}: it was not resolved"))
+         | None -> raise (errorAt here "no type for binder ${show id}: it was not resolved"))
     | Lam { param, later body } ->
         (let a = fresh ctx in
           let b = body (bind ctx param a) in
           Lam { param = param, body = b, ty = MType.Fun a (tyInferringExpr b) })
     | App { func, arg } ->
         (let out = fresh ctx in
-          let u =
-            unify
-              here
-              (tyInferringExpr func)
-              (MType.Fun (tyInferringExpr arg) out)
-          in
+          let u = unify here (tyInferringExpr func) (MType.Fun (tyInferringExpr arg) out) in
           App { func = func, arg = arg, ty = out })
     | Let { id, later value, later body } ->
         (let v = value (deeper ctx) in
@@ -223,44 +207,22 @@ pass! {
           let u = unify here tf (MType.Fun ta (tyInferringExpr v)) in
           let w = generalize ctx tf in
           let b = body (bind ctx id tf) in
-          LetRec
-            {
-              id = id,
-              param = param,
-              value = v,
-              body = b,
-              ty = tyInferringExpr b
-            })
+          LetRec { id = id, param = param, value = v, body = b, ty = tyInferringExpr b })
     | If { cond, yes, no } ->
-        (let u =
-          unify (metaInferringExpr cond) (tyInferringExpr cond) MType.Bool
-in
-          let w =
-            unify
-              (metaInferringExpr no)
-              (tyInferringExpr yes)
-              (tyInferringExpr no)
-          in
+        (let u = unify (metaInferringExpr cond) (tyInferringExpr cond) MType.Bool in
+          let w = unify (metaInferringExpr no) (tyInferringExpr yes) (tyInferringExpr no) in
           If { cond = cond, yes = yes, no = no, ty = tyInferringExpr yes })
-  | Prim { op, args } ->
-      (if V.len args != 2
-        then raise (errorAt here "`${op}` wants two operands")
-        else
-          let u =
-            V.foldl
-                (\acc a ->
-                  unify (metaInferringExpr a) (tyInferringExpr a) MType.Int)
-                ()
-                args
-          in
-            Prim
-              {
-                op = op,
-                args = args,
-                ty = if V.elem op ["+", "-", "*", "/"]
-                     then MType.Int
-                     else MType.Bool
-              })
+    | Prim { op, args } ->
+        (if V.len args != 2
+          then raise (errorAt here "`${op}` wants two operands")
+          else
+            let u =
+              V.foldl (\acc a -> unify (metaInferringExpr a) (tyInferringExpr a) MType.Int) () args
+            in Prim {
+              op = op,
+              args = args,
+              ty = if V.elem op ["+", "-", "*", "/"] then MType.Int else MType.Bool
+            })
 }
 
 -- A type the tree holds is a cell inference may have written into since the
@@ -270,16 +232,12 @@ pass! {
     | Int { value, ty } -> Int { value = value, ty = frozen ty }
     | Bool { value, ty } -> Bool { value = value, ty = frozen ty }
     | Var { id, ty } -> Var { id = id, ty = frozen ty }
-    | Lam { param, body, ty } ->
-        Lam { param = param, body = body, ty = frozen ty }
+    | Lam { param, body, ty } -> Lam { param = param, body = body, ty = frozen ty }
     | App { func, arg, ty } -> App { func = func, arg = arg, ty = frozen ty }
-    | Let { id, value, body, ty } ->
-        Let { id = id, value = value, body = body, ty = frozen ty }
+    | Let { id, value, body, ty } -> Let { id = id, value = value, body = body, ty = frozen ty }
     | LetRec { id, param, value, body, ty } ->
-        LetRec
-          { id = id, param = param, value = value, body = body, ty = frozen ty }
-    | If { cond, yes, no, ty } ->
-        If { cond = cond, yes = yes, no = no, ty = frozen ty }
+        LetRec { id = id, param = param, value = value, body = body, ty = frozen ty }
+    | If { cond, yes, no, ty } -> If { cond = cond, yes = yes, no = no, ty = frozen ty }
     | Prim { op, args, ty } -> Prim { op = op, args = args, ty = frozen ty }
 }
 
@@ -294,8 +252,7 @@ fun children (a : TypedArena) (e : TypedExpr) : [TypedExpr] =
   | TypedExprKind.Lam -> [typedExprLamBody a e]
   | TypedExprKind.Let -> [typedExprLetValue a e, typedExprLetBody a e]
   | TypedExprKind.LetRec -> [typedExprLetRecValue a e, typedExprLetRecBody a e]
-  | TypedExprKind.If ->
-      [typedExprIfCond a e, typedExprIfYes a e, typedExprIfNo a e]
+  | TypedExprKind.If -> [typedExprIfCond a e, typedExprIfYes a e, typedExprIfNo a e]
   | _ -> []
 
 -- The expression an elaborated program is: its root. An elaboration is the
@@ -304,8 +261,7 @@ fun children (a : TypedArena) (e : TypedExpr) : [TypedExpr] =
 @pub fun typedExpr (t : TypedProgram) : TypedExpr = typedRoot t
 
 -- The type an elaborated program has.
-@pub fun programType (t : TypedProgram) : Type =
-  tyTypedExpr (typedArena t) (typedExpr t)
+@pub fun programType (t : TypedProgram) : Type = tyTypedExpr (typedArena t) (typedExpr t)
 
 -- A program elaborated -- every expression in it with its type -- or why it
 -- has none, where. Every cell is made and written inside the `runSt`, and
@@ -340,8 +296,7 @@ fun thawing c t seen =
   | Type.Bool -> (MType.Bool, seen)
   | Type.Fun a b ->
       (match thawing c a seen with
-       | (a2, s1) ->
-           (match thawing c b s1 with | (b2, s2) -> (MType.Fun a2 b2, s2)))
+       | (a2, s1) -> (match thawing c b s1 with | (b2, s2) -> (MType.Fun a2 b2, s2)))
   | Type.Var n ->
       (match V.find (\p -> fst p == n) seen with
        | Just p -> (snd p, seen)
@@ -351,8 +306,7 @@ fun genericVar c =
   match fresh c with
   | MType.Var r ->
       (match St.getRef r with
-       | Unbound j _ ->
-           (let u = St.setRef r (Unbound j generic) in MType.Var r)
+       | Unbound j _ -> (let u = St.setRef r (Unbound j generic) in MType.Var r)
        | Bound _ -> MType.Var r)
   | t -> t
 
@@ -368,8 +322,7 @@ fun genericVar c =
   let a = typedArena t in
   V.map
     (\x -> match metaTypedExpr a x with
-           | Meta i j ->
-               "${S.trim (stringSlice src i j)} : ${typeName (tyTypedExpr a x)}")
+           | Meta i j -> "${S.trim (stringSlice src i j)} : ${typeName (tyTypedExpr a x)}")
     (subexpressions a (typedExpr t))
 
 -- --- tests -------------------------------------------------------------------
@@ -381,11 +334,7 @@ use MiniML.Compiler (typeOfSource, annotatedSource)
 -- MiniML's own tests.
 
 @test fun infersSimpleTypes () =
-  let got =
-    V.map
-      typeOfSource
-      ["1 + 1", "1 < 2", "fun x -> x + 1", "if true then 1 else 2"]
-  in
+  let got = V.map typeOfSource ["1 + 1", "1 < 2", "fun x -> x + 1", "if true then 1 else 2"] in
   assertEq got [Ok "Int", Ok "Bool", Ok "(Int -> Int)", Ok "Int"] "ground types"
 
 @test fun infersPolymorphicIdentity () =
@@ -399,8 +348,7 @@ use MiniML.Compiler (typeOfSource, annotatedSource)
 
 @test fun lambdaIsNotGeneralized () =
   assertEq
-    (isErr
-      (typeOfSource "(fun id -> if id true then id 1 else 2) (fun x -> x)"))
+    (isErr (typeOfSource "(fun id -> if id true then id 1 else 2) (fun x -> x)"))
     True
     "lambda-bound names are monomorphic"
 
@@ -411,18 +359,14 @@ use MiniML.Compiler (typeOfSource, annotatedSource)
     "self-application"
 
 @test fun mismatchIsReported () =
-  assertEq
-    (typeOfSource "1 + true")
-    (Err "cannot unify Bool with Int")
-    "adding a bool"
+  assertEq (typeOfSource "1 + true") (Err "cannot unify Bool with Int") "adding a bool"
 
 @test fun unboundIsReported () =
   assertEq (typeOfSource "x + 1") (Err "unbound variable: x") "unbound"
 
 @test fun recursiveFunctionsType () =
   assertEq
-    (typeOfSource
-      "let rec fact n = if n < 2 then 1 else n * fact (n - 1) in fact 5")
+    (typeOfSource "let rec fact n = if n < 2 then 1 else n * fact (n - 1) in fact 5")
     (Ok "Int")
     "factorial"
 
@@ -433,10 +377,7 @@ use MiniML.Compiler (typeOfSource, annotatedSource)
     "g's type is f's"
 
 @test fun aGenuinelyLocalLetIsGeneralized () =
-  assertEq
-    (typeOfSource "let g = fun x -> x in if g true then g 1 else 2")
-    (Ok "Int")
-    "local"
+  assertEq (typeOfSource "let g = fun x -> x in if g true then g 1 else 2") (Ok "Int") "local"
 
 -- The elaboration.
 

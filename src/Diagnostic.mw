@@ -62,14 +62,11 @@ use Nettle.Write (render)
   match d with
   | Diagnostic s m w ls ns -> Diagnostic s m w ls (V.pushBack ns note)
 
-@pub fun severity (d : Diagnostic) : Severity =
-  match d with | Diagnostic s _ _ _ _ -> s
+@pub fun severity (d : Diagnostic) : Severity = match d with | Diagnostic s _ _ _ _ -> s
 
-@pub fun message (d : Diagnostic) : String =
-  match d with | Diagnostic _ m _ _ _ -> m
+@pub fun message (d : Diagnostic) : String = match d with | Diagnostic _ m _ _ _ -> m
 
-@pub fun whereAt (d : Diagnostic) : Meta =
-  match d with | Diagnostic _ _ w _ _ -> w
+@pub fun whereAt (d : Diagnostic) : Meta = match d with | Diagnostic _ _ w _ _ -> w
 
 @pub fun isError (d : Diagnostic) : Bool = severity d == Severity.Error
 
@@ -87,8 +84,7 @@ use Nettle.Write (render)
             (match R.tokenAt at (R.root g) with
              | Just t -> R.range t
              | None -> (at, at))
-          in
-          errorAt (Meta (fst span) (snd span)) msg)
+          in errorAt (Meta (fst span) (snd span)) msg)
     errs
 
 -- --- from a pass -------------------------------------------------------------
@@ -130,16 +126,10 @@ use Nettle.Write (render)
 
 -- Whether what goes to standard output should be coloured.
 @pub fun coloured () : Bool ! { Process | e } =
-  isTerminal 1
-    and (match getEnv "NO_COLOR" with | Just v -> v == "" | None -> True)
+  isTerminal 1 and (match getEnv "NO_COLOR" with | Just v -> v == "" | None -> True)
 
 fun drawn color path text ds =
-  S.join
-    ""
-    (V.map
-      (\d ->
-        render (nettle color path d) (NS.namedSource path (NS.source text)))
-      ds)
+  S.join "" (V.map (\d -> render (nettle color path d) (NS.namedSource path (NS.source text))) ds)
 
 -- The Nettle report for `d`: its message at the top, its span underlined --
 -- with the message beside it too when nothing else is labelled, since Nettle,
@@ -151,13 +141,9 @@ fun nettle color path d =
   | Diagnostic s msg at labels notes ->
       let span = \m -> (match m with | Meta a b -> NS.spanIn path a b) in
       let primary =
-        if V.isEmpty labels
-        then N.labelMessage msg (N.label (span at))
-        else N.label (span at)
+        if V.isEmpty labels then N.labelMessage msg (N.label (span at)) else N.label (span at)
       in
-      let others =
-        V.map (\l -> N.labelMessage (snd l) (N.label (span (fst l)))) labels
-      in
+      let others = V.map (\l -> N.labelMessage (snd l) (N.label (span (fst l)))) labels in
       N.build (kindOf s) (span at)
         |> N.withConfig (N.config |> N.withColor color |> N.withIndexType IndexType.Byte)
         |> N.withMessage msg
@@ -192,8 +178,7 @@ use Std.Test (assertEq)
         let a = say (errorAt noMeta "one") in
         let b = say (warningAt noMeta "two") in
         3)
-  in
-  assertEq
+  in assertEq
     (match got with | (x, ds) -> (x, V.map message ds))
     (3, ["one", "two"])
     "the answer, and both, in order"

@@ -180,8 +180,7 @@ data Chain k = Chain Int [k]
 -- the only ways to a thread: a program that calls neither has none.
 @pub fun parallel (db : Db k v) : Db k v =
   match db with
-  | Db.Incremental (Live r i s w c l f _) ->
-      Db.Incremental (Live r i s w c l f inParallel)
+  | Db.Incremental (Live r i s w c l f _) -> Db.Incremental (Live r i s w c l f inParallel)
   | Db.Batch (Once i m c l f _) -> Db.Batch (Once i m c l f onceOnThreads)
 
 -- `parallel db`, and in a batch the threads read the inputs from one compact
@@ -230,8 +229,7 @@ fun put (db : Live k v) (key : k) (entry : Entry k v) : () ! { Stm | e } =
   | Db.Incremental live -> revisionLive live
   | Db.Batch _ -> 0
 
-fun revisionLive (db : Live k v) : Int ! { Thread | e } =
-  T.readTVarIO (revisionVar db)
+fun revisionLive (db : Live k v) : Int ! { Thread | e } = T.readTVarIO (revisionVar db)
 
 -- Set input `key` to `value`. Setting it to what it already holds changes
 -- nothing, and starts no revision. A batch setting one to something new
@@ -323,12 +321,12 @@ fun onceGet (o : Once k v) (stack : [k]) (key : k) : Result
                 fetchAll ks resume -> (match (onceSeveral o) o inner ks with | Err e -> Err e | Ok xs -> resume xs),
                 return x -> Ok x
               } in
-              match attempt with
-              | Err e -> Err e
-              | Ok None -> Err (Unset key)
-              | Ok (Just x) ->
-                  let u = keep o key x in
-                  Ok x
+            match attempt with
+            | Err e -> Err e
+            | Ok None -> Err (Unset key)
+            | Ok (Just x) ->
+                let u = keep o key x in
+                Ok x
 
 fun keep (o : Once k v) (key : k) (x : v) : () ! { Mut | e } =
   let u = setRef (onceMemo o) (HashMap.insert key x (getRef (onceMemo o))) in
@@ -358,13 +356,7 @@ fun onceOnThreads (o : Once k v) (stack : [k]) (keys : [k]) : Result
     stack
     keys
     (\() ->
-      Once
-        (newRef ins)
-        (newRef HashMap.empty)
-        (newRef None)
-        (newRef [])
-        compute
-        onceOnThreads)
+      Once (newRef ins) (newRef HashMap.empty) (newRef None) (newRef []) compute onceOnThreads)
 
 -- The same, the inputs compacted once and each thread handed a pointer to
 -- them rather than a copy.
@@ -390,27 +382,22 @@ fun onceSpread (o : Once k v) (stack : [k]) (keys : [k])
     (own : () -> Once k v ! { Mut }) : Result (QueryError k)
     [v] ! { Thread, Mut | e } =
   let known =
-    \k ->
-      HashMap.member k (getRef (onceInputs o))
-        or HashMap.member k (getRef (onceMemo o))
+    \k -> HashMap.member k (getRef (onceInputs o)) or HashMap.member k (getRef (onceMemo o))
   in
   let todo = V.filter (\k -> not (known k)) (noting [] keys) in
-  let tasks =
-    V.map (\k -> Thread.spawn (\() -> onceGet (own ()) stack k)) todo
-  in
+  let tasks = V.map (\k -> Thread.spawn (\() -> onceGet (own ()) stack k)) todo in
   let results = Thread.awaitAll tasks in
   let failed =
     V.foldl
       (\acc i -> match (V.get todo i, V.get results i) with
                  | (Just k, Just (Ok x)) -> (let u = keep o k x in acc)
-                 | (_, Just (Err e)) ->
-                     (match acc with | None -> Just e | _ -> acc)
+                 | (_, Just (Err e)) -> (match acc with | None -> Just e | _ -> acc)
                  | _ -> acc)
       None
       (V.range 0 (V.len todo)) in
-    match failed with
-    | Just e -> Err e
-    | None -> onceInTurn o stack keys
+  match failed with
+  | Just e -> Err e
+  | None -> onceInTurn o stack keys
 
 -- The inputs as a compact region, made the first time a thread needs them.
 fun sharedInputs (o : Once k v) : Compact (HashMap k v) ! { Mut | e } =
@@ -473,14 +460,8 @@ fun refresh (db : Live k v) (ch : Chain k) (key : k) : Result (QueryError k)
        | Ok True ->
            let u =
              T.atomically
-               (\() ->
-                 put
-                   db
-                   key
-                   (Computed
-                     (Memo x changed (T.readTVar (revisionVar db)) deps)))
-           in
-           Ok (x, changed)
+               (\() -> put db key (Computed (Memo x changed (T.readTVar (revisionVar db)) deps)))
+           in Ok (x, changed)
        | Ok False -> claim db ch key (Just (x, changed)))
   | Unchecked x ins ->
       -- Read back from a snapshot: it stands if every input it read has the
@@ -500,17 +481,8 @@ fun refresh (db : Live k v) (ch : Chain k) (key : k) : Result (QueryError k)
         let u =
           T.atomically
             (\() ->
-              put
-                db
-                key
-                (Computed
-                  (Memo
-                    x
-                    changed
-                    (T.readTVar (revisionVar db))
-                    (V.map fst ins))))
-        in
-        Ok (x, changed)
+              put db key (Computed (Memo x changed (T.readTVar (revisionVar db)) (V.map fst ins))))
+        in Ok (x, changed)
       else claim db ch key (Just (x, 0))
 
 -- Whether none of `deps` has changed since revision `since`, bringing each up
@@ -523,10 +495,7 @@ fun unchangedSince (db : Live k v) (ch : Chain k) (since : Int) (deps : [k])
   | Just d ->
       match refresh db ch d with
       | Err e -> Err e
-      | Ok got ->
-          if snd got > since
-          then Ok False
-          else unchangedSince db ch since (V.drop deps 1)
+      | Ok got -> if snd got > since then Ok False else unchangedSince db ch since (V.drop deps 1)
 
 -- What a chain found when it went to take a key: that it has it, that
 -- another chain is working it out, or that another has worked it out since
@@ -554,10 +523,10 @@ fun claim (db : Live k v) (ch : Chain k) (key : k) (old : Maybe (v, Int))
         | _ ->
             let u = put db key (Running (chainId ch) old) in
             Took) in
-      match taken with
-      | Waits owner -> waitFor db ch key owner
-      | Settled -> refresh db ch key
-      | Took -> run db ch key old
+    match taken with
+    | Waits owner -> waitFor db ch key owner
+    | Settled -> refresh db ch key
+    | Took -> run db ch key old
 
 -- Wait for another chain to finish `key` -- unless the wait would close a
 -- loop of chains waiting for one another, which no amount of waiting ends.
@@ -571,19 +540,18 @@ fun waitFor (db : Live k v) (ch : Chain k) (key : k) (owner : Int) : Result
         let u =
           T.modifyTVar
             (waitsVar db)
-            (\w ->
-              HashMap.insert me (V.pushBack (HashMap.getOr [] me w) owner) w)
+            (\w -> HashMap.insert me (V.pushBack (HashMap.getOr [] me w) owner) w)
         in
         False) in
-    if loops then Err (Cycle (V.pushBack (chainStack ch) key))
-    else
-      let u =
-        T.atomically (\() ->
-          match slot db key with
-          | Just (Running _ _) -> T.retry ()
-          | _ -> ()) in
-        let w = unwait db me owner in
-        refresh db ch key
+  if loops then Err (Cycle (V.pushBack (chainStack ch) key))
+  else
+    let u =
+      T.atomically (\() ->
+        match slot db key with
+        | Just (Running _ _) -> T.retry ()
+        | _ -> ()) in
+    let w = unwait db me owner in
+    refresh db ch key
 
 fun unwait (db : Live k v) (me : Int) (other : Int) : () ! { Thread | e } =
   T.atomically
@@ -598,11 +566,10 @@ fun dropOne (x : Int) (xs : [Int]) : [Int] =
     | (out, True) -> (V.pushBack out y, True)
     | (out, False) ->
         if y == x then (out, True) else (V.pushBack out y, False) in
-        fst (V.foldl step ([], False) xs)
+  fst (V.foldl step ([], False) xs)
 
 -- Whether chain `from` waits, through any number of others, for `to`.
-fun reaches (waits : HashMap Int [Int]) (from : Int) (to : Int) : Bool =
-  search waits [from] [] to
+fun reaches (waits : HashMap Int [Int]) (from : Int) (to : Int) : Bool = search waits [from] [] to
 
 fun search waits frontier seen to =
   match V.get frontier 0 with
@@ -642,36 +609,30 @@ fun run (db : Live k v) (ch : Chain k) (key : k) (old : Maybe (v, Int)) : Result
              resume (V.map fst got)),
       return x -> Ok x
     } in
-    let failed = \e ->
-      let u =
-        T.atomically
-          (\() -> T.modifyTVar (slotsVar db) (\m -> HashMap.delete key m))
-      in
-      Err e in
-      match attempt with
-      | Err e -> failed e
-      | Ok None -> failed (Unset key)
-      | Ok (Just x) ->
-          -- Read before the transaction: a `Ref` is no part of one, which may
-          -- run again.
-          let deps = getRef reads in
-          Ok
-          (T.atomically (\() ->
-            let now = T.readTVar (revisionVar db) in
-            let changed =
-              (match old with
-               | Just (y, c) -> if same y x then c else now
-               | None -> now)
-            in
-            let u = put db key (Computed (Memo x changed now deps)) in
-            let w = T.modifyTVar (logVar db) (\l -> V.pushBack l key) in
-            (x, changed)))
+  let failed = \e ->
+    let u = T.atomically (\() -> T.modifyTVar (slotsVar db) (\m -> HashMap.delete key m)) in
+    Err e in
+  match attempt with
+  | Err e -> failed e
+  | Ok None -> failed (Unset key)
+  | Ok (Just x) ->
+      -- Read before the transaction: a `Ref` is no part of one, which may
+      -- run again.
+      let deps = getRef reads in
+      Ok
+      (T.atomically (\() ->
+        let now = T.readTVar (revisionVar db) in
+        let changed =
+          (match old with
+           | Just (y, c) -> if same y x then c else now
+           | None -> now)
+        in
+        let u = put db key (Computed (Memo x changed now deps)) in
+        let w = T.modifyTVar (logVar db) (\l -> V.pushBack l key) in
+        (x, changed)))
 
 fun noting (read : [k]) (ks : [k]) : [k] =
-  V.foldl
-    (\acc k -> if V.any (\d -> same d k) acc then acc else V.pushBack acc k)
-    read
-    ks
+  V.foldl (\acc k -> if V.any (\d -> same d k) acc then acc else V.pushBack acc k) read ks
 
 -- Each of `keys`, one after another, in `ch`'s own chain.
 fun inTurn (db : Live k v) (ch : Chain k) (keys : [k]) : Result (QueryError k)
@@ -700,14 +661,10 @@ fun inParallel (db : Live k v) (ch : Chain k) (keys : [k]) : Result
           (\w ->
             HashMap.insert
               me
-              (V.append
-                (HashMap.getOr [] me w)
-                (V.map (\p -> chainId (snd p)) kids))
+              (V.append (HashMap.getOr [] me w) (V.map (\p -> chainId (snd p)) kids))
               w))
   in
-  let tasks =
-    V.map (\p -> Thread.spawn (\() -> refresh db (snd p) (fst p))) kids
-  in
+  let tasks = V.map (\p -> Thread.spawn (\() -> refresh db (snd p) (fst p))) kids in
   let results = Thread.awaitAll tasks in
   let w = V.foldl (\acc p -> unwait db me (chainId (snd p))) () kids in
   V.foldl
@@ -727,11 +684,7 @@ fun same (a : t) (b : t) : Bool = _primEq a b
 -- How a database's keys and answers are written down and read back: a key
 -- as a `Datum` -- `None` for one not kept -- an answer likewise, and back.
 @pub data Codec k v =
-  Codec
-    (k -> Maybe Datum)
-    (v -> Maybe Datum)
-    (Datum -> Maybe k)
-    (k -> Datum -> Maybe v)
+  Codec (k -> Maybe Datum) (v -> Maybe Datum) (Datum -> Maybe k) (k -> Datum -> Maybe v)
 
 -- What `db` has worked out, as text for `restore`: every answer checked this
 -- revision that `codec` can write, with the inputs it read and their
@@ -740,9 +693,7 @@ fun same (a : t) (b : t) : Bool = _primEq a b
 @pub fun snapshot (codec : Codec k v) (db : Db k v) : String ! { Thread | e } =
   match db with
   | Db.Incremental live -> snapshotLive codec live
-  | Db.Batch _ ->
-      Json.render
-        (Json.jObject [("lingua", Json.jInt 1), ("entries", Json.jArray [])])
+  | Db.Batch _ -> Json.render (Json.jObject [("lingua", Json.jInt 1), ("entries", Json.jArray [])])
 
 fun snapshotLive (codec : Codec k v) (db : Live k v) : String ! { Thread | e } =
   match codec with
@@ -758,8 +709,7 @@ fun snapshotLive (codec : Codec k v) (db : Live k v) : String ! { Thread | e } =
                 HashMap.empty
                 (T.readTVar (slotsVar db))
             ))
-      in
-      match state with
+      in match state with
       | (rev, inputs, slots) ->
           let entry = \key x ins ->
             match (encodeKey key, encodeValue x) with
@@ -770,37 +720,28 @@ fun snapshotLive (codec : Codec k v) (db : Live k v) : String ! { Thread | e } =
                            | Just d -> [(d, snd i)]
                            | None -> [])
                     ins
-                in
-                if V.len written == V.len ins
-                then [entryJson kd vd written]
-                else []
+                in if V.len written == V.len ins then [entryJson kd vd written] else []
             | _ -> [] in
-            let entries =
-              HashMap.foldl
-              (\acc key slot ->
-                match slot with
-                | Computed (Memo x _ checked deps) ->
-                    if checked == rev then
-                      V.append
-                        acc
-                        (entry
-                          key
-                          x
-                          (V.map
-                            (\i ->
-                              (
-                                i,
-                                hash (fst (HashMap.getOr (x, 0) i inputs))
-                              ))
-                            (inputsRead inputs slots deps)))
-                    else acc
-                | Stored x ins -> V.append acc (entry key x ins)
-                | Running _ _ -> acc)
-              []
-              slots in
-              Json.render
-                (Json.jObject
-                  [("lingua", Json.jInt 1), ("entries", Json.jArray entries)])
+          let entries =
+            HashMap.foldl
+            (\acc key slot ->
+              match slot with
+              | Computed (Memo x _ checked deps) ->
+                  if checked == rev then
+                    V.append
+                      acc
+                      (entry
+                        key
+                        x
+                        (V.map
+                          (\i -> (i, hash (fst (HashMap.getOr (x, 0) i inputs))))
+                          (inputsRead inputs slots deps)))
+                  else acc
+              | Stored x ins -> V.append acc (entry key x ins)
+              | Running _ _ -> acc)
+            []
+            slots in
+          Json.render (Json.jObject [("lingua", Json.jInt 1), ("entries", Json.jArray entries)])
 
 -- Every input `deps` read, through every query in between.
 fun inputsRead (inputs : HashMap k (v, Int)) (slots : HashMap k (Entry k v))
@@ -820,12 +761,7 @@ fun walk inputs slots todo seen out =
         | Just (Computed (Memo _ _ _ deps)) ->
             walk inputs slots (V.append rest deps) (V.pushBack seen k) out
         | Just (Stored _ ins) ->
-            walk
-              inputs
-              slots
-              (V.append rest (V.map fst ins))
-              (V.pushBack seen k)
-              out
+            walk inputs slots (V.append rest (V.map fst ins)) (V.pushBack seen k) out
         | _ -> walk inputs slots rest (V.pushBack seen k) out
 
 fun entryJson (kd : Datum) (vd : Datum) (ins : [(Datum, Int)]) : Json =
@@ -834,8 +770,7 @@ fun entryJson (kd : Datum) (vd : Datum) (ins : [(Datum, Int)]) : Json =
       ("value", datumJson vd),
       (
         "inputs",
-        Json.jArray
-          (V.map (\i -> Json.jArray [datumJson (fst i), Json.jInt (snd i)]) ins)
+        Json.jArray (V.map (\i -> Json.jArray [datumJson (fst i), Json.jInt (snd i)]) ins)
       ) ]
 
 -- Read back into `db` what `snapshot` wrote: how many answers it kept. Each
@@ -862,8 +797,7 @@ fun restoreLive (codec : Codec k v) (db : Live k v) (text : String)
                          | Just s -> [s]
                          | None -> [])
                   es
-              in
-              T.atomically (\() ->
+              in T.atomically (\() ->
                 let u =
                   V.foldl
                     (\acc s -> match s with
@@ -873,8 +807,7 @@ fun restoreLive (codec : Codec k v) (db : Live k v) (text : String)
                                    else put db k (Stored x ins))
                     ()
                     read
-                in
-                  Ok (V.len read))
+                in Ok (V.len read))
           | _ -> Err "not a snapshot: it has no entries"
 
 fun storedOf decodeKey decodeValue (e : Json) =
@@ -898,8 +831,7 @@ fun inputOf decodeKey (j : Json) =
   match (Json.index 0 j, Json.index 1 j) with
   | (Just kj, Just (Json.Int h)) ->
       (match jsonDatum kj with
-       | Just kd ->
-           (match decodeKey kd with | Just k -> Just (k, h) | None -> None)
+       | Just kd -> (match decodeKey kd with | Just k -> Just (k, h) | None -> None)
        | None -> None)
   | _ -> None
 
@@ -925,14 +857,10 @@ fun allOf (xs : [Maybe a]) : Maybe [a] =
       Json.jObject
         [(
           "rec",
-          Json.jArray
-            (V.map
-              (\f -> Json.jArray [Json.jString (fst f), datumJson (snd f)])
-              fs)
+          Json.jArray (V.map (\f -> Json.jArray [Json.jString (fst f), datumJson (snd f)]) fs)
         )]
   | Datum.Tag t xs ->
-      Json.jObject
-        [("tag", Json.jString t), ("args", Json.jArray (V.map datumJson xs))]
+      Json.jObject [("tag", Json.jString t), ("args", Json.jArray (V.map datumJson xs))]
   | Datum.Code _ -> Json.jNull ()
 
 @pub fun jsonDatum (j : Json) : Maybe Datum =
@@ -952,8 +880,7 @@ fun allOf (xs : [Maybe a]) : Maybe [a] =
       | (Just (Json.String t), Just (Json.Array xs), _, _, _) ->
           M.map (\ys -> Datum.Tag t ys) (allOf (V.map jsonDatum xs))
       | (_, _, Just (Json.String s), _, _) -> Just (Datum.Sym s)
-      | (_, _, _, Just (Json.Array ps), _) ->
-          M.map Datum.Rec (allOf (V.map fieldOf ps))
+      | (_, _, _, Just (Json.Array ps), _) -> M.map Datum.Rec (allOf (V.map fieldOf ps))
       | (_, _, _, _, Just f) -> M.map Datum.Float (Json.asFloat f)
       | _ -> None)
   | _ -> None
@@ -1050,8 +977,7 @@ fun sheet (k : K) : Maybe Val ! { Fetch K Val | e } =
   | K.Len i -> computedAs Val.Num (stringByteLength (cell i))
   | K.Total -> computedAs Val.Num (len 1 + len 2)
   | K.Loop i -> computedAs Val.Num (num (fetch (K.Loop (1 - i))) + 1)
-  | K.Lens is ->
-      (let xs = fetchAll (V.map K.Len is) in computedAs Val.Nums (V.map num xs))
+  | K.Lens is -> (let xs = fetchAll (V.map K.Len is) in computedAs Val.Nums (V.map num xs))
   -- `Left` and `Right` read each other, and `Both` asks for both at once:
   -- two threads, each waiting for the other.
   | K.Both ->
@@ -1071,10 +997,7 @@ fun filled () =
 @test fun aQueryReadsWhatItFetches () =
   let db = filled () in
   let a = assertEq (toResult (\() -> total db)) (Ok 5) "3 + 2" in
-  assertEq
-    (takeLog db)
-    [K.Len 1, K.Len 2, K.Total]
-    "each computed once, what it read first"
+  assertEq (takeLog db) [K.Len 1, K.Len 2, K.Total] "each computed once, what it read first"
 
 @test fun askingAgainComputesNothing () =
   let db = filled () in
@@ -1089,10 +1012,7 @@ fun filled () =
   let b = takeLog db in
   let c = set db (K.Cell 1) (Val.Text "abcd") in
   let d = assertEq (toResult (\() -> total db)) (Ok 6) "4 + 2" in
-  assertEq
-    (takeLog db)
-    [K.Len 1, K.Total]
-    "the second cell's length is still right"
+  assertEq (takeLog db) [K.Len 1, K.Total] "the second cell's length is still right"
 
 @test fun theSameLengthStopsAtTheLength () =
   let db = filled () in
@@ -1111,10 +1031,7 @@ fun filled () =
 @test fun anUnsetInputIsSaidToBe () =
   let db = newDb sheet in
   let a = set db (K.Cell 1) (Val.Text "abc") in
-  assertEq
-    (toResult (\() -> total db))
-    (Err (Unset (K.Cell 2)))
-    "the second cell"
+  assertEq (toResult (\() -> total db)) (Err (Unset (K.Cell 2))) "the second cell"
 
 @test fun aCycleNamesItsKeys () =
   let db = newDb sheet in
@@ -1140,11 +1057,7 @@ fun filled () =
       (toResult (\() -> V.map num (getAll db [K.Total, K.Len 2, K.Len 1])))
       (Ok [5, 2, 3])
       "every answer"
-  in
-  assertEq
-    (takeLog db)
-    [K.Len 1, K.Len 2, K.Total]
-    "the total first, and the lengths it read"
+  in assertEq (takeLog db) [K.Len 1, K.Len 2, K.Total] "the total first, and the lengths it read"
 
 @test fun aCycleThroughSeveralAtOnceIsOneInTurn () =
   let db = newDb sheet in
@@ -1161,27 +1074,17 @@ fun filled () =
   let db = parallel (filled ()) in
   let a =
     assertEq
-      (toResult
-        (\() -> V.map num (getAll db [K.Len 1, K.Len 2, K.Len 1, K.Total])))
+      (toResult (\() -> V.map num (getAll db [K.Len 1, K.Len 2, K.Len 1, K.Total])))
       (Ok [3, 2, 3, 5])
       "every answer"
   in
   let ran = takeLog db in
-  let b =
-    assertEq
-      (V.len (V.filter (\k -> k == K.Len 1) ran))
-      1
-      "the first length once"
-  in
+  let b = assertEq (V.len (V.filter (\k -> k == K.Len 1) ran)) 1 "the first length once" in
   assertEq (V.len ran) 3 "and each of the three keys once"
 
 @test fun aQueryCanFetchSeveralAtOnce () =
   let db = parallel (filled ()) in
-  let a =
-    assertEq
-      (toResult (\() -> get db (K.Lens [1, 2])))
-      (Ok (Val.Nums [3, 2]))
-      "both lengths"
+  let a = assertEq (toResult (\() -> get db (K.Lens [1, 2]))) (Ok (Val.Nums [3, 2])) "both lengths"
   in
   let b = takeLog db in
   let c = set db (K.Cell 2) (Val.Text "defg") in
@@ -1190,8 +1093,7 @@ fun filled () =
       (toResult (\() -> get db (K.Lens [1, 2])))
       (Ok (Val.Nums [3, 4]))
       "and what they read is noted"
-  in
-  assertEq (takeLog db) [K.Len 2, K.Lens [1, 2]] "only the changed length ran"
+  in assertEq (takeLog db) [K.Len 2, K.Lens [1, 2]] "only the changed length ran"
 
 @test fun twoThreadsWaitingForEachOtherAreACycle () =
   -- However the threads are scheduled, `Left` and `Right` cannot both be
@@ -1211,15 +1113,10 @@ def codec : Codec K Val =
     (\x -> match x with | Val.Num n -> tagged "num" n | _ -> untagged ())
     (\d -> match untag d with
            | Tagged q x ->
-               if q == "cell"
-               then readAs K.Cell x
-               else if q == "len"
-               then readAs K.Len x
-               else None
+               if q == "cell" then readAs K.Cell x else if q == "len" then readAs K.Len x else None
            | Untagged -> None)
     (\k d -> match (k, untag d) with
-             | (K.Len _, Tagged q x) ->
-                 (if q == "num" then readAs Val.Num x else None)
+             | (K.Len _, Tagged q x) -> (if q == "num" then readAs Val.Num x else None)
              | _ -> None)
 
 @test fun aSnapshotIsReadBackWithoutRunningAnything () =
@@ -1227,18 +1124,8 @@ def codec : Codec K Val =
   let a = toResult (\() -> total db) in
   let text = snapshot codec db in
   let db2 = filled () in
-  let b =
-    assertEq
-      (restore codec db2 text)
-      (Ok 2)
-      "both lengths kept; the total is not written"
-  in
-  let c =
-    assertEq
-      (toResult (\() -> get db2 (K.Len 1)))
-      (Ok (Val.Num 3))
-      "the first length"
-  in
+  let b = assertEq (restore codec db2 text) (Ok 2) "both lengths kept; the total is not written" in
+  let c = assertEq (toResult (\() -> get db2 (K.Len 1))) (Ok (Val.Num 3)) "the first length" in
   assertEq (takeLog db2) [] "read back, not run"
 
 @test fun aSnapshotWhoseInputChangedIsRunAgain () =
@@ -1250,10 +1137,7 @@ def codec : Codec K Val =
   let c = set db2 (K.Cell 2) (Val.Text "de") in
   let d = restore codec db2 text in
   let e = assertEq (toResult (\() -> total db2)) (Ok 7) "5 + 2" in
-  assertEq
-    (takeLog db2)
-    [K.Len 1, K.Total]
-    "the first length again; the second as it was read back"
+  assertEq (takeLog db2) [K.Len 1, K.Total] "the first length again; the second as it was read back"
 
 -- A batch.
 
@@ -1267,18 +1151,14 @@ fun batch () =
   let db = batch () in
   let a = assertEq (toResult (\() -> total db)) (Ok 5) "3 + 2" in
   let b =
-    assertEq
-      (toResult (\() -> get db (K.Lens [1, 2])))
-      (Ok (Val.Nums [3, 2]))
-      "several at once"
+    assertEq (toResult (\() -> get db (K.Lens [1, 2]))) (Ok (Val.Nums [3, 2])) "several at once"
   in
   let c =
     assertEq
       (toResult (\() -> V.map num (getAll db [K.Len 1, K.Total])))
       (Ok [3, 5])
       "and from outside"
-  in
-  assertEq (revision db) 0 "with no revisions"
+  in assertEq (revision db) 0 "with no revisions"
 
 @test fun aBatchWorksEachKeyOutOnce () =
   let db = batch () in
@@ -1305,12 +1185,7 @@ fun batch () =
       "a cycle, key by key"
   in
   let b = set db (K.Cell 1) (Val.Text "abc") in
-  let c =
-    assertEq
-      (toResult (\() -> total db))
-      (Err (Unset (K.Cell 2)))
-      "an input never set"
-  in
+  let c = assertEq (toResult (\() -> total db)) (Err (Unset (K.Cell 2))) "an input never set" in
   let d = set db (K.Cell 2) (Val.Text "de") in
   assertEq (toResult (\() -> total db)) (Ok 5) "and is usable after"
 
@@ -1318,8 +1193,7 @@ fun batch () =
   let db = parallel (batch ()) in
   let a =
     assertEq
-      (toResult
-        (\() -> V.map num (getAll db [K.Len 1, K.Len 2, K.Len 1, K.Total])))
+      (toResult (\() -> V.map num (getAll db [K.Len 1, K.Len 2, K.Len 1, K.Total])))
       (Ok [3, 2, 3, 5])
       "every answer, a key asked twice too"
   in
@@ -1328,8 +1202,7 @@ fun batch () =
       (toResult (\() -> get db (K.Lens [1, 2])))
       (Ok (Val.Nums [3, 2]))
       "and a query that asks for several"
-  in
-  assertEq
+  in assertEq
     (toResult (\() -> get db K.Both))
     (Err (Cycle [K.Both, K.Left, K.Right, K.Left]))
     "a cycle on a thread is still one"
@@ -1338,8 +1211,7 @@ fun batch () =
   let db = shared (batch ()) in
   let a =
     assertEq
-      (toResult
-        (\() -> V.map num (getAll db [K.Len 1, K.Len 2, K.Len 1, K.Total])))
+      (toResult (\() -> V.map num (getAll db [K.Len 1, K.Len 2, K.Len 1, K.Total])))
       (Ok [3, 2, 3, 5])
       "every answer"
   in
@@ -1359,7 +1231,5 @@ fun batch () =
   let db = batch () in
   let a = toResult (\() -> total db) in
   let db2 = filled () in
-  let b =
-    assertEq (restore codec db2 (snapshot codec db)) (Ok 0) "nothing written"
-  in
+  let b = assertEq (restore codec db2 (snapshot codec db)) (Ok 0) "nothing written" in
   assertEq (restore codec db (snapshot codec db2)) (Ok 0) "and nothing read"

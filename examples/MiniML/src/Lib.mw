@@ -74,9 +74,13 @@ cli! {
     | run "Run a program and say its value and type" { file : String "the program" }
     | repl "Type and run each line of standard input" {}
     | demo "Type and run a few programs" {}
-    | build "Build a unit and every unit it depends on" { root : Maybe String "the unit's directory; this one if none is given" }
+    | build "Build a unit and every unit it depends on" {
+      root : Maybe String "the unit's directory; this one if none is given"
+    }
     | lsp "Be a language server, on standard input and output" {}
-    | bench "Time each phase of the compiler on a generated program" { lines : Maybe String "how many lets; 2000 if none is given" }
+    | bench "Time each phase of the compiler on a generated program" {
+      lines : Maybe String "how many lets; 2000 if none is given"
+    }
 }
 
 fun main () = catch failed (\() -> command (argsCli ()))
@@ -88,8 +92,7 @@ fun failed (e : QueryError k) = let u = writeOutput (failure e) in exit 1
 fun failure (e : QueryError k) : String =
   match e with
   | QueryError.Unset _ -> "miniml: a query was read before it was set\n"
-  | QueryError.Cycle ks ->
-      "miniml: ${show (V.len ks)} queries need each other\n"
+  | QueryError.Cycle ks -> "miniml: ${show (V.len ks)} queries need each other\n"
 
 fun command (cli : Cli) =
   match cli with
@@ -133,13 +136,10 @@ fun checkFiles (paths : [String]) =
   match load db paths with
   | Err why -> (let u = println why in False)
   | Ok files ->
-      let typed =
-        sessionTypedEach db (V.map (\f -> match f with | (i, _, _) -> i) files)
-      in
+      let typed = sessionTypedEach db (V.map (\f -> match f with | (i, _, _) -> i) files) in
       V.foldl
         (\ok i -> match (V.get files i, V.get typed i) with
-                  | (Just (_, p, _), Just (Ok ty)) ->
-                      (let u = println "${p}: ${ty}" in ok)
+                  | (Just (_, p, _), Just (Ok ty)) -> (let u = println "${p}: ${ty}" in ok)
                   | (Just (_, p, text), Just (Err ds)) ->
                       (let u = writeOutput (renderToOutput p text ds) in False)
                   | _ -> ok)
@@ -204,9 +204,7 @@ fun asked args =
 
 @test fun aCommandIsReadIntoItsConstructor () =
   assertEq
-    (V.map
-      asked
-      [["check", "a.ml", "b.ml"], ["run", "a.ml"], ["repl"], ["check"]])
+    (V.map asked [["check", "a.ml", "b.ml"], ["run", "a.ml"], ["repl"], ["check"]])
     ["check a.ml b.ml", "run a.ml", "repl", "check "]
     "each command, its fields filled"
 
@@ -249,9 +247,7 @@ fun asked args =
   match askCli ["completions", "bash"] with
   | Err (Complete script) ->
       assertEq
-        (S.contains
-          "compgen -W \"check run repl demo build lsp bench help completions\""
-          script)
+        (S.contains "compgen -W \"check run repl demo build lsp bench help completions\"" script)
         True
         script
   | _ -> assertEq True False "a script"

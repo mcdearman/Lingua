@@ -33,14 +33,11 @@ fun eval (a : CoreArena) env (e : CoreExpr) =
   | Expr.Var id ->
       (match L.lookupAssoc id env with
        | Just v -> v
-       | None ->
-           raise (errorAt (Expr.meta a e) "binder ${show id} has no value"))
+       | None -> raise (errorAt (Expr.meta a e) "binder ${show id} has no value"))
   | Expr.Lam param body -> Value.Closure param body env
-  | Expr.App func arg ->
-      apply a (Expr.meta a e) (eval a env func) (eval a env arg)
+  | Expr.App func arg -> apply a (Expr.meta a e) (eval a env func) (eval a env arg)
   | Expr.Let id value body -> eval a ((id, eval a env value) :: env) body
-  | Expr.LetRec id param value body ->
-      eval a ((id, Value.Rec id param value env) :: env) body
+  | Expr.LetRec id param value body -> eval a ((id, Value.Rec id param value env) :: env) body
   | Expr.If cond yes no ->
       (match eval a env cond with
        | Value.Bool True -> eval a env yes
@@ -49,8 +46,7 @@ fun eval (a : CoreArena) env (e : CoreExpr) =
 
 fun operate a env e op args =
   match (V.get args 0, V.get args 1) with
-  | (Just x, Just y) ->
-      primitive (Expr.meta a e) op (eval a env x) (eval a env y)
+  | (Just x, Just y) -> primitive (Expr.meta a e) op (eval a env x) (eval a env y)
   | _ -> raise (errorAt (Expr.meta a e) "`${op}` wants two operands")
 
 fun apply a at f x =
@@ -66,15 +62,11 @@ fun primitive at op l r =
       else if op == "-" then Value.Int (a - b)
       else if op == "*" then Value.Int (a * b)
       else if op == "/"
-      then
-        (if b == 0
-          then raise (errorAt at "division by zero")
-          else Value.Int (a / b))
+      then (if b == 0 then raise (errorAt at "division by zero") else Value.Int (a / b))
       else if op == "==" then Value.Bool (a == b)
       else if op == "<" then Value.Bool (a < b)
       else if op == ">" then Value.Bool (a > b)
-      else if op == "<=" then Value.Bool (a <= b)
-      else Value.Bool (a >= b)
+      else if op == "<=" then Value.Bool (a <= b) else Value.Bool (a >= b)
   | _ -> raise (errorAt at "`${op}` wants numbers")
 
 -- What a program evaluates to, or what went wrong running it, where.
@@ -101,8 +93,7 @@ use MiniML.Compiler (runSource)
 
 @test fun evaluatesRecursion () =
   assertEq
-    (runSource
-      "let rec fact n = if n < 2 then 1 else n * fact (n - 1) in fact 10")
+    (runSource "let rec fact n = if n < 2 then 1 else n * fact (n - 1) in fact 10")
     (Ok "3628800")
     "factorial"
 
@@ -110,7 +101,4 @@ use MiniML.Compiler (runSource)
   assertEq (runSource "let x = 1 in let x = x + 1 in x") (Ok "2") "shadowing"
 
 @test fun divisionByZeroIsCaught () =
-  assertEq
-    (runSource "1 / 0")
-    (Err "division by zero")
-    "a run-time error, not a crash"
+  assertEq (runSource "1 / 0") (Err "division by zero") "a run-time error, not a crash"

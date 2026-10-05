@@ -79,8 +79,7 @@ use Green.*
           ps
           os
           oe
-      in
-      if arrayLen os == 0 then whole else settledAt whole 0
+      in if arrayLen os == 0 then whole else settledAt whole 0
 
 -- `c`'s slots after `g`'s, `c`'s root a child of `g`'s.
 fun graft (g : Green k) (c : Green k) : Green k =
@@ -95,19 +94,11 @@ fun graft (g : Green k) (c : Green k) : Green k =
         (arrayConcat ss (shifted off css))
         (arrayConcat es (shifted off ces))
         (arrayConcat zs czs)
-        (arrayConcat
-          ps
-          (V.toArray
-            (V.map (\p -> if p < 0 then 0 else p + base) (V.fromArray cps))))
-        (if placed
-          then arrayConcat (origins os base) (origins cos (arrayLen cks))
-          else #[])
-        (if placed
-          then arrayConcat (origins oe base) (origins coe (arrayLen cks))
-          else #[])
+        (arrayConcat ps (V.toArray (V.map (\p -> if p < 0 then 0 else p + base) (V.fromArray cps))))
+        (if placed then arrayConcat (origins os base) (origins cos (arrayLen cks)) else #[])
+        (if placed then arrayConcat (origins oe base) (origins coe (arrayLen cks)) else #[])
 
-fun shifted (by : Int) (xs : #[Int]) : #[Int] =
-  V.toArray (V.map (\x -> x + by) (V.fromArray xs))
+fun shifted (by : Int) (xs : #[Int]) : #[Int] = V.toArray (V.map (\x -> x + by) (V.fromArray xs))
 
 -- An origin table for `n` slots: `xs`, or one saying each is where it is.
 fun origins (xs : #[Int]) (n : Int) : #[Int] =
@@ -117,8 +108,7 @@ fun origins (xs : #[Int]) (n : Int) : #[Int] =
 -- to another's makes of what it keeps.
 @pub fun mapKinds (f : k -> j) (g : Green k) : Green j =
   match g with
-  | Green t ks ss es zs ps os oe ->
-      Green t (V.toArray (V.map f (V.fromArray ks))) ss es zs ps os oe
+  | Green t ks ss es zs ps os oe -> Green t (V.toArray (V.map f (V.fromArray ks))) ss es zs ps os oe
 
 -- Every node's origin, from its tokens'.
 fun settled (g : Green k) : Green k =
@@ -126,42 +116,25 @@ fun settled (g : Green k) : Green k =
   | Green _ _ _ _ _ _ os _ ->
       (if arrayLen os == 0
         then g
-        else
-          V.foldl
-          (\h i -> if isTokenAt h i then h else settledAt h i)
-          g
-          (V.range 0 (slots g)))
+        else V.foldl (\h i -> if isTokenAt h i then h else settledAt h i) g (V.range 0 (slots g)))
 
 -- Node `i`'s origin: its first placed token's start to its last's end.
 fun settledAt (g : Green k) (i : Int) : Green k =
   match g with
   | Green t ks ss es zs ps os oe ->
       let placed =
-        V.filter
-          (\j -> isTokenAt g j and arrayGet os j >= 0)
-          (V.range (i + 1) (after g i))
-      in
-      (match (V.get placed 0, V.get placed (V.len placed - 1)) with
-       | (Just a, Just b) ->
-           Green
-             t
-             ks
-             ss
-             es
-             zs
-             ps
-             (arraySet os i (arrayGet os a))
-             (arraySet oe i (arrayGet oe b))
-       | _ -> g)
+        V.filter (\j -> isTokenAt g j and arrayGet os j >= 0) (V.range (i + 1) (after g i))
+      in (match (V.get placed 0, V.get placed (V.len placed - 1)) with
+          | (Just a, Just b) ->
+              Green t ks ss es zs ps (arraySet os i (arrayGet os a)) (arraySet oe i (arrayGet oe b))
+          | _ -> g)
 
 -- --- a slot ------------------------------------------------------------------
 
 -- How many slots the tree has.
-@pub fun slots (g : Green k) : Int =
-  match g with | Green _ ks _ _ _ _ _ _ -> arrayLen ks
+@pub fun slots (g : Green k) : Int = match g with | Green _ ks _ _ _ _ _ _ -> arrayLen ks
 
-@pub fun kindAt (g : Green k) (i : Int) : k =
-  match g with | Green _ ks _ _ _ _ _ _ -> arrayGet ks i
+@pub fun kindAt (g : Green k) (i : Int) : k = match g with | Green _ ks _ _ _ _ _ _ -> arrayGet ks i
 
 -- Where slot `i` is in the tree's text.
 @pub fun startAt (g : Green k) (i : Int) : Int =
@@ -200,12 +173,10 @@ fun settledAt (g : Green k) (i : Int) : Green k =
 -- The slot after `i`'s subtree: its next sibling, if it has one.
 @pub fun after (g : Green k) (i : Int) : Int =
   match g with
-  | Green _ _ _ _ zs _ _ _ ->
-      (let z = arrayGet zs i in if z == 0 then i + 1 else i + z)
+  | Green _ _ _ _ zs _ _ _ -> (let z = arrayGet zs i in if z == 0 then i + 1 else i + z)
 
 -- The slot of `i`'s first child; -1 if it has none.
-@pub fun firstChild (g : Green k) (i : Int) : Int =
-  if i + 1 < after g i then i + 1 else 0 - 1
+@pub fun firstChild (g : Green k) (i : Int) : Int = if i + 1 < after g i then i + 1 else 0 - 1
 
 -- The slot of the child of `p` after its child `c`; -1 if `c` is the last.
 @pub fun nextSibling (g : Green k) (p : Int) (c : Int) : Int =
@@ -215,9 +186,7 @@ fun settledAt (g : Green k) (i : Int) : Green k =
 -- The slots of `i`'s children, in order.
 @pub fun childSlots (g : Green k) (i : Int) : [Int] =
   let stop = after g i in
-  let rec go c acc =
-    if c >= stop then acc else go (after g c) (V.pushBack acc c)
-  in
+  let rec go c acc = if c >= stop then acc else go (after g c) (V.pushBack acc c) in
   go (i + 1) []
 
 -- The text of slot `i`.
@@ -248,8 +217,7 @@ fun settledAt (g : Green k) (i : Int) : Green k =
 @pub fun kind (g : Green k) : k = kindAt g 0
 
 -- How many bytes of the file it covers.
-@pub fun width (g : Green k) : Int =
-  match g with | Green t _ _ _ _ _ _ _ -> stringByteLength t
+@pub fun width (g : Green k) : Int = match g with | Green t _ _ _ _ _ _ _ -> stringByteLength t
 
 -- Its children, each a tree of its own; a token has none.
 @pub fun children (g : Green k) : [Green k] = V.map (subtree g) (childSlots g 0)
@@ -265,8 +233,7 @@ fun settledAt (g : Green k) (i : Int) : Green k =
 
 -- The tree drawn one line per node or token, indented by depth: what a test
 -- compares a parse against.
-@pub fun dump (show : k -> String) (g : Green k) : String =
-  S.join "\n" (dumpLines show g 0 0)
+@pub fun dump (show : k -> String) (g : Green k) : String = S.join "\n" (dumpLines show g 0 0)
 
 fun dumpLines show g (i : Int) (depth : Int) =
   let pad = S.join "" (V.replicate depth "  ") in
@@ -287,10 +254,7 @@ use Std.Test (assertEq)
 
 @test fun aTreeIsDrawnByDepth () =
   let g = node "Sum" [token "Num" "1", node "Rest" [token "Plus" "+"]] in
-  assertEq
-    (dump (\k -> k) g)
-    "Sum\n  Num \"1\"\n  Rest\n    Plus \"+\""
-    "one line each"
+  assertEq (dump (\k -> k) g) "Sum\n  Num \"1\"\n  Rest\n    Plus \"+\"" "one line each"
 
 @test fun aPlacedNodeStandsWhereItsTokensDo () =
   let g =
@@ -305,11 +269,7 @@ use Std.Test (assertEq)
       ]
   in
   let a = assertEq (text g) "1 + 2" "its text is its tokens'" in
-  let b =
-    assertEq
-      (fromAt g 0, toAt g 0)
-      (40, 13)
-      "from its first token's start to its last's end"
+  let b = assertEq (fromAt g 0, toAt g 0) (40, 13) "from its first token's start to its last's end"
   in
   let c = assertEq (fromAt g 2, toAt g 2) (1, 2) "trivia is where it is" in
   assertEq

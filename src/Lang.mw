@@ -66,17 +66,13 @@ use Keeping.*
 
 @pub fun langRoot (l : Lang) : String = match l with | Lang _ r _ _ _ _ _ -> r
 
-@pub fun langSorts (l : Lang) : [Sort] =
-  match l with | Lang _ _ ss _ _ _ _ -> ss
+@pub fun langSorts (l : Lang) : [Sort] = match l with | Lang _ _ ss _ _ _ _ -> ss
 
-@pub fun langGrammar (l : Lang) : String =
-  match l with | Lang _ _ _ g _ _ _ -> g
+@pub fun langGrammar (l : Lang) : String = match l with | Lang _ _ _ g _ _ _ -> g
 
-@pub fun langParams (l : Lang) : [String] =
-  match l with | Lang _ _ _ _ ps _ _ -> ps
+@pub fun langParams (l : Lang) : [String] = match l with | Lang _ _ _ _ ps _ _ -> ps
 
-@pub fun langKeeping (l : Lang) : Keeping =
-  match l with | Lang _ _ _ _ _ k _ -> k
+@pub fun langKeeping (l : Lang) : Keeping = match l with | Lang _ _ _ _ _ k _ -> k
 
 -- What a language asked for besides its tables: `In`, its readers again for
 -- a program being written; `set`, a field written again.
@@ -154,28 +150,17 @@ use Keeping.*
 @pub data LangTables = LangTables #[Int] #[Int] #[Int] #[Int] #[Int]
 
 -- The same, being written.
-@pub data LangWriting s =
-  LangWriting (Buf s Int) (Buf s Int) (Buf s Int) (Buf s Int) (Buf s Int)
+@pub data LangWriting s = LangWriting (Buf s Int) (Buf s Int) (Buf s Int) (Buf s Int) (Buf s Int)
 
 -- Empty rows, to write a program into.
 @pub fun writing () : LangWriting s ! { St s | e } =
-  LangWriting
-    (B.buffer ())
-    (B.buffer ())
-    (B.buffer ())
-    (B.buffer ())
-    (B.buffer ())
+  LangWriting (B.buffer ()) (B.buffer ()) (B.buffer ()) (B.buffer ()) (B.buffer ())
 
 -- What has been written, as a program's.
 @pub fun frozen (w : LangWriting s) : LangTables ! { St s | e } =
   match w with
   | LangWriting ks ss es fs xs ->
-      LangTables
-        (B.freeze ks)
-        (B.freeze ss)
-        (B.freeze es)
-        (B.freeze fs)
-        (B.freeze xs)
+      LangTables (B.freeze ks) (B.freeze ss) (B.freeze es) (B.freeze fs) (B.freeze xs)
 
 -- Reading a program.
 
@@ -198,14 +183,12 @@ use Keeping.*
 -- The slots of the list that starts at slot `at`.
 @pub fun listFrom (t : LangTables) (at : Int) : [Int] =
   match t with
-  | LangTables _ _ _ _ xs ->
-      V.map (\i -> arrayGet xs (at + 1 + i)) (V.range 0 (arrayGet xs at))
+  | LangTables _ _ _ _ xs -> V.map (\i -> arrayGet xs (at + 1 + i)) (V.range 0 (arrayGet xs at))
 
 -- The slot of the `Maybe` that starts at slot `at`, if it has one.
 @pub fun maybeFrom (t : LangTables) (at : Int) : Maybe Int =
   match t with
-  | LangTables _ _ _ _ xs ->
-      if arrayGet xs at == 0 then None else Just (arrayGet xs (at + 1))
+  | LangTables _ _ _ _ xs -> if arrayGet xs at == 0 then None else Just (arrayGet xs (at + 1))
 
 -- Reading a program being written.
 
@@ -226,13 +209,11 @@ use Keeping.*
 
 @pub fun listFromIn (w : LangWriting s) (at : Int) : [Int] ! { St s | e } =
   match w with
-  | LangWriting _ _ _ _ xs ->
-      V.map (\i -> B.at xs (at + 1 + i)) (V.range 0 (B.at xs at))
+  | LangWriting _ _ _ _ xs -> V.map (\i -> B.at xs (at + 1 + i)) (V.range 0 (B.at xs at))
 
 @pub fun maybeFromIn (w : LangWriting s) (at : Int) : Maybe Int ! { St s | e } =
   match w with
-  | LangWriting _ _ _ _ xs ->
-      if B.at xs at == 0 then None else Just (B.at xs (at + 1))
+  | LangWriting _ _ _ _ xs -> if B.at xs at == 0 then None else Just (B.at xs (at + 1))
 
 -- Writing one.
 
@@ -273,8 +254,7 @@ use Keeping.*
 @pub fun node1 (w : LangWriting s) (k : Int) (from : Int) (to : Int) (a : Int)
     : Int ! { St s | e } =
   match w with
-  | LangWriting _ _ _ _ xs ->
-      (let first = B.push xs a in node w k from to first)
+  | LangWriting _ _ _ _ xs -> (let first = B.push xs a in node w k from to first)
 
 @pub fun node2 (w : LangWriting s) (k : Int) (from : Int) (to : Int) (a : Int)
     (b : Int) : Int ! { St s | e } =
@@ -337,13 +317,9 @@ use Std.Test (assertEq)
       [Sort "Expr" [Prod "Lit" [Field "value" (TPrim "String") "" False]]]
       "Core"
       ["s"]
-      (AsTrees
-        ["TokenInt"]
-        ["TokenSpace"]
-        [TokenField.TokenField "Lit" "value" ["TokenInt"]])
+      (AsTrees ["TokenInt"] ["TokenSpace"] [TokenField.TokenField "Lit" "value" ["TokenInt"]])
       ["In"]
-  in
-  assertEq (fromDatum (toDatum l)) (Ok l) "the same language back"
+  in assertEq (fromDatum (toDatum l)) (Ok l) "the same language back"
 
 @test fun allOfIsNoneIfAnyIs () =
   let a = assertEq (allOf [Just 1, Just 2]) (Just [1, 2]) "all there" in

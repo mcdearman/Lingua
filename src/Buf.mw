@@ -18,12 +18,10 @@
 @pub data Buf s a = Buf (StRef s (StArray s a)) (StRef s Int)
 
 -- An empty buffer.
-@pub fun buffer () : Buf s a ! { St s | e } =
-  Buf (stNewRef (stThaw #[])) (stNewRef 0)
+@pub fun buffer () : Buf s a ! { St s | e } = Buf (stNewRef (stThaw #[])) (stNewRef 0)
 
 -- How many slots have been pushed.
-@pub fun len (b : Buf s a) : Int ! { St s | e } =
-  match b with | Buf _ n -> stGetRef n
+@pub fun len (b : Buf s a) : Int ! { St s | e } = match b with | Buf _ n -> stGetRef n
 
 -- Slot `i`, which must have been pushed.
 @pub fun at (b : Buf s a) (i : Int) : a ! { St s | e } =
@@ -52,10 +50,7 @@ fun grown xs arr (cap : Int) fill =
   bigger
 
 fun copyInto from to (i : Int) (n : Int) =
-  if i >= n
-  then ()
-  else
-    (let _ = stSetArray to i (stGetArray from i) in copyInto from to (i + 1) n)
+  if i >= n then () else (let _ = stSetArray to i (stGetArray from i) in copyInto from to (i + 1) n)
 
 -- What has been pushed, as an `Array`.
 @pub fun freeze (b : Buf s a) : #[a] ! { St s | e } =
@@ -70,21 +65,16 @@ use Std.Test (assertEq)
   let got =
     runSt (\() ->
       let b = buffer () in
-      let rec fill i =
-        if i >= 200 then () else (let _ = push b (i * 2) in fill (i + 1))
-      in
+      let rec fill i = if i >= 200 then () else (let _ = push b (i * 2) in fill (i + 1)) in
       let _ = fill 0 in
       let _ = put b 3 7 in
       (len b, at b 199, freeze b)) in
-    match got with
-    | (n, last, xs) ->
-        assertEq
-          (n, last, arrayLen xs, arrayGet xs 3, arrayGet xs 4)
-          (200, 398, 200, 7, 8)
-          "every push kept, in order"
+  match got with
+  | (n, last, xs) ->
+      assertEq
+        (n, last, arrayLen xs, arrayGet xs 3, arrayGet xs 4)
+        (200, 398, 200, 7, 8)
+        "every push kept, in order"
 
 @test fun anEmptyBufferFreezesEmpty () =
-  assertEq
-    (arrayLen (runSt (\() -> freeze (buffer ()))))
-    0
-    "nothing pushed, nothing there"
+  assertEq (arrayLen (runSt (\() -> freeze (buffer ())))) 0 "nothing pushed, nothing there"

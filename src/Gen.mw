@@ -52,28 +52,11 @@ use Std.Macro (TokenTree, Delim, Loc, spanOf, text, isWord, isPunct)
 use Std.Macro.TokenTree.*
 use Std.Macro.Loc.*
 use Std.Macro.Delim.*
-use Std.Macro.Parse (
-  Tokens,
-  parseTokens,
-  ident,
-  keyword,
-  punct,
-  group,
-  treesUntil,
-  number
-)
+use Std.Macro.Parse (Tokens, parseTokens, ident, keyword, punct, group, treesUntil, number)
 use Std.String.Parse as P
 use Std.String.Parse (Parser)
 use Std.String.Parse (keep, skip)
-use Lingua.Ungrammar (
-  Rule,
-  Def,
-  parseGrammar,
-  parseGrammarTrees,
-  defName,
-  defAt,
-  defBody
-)
+use Lingua.Ungrammar (Rule, Def, parseGrammar, parseGrammarTrees, defName, defAt, defBody)
 use Lingua.Ungrammar.Rule.*
 use Lingua.Look (
   Grammar,
@@ -94,16 +77,7 @@ use Std.Collections.List as L
 use Std.Sort (sortOn)
 use Std.Collections.HashMap as H
 use Std.Collections.HashMap (HashMap)
-use Lingua.Lang (
-  Lang,
-  Sort,
-  Prod,
-  Field,
-  Ty,
-  reservedSorts,
-  Keeping,
-  TokenField
-)
+use Lingua.Lang (Lang, Sort, Prod, Field, Ty, reservedSorts, Keeping, TokenField)
 use Lingua.Lang.Keeping.*
 use Lingua.Lang.TokenField.*
 use Lingua.Lang.Lang.*
@@ -143,8 +117,7 @@ def literal : Parser Tokens (String, Loc, Int) =
         | _ -> None)
       [])
 
-def stringOnly : Parser Tokens String =
-  P.map (\l -> match l with | (s, _, _) -> s) literal
+def stringOnly : Parser Tokens String = P.map (\l -> match l with | (s, _, _) -> s) literal
 
 fun comma p = P.thenSkip p (P.optional (punct ","))
 
@@ -153,21 +126,14 @@ def pattern : Parser Tokens [TokenTree] =
   comma
     (P.bind
       (treesUntil (isPunct ","))
-      (\ts ->
-        if V.isEmpty ts then P.fail "expected a pattern" else P.pure ts))
+      (\ts -> if V.isEmpty ts then P.fail "expected a pattern" else P.pure ts))
 
 def section : Parser Tokens Section =
   P.choice
     [ P.skipThen (keyword "lexer") (P.map Lexer ident),
-      P.pure Trivia
-        |> skip (keyword "trivia")
-        |> keep (group Brace (P.many pattern)),
-      P.pure Table
-        |> skip (keyword "tokens")
-        |> keep (group Brace (P.many tokenEntry)),
-      P.pure Context
-        |> skip (keyword "context")
-        |> keep (group Brace (P.many tokenEntry)),
+      P.pure Trivia |> skip (keyword "trivia") |> keep (group Brace (P.many pattern)),
+      P.pure Table |> skip (keyword "tokens") |> keep (group Brace (P.many tokenEntry)),
+      P.pure Context |> skip (keyword "context") |> keep (group Brace (P.many tokenEntry)),
       P.pure (\e ls -> Precedence e ls)
         |> skip (keyword "precedence")
         |> keep ident
@@ -203,12 +169,8 @@ def level : Parser Tokens (String, [String]) =
       [ P.pure (\ops -> ("left", ops))
           |> skip (keyword "left")
           |> keep (P.some stringOnly),
-        P.pure (\ops -> ("right", ops))
-          |> skip (keyword "right")
-          |> keep (P.some stringOnly),
-        P.pure (\rs -> ("postfix", rs))
-          |> skip (keyword "postfix")
-          |> keep (P.some postfixRule) ])
+        P.pure (\ops -> ("right", ops)) |> skip (keyword "right") |> keep (P.some stringOnly),
+        P.pure (\rs -> ("postfix", rs)) |> skip (keyword "postfix") |> keep (P.some postfixRule) ])
 
 -- A rule a postfix level names: any word but the ones a level starts with.
 def postfixRule : Parser Tokens String =
@@ -217,15 +179,13 @@ def postfixRule : Parser Tokens String =
     (P.token
       (\t ->
         match t with
-        | Word w _ ->
-            (if V.elem w ["left", "right", "postfix"] then None else Just w)
+        | Word w _ -> (if V.elem w ["left", "right", "postfix"] then None else Just w)
         | _ -> None)
       [])
 
 def call : Parser Tokens (String, [Section]) =
   P.pure
-    (\pub name ss ->
-      (name, if M.isSome pub then V.pushBack ss Public else ss))
+    (\pub name ss -> (name, if M.isSome pub then V.pushBack ss Public else ss))
     |> keep (P.optional (keyword "pub"))
     |> keep ident
     |> keep (P.many section)
@@ -239,45 +199,32 @@ def call : Parser Tokens (String, [Section]) =
   | Ok (name, sections) -> written name sections
 
 fun written name sections =
-  let lexer =
-    V.foldl
-      (\acc s -> match s with | Lexer l -> Just l | _ -> acc)
-      None
-      sections
-  in
+  let lexer = V.foldl (\acc s -> match s with | Lexer l -> Just l | _ -> acc) None sections in
   let grammar = grammarOf sections in
   match (lexer, grammar) with
-  | (None, _) ->
-      [Fail "`syntax!` needs `lexer`, the Scythe token type it reads" Nowhere]
+  | (None, _) -> [Fail "`syntax!` needs `lexer`, the Scythe token type it reads" Nowhere]
   | (_, None) -> [Fail "`syntax!` needs a `grammar`, in ungrammar" Nowhere]
   | (Just lx, Just (parsed, base)) ->
       match parsed with
-      | Err (off, why) ->
-          [Fail why (inGrammar (if base > 0 then base else 0) off 1)]
+      | Err (off, why) -> [Fail why (inGrammar (if base > 0 then base else 0) off 1)]
       | Ok (defs, start) ->
-          let table =
-            V.concatMap (\s -> match s with | Table es -> es | _ -> []) sections
-          in
-          let contextual =
-            V.concatMap
-              (\s -> match s with | Context es -> es | _ -> [])
-              sections
-          in
+          let table = V.concatMap (\s -> match s with | Table es -> es | _ -> []) sections in
+          let contextual = V.concatMap (\s -> match s with | Context es -> es | _ -> []) sections in
           match tokenNames table contextual with
           | Err failed -> failed
           | Ok names ->
               let spec = {
-              name = name,
-                lexer = lx,
-                public = V.any (\s -> match s with | Public -> True | _ -> False) sections,
-                trivia = V.concatMap (\s -> match s with | Trivia ps -> ps | _ -> []) sections,
-                tokens = V.map (\e -> match e with | (s, at, pat, _) -> (s, at, pat)) (V.append table (V.map (\e -> match e with | (s, at, ts, n) -> (s, at, basePattern ts, n)) contextual)),
-                names = names,
-                context = V.map (\e -> match e with | (s, at, ts, _) -> (s, basePattern ts, conditions ts)) contextual,
-                prec = V.foldl (\acc s -> match s with | Precedence e ls -> Just (e, ls) | _ -> acc) None sections,
-                lookahead = V.foldl (\acc s -> match s with | Lookahead k -> k | _ -> acc) lookaheadDefault sections,
-                defs = defs,
-                start = start
+                name = name,
+                  lexer = lx,
+                  public = V.any (\s -> match s with | Public -> True | _ -> False) sections,
+                  trivia = V.concatMap (\s -> match s with | Trivia ps -> ps | _ -> []) sections,
+                  tokens = V.map (\e -> match e with | (s, at, pat, _) -> (s, at, pat)) (V.append table (V.map (\e -> match e with | (s, at, ts, n) -> (s, at, basePattern ts, n)) contextual)),
+                  names = names,
+                  context = V.map (\e -> match e with | (s, at, ts, _) -> (s, basePattern ts, conditions ts)) contextual,
+                  prec = V.foldl (\acc s -> match s with | Precedence e ls -> Just (e, ls) | _ -> acc) None sections,
+                  lookahead = V.foldl (\acc s -> match s with | Lookahead k -> k | _ -> acc) lookaheadDefault sections,
+                  defs = defs,
+                  start = start
               } in
               -- What each rule can begin with and be followed by, and how the
               -- walk that decides a choice reads the rules: made once, for the
@@ -301,11 +248,7 @@ fun grammarOf sections =
     (\acc s ->
       match s with
       | Grammar g at start ->
-          Just
-            (
-              withBase (parseGrammar g) (if start > 0 then start else 0 - 1),
-              start
-            )
+          Just (withBase (parseGrammar g) (if start > 0 then start else 0 - 1), start)
       | GrammarTrees ts stop -> Just (withBase (parseGrammarTrees ts stop) 0, 0)
       | _ -> acc)
     None
@@ -318,8 +261,7 @@ fun inGrammar (start : Int) (off : Int) (n : Int) : Loc =
   if start < 0 or off < 0 then Nowhere else At (start + off) (start + off + n)
 
 -- A parse's rules, with where their offsets count from.
-fun withBase r (base : Int) =
-  match r with | Ok ds -> Ok (ds, base) | Err e -> Err e
+fun withBase r (base : Int) = match r with | Ok ds -> Ok (ds, base) | Err e -> Err e
 
 -- --- what the grammar says ---------------------------------------------------
 
@@ -335,10 +277,7 @@ fun isEnum (d : Def) : Bool =
 -- alternatives', all the way down.
 fun kindsOf spec (n : String) : [String] =
   match lookupDef spec n with
-  | Just d ->
-      if isEnum d
-      then V.concatMap (\a -> kindsOf spec a) (alternatives d)
-      else [n]
+  | Just d -> if isEnum d then V.concatMap (\a -> kindsOf spec a) (alternatives d) else [n]
   | None -> []
 
 fun overlaps spec a b = V.any (\x -> V.elem x (kindsOf spec b)) (kindsOf spec a)
@@ -403,14 +342,12 @@ fun refs (r : Rule) : [(String, Int)] =
 fun firstOf (env : Grammar) (r : Rule) : ([String], Bool) = firstPair env r
 
 -- The rule a whole input is: the first.
-fun rootOf spec : String =
-  match V.get spec.defs 0 with | Just d -> defName d | None -> "File"
+fun rootOf spec : String = match V.get spec.defs 0 with | Just d -> defName d | None -> "File"
 
 fun union (a : [String]) (b : [String]) : [String] =
   V.foldl (\acc x -> if V.elem x acc then acc else V.pushBack acc x) a b
 
-fun overlap (a : [String]) (b : [String]) : [String] =
-  V.filter (\x -> V.elem x b) a
+fun overlap (a : [String]) (b : [String]) : [String] = V.filter (\x -> V.elem x b) a
 
 -- --- checks ------------------------------------------------------------------
 
@@ -424,9 +361,9 @@ fun check spec (env : Grammar) : Maybe [TokenTree] =
         fieldClashes spec,
         unplaceable spec,
         reservedRules spec ] in
-    match V.get problems 0 with
-    | Just (msg, loc) -> Just [Fail msg loc]
-    | None -> None
+  match V.get problems 0 with
+  | Just (msg, loc) -> Just [Fail msg loc]
+  | None -> None
 
 fun undefinedRefs spec =
   V.concatMap
@@ -508,16 +445,15 @@ fun precedenceCovers spec env =
                    e == defName d
                      and (postfixes ls a or V.all (\t -> V.elem t (operators ls)) (trigger spec env a))
                | None -> False) in
-              if covered then []
-              else
-                [("`${a}` starts with `${defName d}`: give its operator a place in `precedence ${defName d}`, or name it `postfix`", whereDef spec a)])
-          (ledAlts spec (defName d)))
-    spec.defs
+            if covered then []
+            else
+              [("`${a}` starts with `${defName d}`: give its operator a place in `precedence ${defName d}`, or name it `postfix`", whereDef spec a)])
+        (ledAlts spec (defName d)))
+  spec.defs
 
 fun postfixes ls a = V.any (\l -> fst l == "postfix" and V.elem a (snd l)) ls
 
-fun operators ls =
-  V.concatMap (\l -> if fst l == "postfix" then [] else snd l) ls
+fun operators ls = V.concatMap (\l -> if fst l == "postfix" then [] else snd l) ls
 
 -- What a left-recursive alternative is recognised by: the start of what
 -- follows its left side.
@@ -546,8 +482,7 @@ fun tokKind spec t =
 
 fun entryKind spec e =
   match e with
-  | (t, _, pat) ->
-      M.unwrapOr (ctorOf pat) (M.map snd (V.find (\n -> fst n == t) spec.names))
+  | (t, _, pat) -> M.unwrapOr (ctorOf pat) (M.map snd (V.find (\n -> fst n == t) spec.names))
 
 -- Whether a pattern says what its token's text is: `Ident "self"`.
 fun literalPattern (pat : [TokenTree]) : Bool =
@@ -568,8 +503,7 @@ fun tokenNames table contextual : Result [TokenTree] [(String, String)] =
                | (_, _, pat, n) -> M.isSome n or literalPattern pat)
         table)
       contextual
-  in
-  V.foldl
+  in V.foldl
     (\acc e ->
       match (acc, e) with
       | (Err f, _) -> Err f
@@ -577,12 +511,10 @@ fun tokenNames table contextual : Result [TokenTree] [(String, String)] =
           (match (match n with | Just x -> Just x | None -> camel s) with
                   | Just k ->
                       (if V.any (\x -> snd x == k) ns
-                        then
-                          Err [Fail "two kinds of token are called `${k}`" at]
+                        then Err [Fail "two kinds of token are called `${k}`" at]
                         else Ok (V.pushBack ns (s, k)))
                   | None ->
-                      Err
-                        [Fail "`${s}` is a kind of its own: name it, `\"${s}\" as Name = …`" at]))
+                      Err [Fail "`${s}` is a kind of its own: name it, `\"${s}\" as Name = …`" at]))
     (Ok [])
     own
 
@@ -596,8 +528,7 @@ fun camel (s : String) : Maybe String =
 
 fun upperFirstWord (w : String) : String =
   let b = toInt (stringByteAt w 0) in
-  stringSlice "ABCDEFGHIJKLMNOPQRSTUVWXYZ" (b - 97) (b - 96)
-    ++ stringSlice w 1 (stringByteLength w)
+  stringSlice "ABCDEFGHIJKLMNOPQRSTUVWXYZ" (b - 97) (b - 96) ++ stringSlice w 1 (stringByteLength w)
 
 -- --- context -----------------------------------------------------------------
 
@@ -629,8 +560,7 @@ fun conditions (ts : [TokenTree]) : [Condition] =
                    | _ -> False)
             (V.get ts i)))
       (V.range 0 (V.len ts))
-  in
-  V.concatMap
+  in V.concatMap
     (\k ->
       let at = V.getOr 0 starts k in
       let stop = V.getOr (V.len ts) starts (k + 1) in
@@ -640,10 +570,7 @@ fun conditions (ts : [TokenTree]) : [Condition] =
       | Just (Word "after" _) -> [After body]
       | Just (Word "ending" _) ->
           (match V.find (\i -> match V.get body i with | Just (Word "via" _) -> True | _ -> False) (V.range 0 (V.len body)) with
-                               | Just v ->
-                                   [Ending
-                                     (V.take body v)
-                                     (V.drop body (v + 1))]
+                               | Just v -> [Ending (V.take body v) (V.drop body (v + 1))]
                                | None -> [Ending body []])
       | _ -> [])
     (V.range 0 (V.len starts))
@@ -704,23 +631,19 @@ fun anyOf spec env ts =
   match V.toList ts with
   | Nil -> "False"
   | Cons t Nil -> "(LinguaP.nth p 0 == ${kq spec t})"
-  | _ ->
-      "(let k = LinguaP.nth p 0 in ${S.join " or " (V.map (\t -> "k == ${kq spec t}") ts)})"
+  | _ -> "(let k = LinguaP.nth p 0 in ${S.join " or " (V.map (\t -> "k == ${kq spec t}") ts)})"
 
 -- The kinds, as constructor and display name: every node rule, every token
 -- the table names and the trivia, and the three every tree may need.
 fun kinds spec : [(String, String)] =
   let nodes =
-    V.map
-      (\d -> ("Node${defName d}", defName d))
-      (V.filter (\d -> not (isEnum d)) spec.defs)
+    V.map (\d -> ("Node${defName d}", defName d)) (V.filter (\d -> not (isEnum d)) spec.defs)
   in
   let toks =
     V.map
       (\c -> ("Token${c}", c))
       (union (V.map (entryKind spec) spec.tokens) (V.map ctorOf spec.trivia))
-  in
-  V.concat [nodes, toks, V.map (\c -> (c, c)) ["ErrorNode", "Eof", "Unknown"]]
+  in V.concat [nodes, toks, V.map (\c -> (c, c)) ["ErrorNode", "Eof", "Unknown"]]
 
 -- The parser, or -- when some choice in the grammar cannot be made by
 -- looking `lookahead` tokens ahead -- what that choice is and where.
@@ -738,9 +661,9 @@ fun generate spec (env : Grammar) : [TokenTree] ! { Mut | e } =
           Code (shared spec counter),
           Code (entry spec pub root lx)],
         typed spec pub root ] in
-    match V.get (getRef x.problems) 0 with
-    | Just (msg, loc) -> [Fail msg loc]
-    | None -> code
+  match V.get (getRef x.problems) 0 with
+  | Just (msg, loc) -> [Fail msg loc]
+  | None -> code
 
 -- What deciding the choices of `text`, an ungrammar, costs, looking `k`
 -- tokens ahead: what would be said of each that cannot be decided, and each
@@ -751,27 +674,22 @@ fun generate spec (env : Grammar) : [TokenTree] ! { Mut | e } =
   match parseGrammar text with
   | Err (at, why) -> (["${show at}: ${why}"], [])
   | Ok defs ->
-      let spec =
-        {
-          name = "G",
-          lexer = "T",
-          public = False,
-          trivia = [],
-          tokens = [],
-          names = [],
-          context = [],
-          prec = None,
-          lookahead = k,
-          defs = defs,
-          start = 0 - 1
-        }
+      let spec = {
+        name = "G",
+        lexer = "T",
+        public = False,
+        trivia = [],
+        tokens = [],
+        names = [],
+        context = [],
+        prec = None,
+        lookahead = k,
+        defs = defs,
+        start = 0 - 1
+      }
       in
-      let root =
-        (match V.get defs 0 with | Just d -> defName d | None -> "File")
-      in
-      let x =
-        Deciding { g = lookGrammar spec root, problems = newRef [], k = k }
-      in
+      let root = (match V.get defs 0 with | Just d -> defName d | None -> "File") in
+      let x = Deciding { g = lookGrammar spec root, problems = newRef [], k = k } in
       let env = x.g in
       let counter = newRef [] in
       let costs =
@@ -781,7 +699,7 @@ fun generate spec (env : Grammar) : [TokenTree] ! { Mut | e } =
             let code = ruleFun spec env counter x root d in
             (defName d, stepsTaken x.g - before))
           defs in
-        (V.map fst (getRef x.problems), sortOn (\c -> 0 - snd c) costs)
+      (V.map fst (getRef x.problems), sortOn (\c -> 0 - snd c) costs)
 
 -- --- choosing ----------------------------------------------------------------
 --
@@ -803,9 +721,7 @@ use Choosing.*
 
 fun lookGrammar spec root : Grammar ! { Mut | e } =
   let models = V.map (\d -> (defName d, model spec d)) spec.defs in
-  let found =
-    V.foldl (\acc m -> usesIn (fst m) (snd m) [;] acc) H.empty models
-  in
+  let found = V.foldl (\acc m -> usesIn (fst m) (snd m) [;] acc) H.empty models in
   let led =
     V.concatMap
       (\d -> if isEnum d
@@ -817,10 +733,7 @@ fun lookGrammar spec root : Grammar ! { Mut | e } =
       spec.defs
   in
   let uses = V.foldl (\acc l -> H.insert (fst l) (snd l) acc) found led in
-  grammar
-    models
-    (V.map (\d -> (defName d, H.getOr [] (defName d) uses)) spec.defs)
-    root
+  grammar models (V.map (\d -> (defName d, H.getOr [] (defName d) uses)) spec.defs) root
 
 fun model spec d =
   if isEnum d then
@@ -830,8 +743,7 @@ fun model spec d =
   else defBody d
 
 -- What may follow an enum's left side, again and again.
-fun ledLoop spec e =
-  Rep (Alt (V.map (\a -> Seq (restOf spec a)) (ledAlts spec e)))
+fun ledLoop spec e = Rep (Alt (V.map (\a -> Seq (restOf spec a)) (ledAlts spec e)))
 
 -- Every use of a rule in `r`, a body of rule `caller`, added to `acc`: the
 -- rule used, and where -- the caller, and what is left to read after the use.
@@ -845,8 +757,7 @@ fun usesIn (caller : String) (r : Rule) (after : List Rule)
   | Tok _ _ -> acc
   | Seq xs ->
       V.foldl
-        (\a i ->
-          usesIn caller (V.getOr (Seq []) xs i) (afterElement xs i after) a)
+        (\a i -> usesIn caller (V.getOr (Seq []) xs i) (afterElement xs i after) a)
         acc
         (V.range 0 (V.len xs))
   | Alt xs -> V.foldl (\a x -> usesIn caller x after a) acc xs
@@ -858,9 +769,7 @@ fun usesIn (caller : String) (r : Rule) (after : List Rule)
 -- kept, to be said instead of writing a parser that guesses.
 fun choose spec (x : Deciding) (owner : String) (what : Choosing)
     (choices : [Config]) : Tree ! { Mut | e } =
-  let greedy =
-    (match what with | Optional -> True | Repeated -> True | _ -> False)
-  in
+  let greedy = (match what with | Optional -> True | Repeated -> True | _ -> False) in
   let t = decide x.g choices x.k greedy in
   let u =
     (match (clashIn t, what) with
@@ -874,7 +783,7 @@ fun choose spec (x : Deciding) (owner : String) (what : Choosing)
              (getRef x.problems)
              (clashMessage owner what ts alts x.k, whereDef spec owner))
      | (None, _) -> ()) in
-    t
+  t
 
 fun clashMessage (owner : String) (what : Choosing) (ts : [String])
     (alts : [Int]) (k : Int) : String =
@@ -884,19 +793,17 @@ fun clashMessage (owner : String) (what : Choosing) (ts : [String])
     if ends then ", and nothing after that tells them apart"
     else
       ": ${show k} tokens ahead are not enough to tell them apart -- `lookahead ${show (k + 1)}` looks further, or the grammar can say it another way" in
-      match what with
-      | Optional ->
-          "in `${owner}`, ${seen} could begin what `?` makes optional or what comes after it${why}"
-      | Repeated ->
-          "in `${owner}`, ${seen} could begin another round of `*` or what comes after it${why}"
-      | Either ->
-          "in `${owner}`, ${seen} could begin more than one of its `|` alternatives${why}"
-      | Enum names ->
-          "`${V.getOr "" names (V.getOr 0 alts 0)}` and `${V.getOr "" names (V.getOr 0 alts 1)}` can both begin ${seen}${why}"
+  match what with
+  | Optional ->
+      "in `${owner}`, ${seen} could begin what `?` makes optional or what comes after it${why}"
+  | Repeated ->
+      "in `${owner}`, ${seen} could begin another round of `*` or what comes after it${why}"
+  | Either -> "in `${owner}`, ${seen} could begin more than one of its `|` alternatives${why}"
+  | Enum names ->
+      "`${V.getOr "" names (V.getOr 0 alts 0)}` and `${V.getOr "" names (V.getOr 0 alts 1)}` can both begin ${seen}${why}"
 
 -- The kind a token of a decision is, in the generated code.
-fun kindCode spec (t : String) : String =
-  if t == endOfInput then kx spec "Eof" else kq spec t
+fun kindCode spec (t : String) : String = if t == endOfInput then kx spec "Eof" else kq spec t
 
 -- A choice made: the tree's answer bound, and each way it can go.
 fun chosen spec counter (t : Tree) (ways : [String]) (otherwise : String)
@@ -940,27 +847,14 @@ ${S.join "\n" (V.map (\e -> "  | ${kt spec (entryKind spec e)} -> \"`${escape (t
 -- The lexer's tokens as kinds, each pattern where the table wrote it; and
 -- which of them are trivia.
 fun classify spec : [TokenTree] =
-  let arm =
-    \pat k ->
-      V.concat [[Punct "|" Nowhere], qualify spec pat, [Code "-> ${kt spec k}"]]
-  in
+  let arm = \pat k -> V.concat [[Punct "|" Nowhere], qualify spec pat, [Code "-> ${kt spec k}"]] in
   let tabled =
     V.filter
-      (\e ->
-        not
-          (V.any
-            (\c -> match c with | (n, _, _) -> n == tokName e)
-            spec.context))
+      (\e -> not (V.any (\c -> match c with | (n, _, _) -> n == tokName e) spec.context))
       spec.tokens
   in
-  let fixed =
-    V.filter (\e -> match e with | (_, _, pat) -> literalPattern pat) tabled
-  in
-  let open =
-    V.filter
-      (\e -> match e with | (_, _, pat) -> not (literalPattern pat))
-      tabled
-  in
+  let fixed = V.filter (\e -> match e with | (_, _, pat) -> literalPattern pat) tabled in
+  let open = V.filter (\e -> match e with | (_, _, pat) -> not (literalPattern pat)) tabled in
   V.concat
     [ [Code "fun ${fn spec "kindOf"} (t : ${spec.lexer}) : ${kindType spec} =\n  match t with"],
       V.concatMap (\e -> match e with | (_, _, pat) -> arm pat (entryKind spec e)) (V.append fixed open),
@@ -996,10 +890,7 @@ fun contextCode spec : [TokenTree] =
         (V.range 0 (V.len pats))
     in
     let index =
-      \pat ->
-        M.unwrapOr
-          0
-          (V.find (\i -> V.get pats i == Just pat) (V.range 0 (V.len pats)))
+      \pat -> M.unwrapOr 0 (V.find (\i -> V.get pats i == Just pat) (V.range 0 (V.len pats)))
     in
     let at =
       \off pat ->
@@ -1023,31 +914,29 @@ fun contextCode spec : [TokenTree] =
       | After p -> at "0 - 1" p
       | Ending e v ->
           "LinguaB.onPath (\\j -> ${at "j - r" e}) (\\j -> ${at "j - r" v}) (\\j -> ${segOf e v}) r" in
-          let rules =
-            V.map
-            (\c ->
-              match c with
-              | (name, pat, cs) ->
-                  "if ${S.join " and " (V.pushFront (V.map cond cs) (at "0" pat))} then ${kt spec (tokKind spec name)} else ")
-            spec.context in
-            V.concat
-            [ preds,
-              [ Code
-                ("\nfun ${fn spec "contextKind"} (ts : [(${spec.lexer}, Int, Int)]) (real : [Int]) (r : Int) (base : ${kindType spec}) : ${kindType spec} =\n"
-                  ++ "  let lingua_tok = \\j -> LinguaM.andThen (\\i -> LinguaM.map (\\x -> match x with | (t, _, _) -> t) (LinguaV.get ts i)) (LinguaV.get real j) in\n  "
-                  ++ S.join "" rules
-                  ++ "base\n") ] ]
+    let rules =
+      V.map
+      (\c ->
+        match c with
+        | (name, pat, cs) ->
+            "if ${S.join " and " (V.pushFront (V.map cond cs) (at "0" pat))} then ${kt spec (tokKind spec name)} else ")
+      spec.context in
+    V.concat
+    [ preds,
+      [ Code
+        ("\nfun ${fn spec "contextKind"} (ts : [(${spec.lexer}, Int, Int)]) (real : [Int]) (r : Int) (base : ${kindType spec}) : ${kindType spec} =\n"
+          ++ "  let lingua_tok = \\j -> LinguaM.andThen (\\i -> LinguaM.map (\\x -> match x with | (t, _, _) -> t) (LinguaV.get ts i)) (LinguaV.get real j) in\n  "
+          ++ S.join "" rules
+          ++ "base\n") ] ]
 
-fun condPatterns c =
-  match c with | Before p -> [p] | After p -> [p] | Ending e v -> [e, v]
+fun condPatterns c = match c with | Before p -> [p] | After p -> [p] | Ending e v -> [e, v]
 
 fun treesText (ts : [TokenTree]) : String = S.join " " (V.map text ts)
 
 -- `Ident _` as `Token.Ident _`, still where it was written.
 fun qualify spec pat =
   match V.get pat 0 with
-  | Just (Word w at) ->
-      V.pushFront (V.drop pat 1) (Word "${spec.lexer}.${w}" at)
+  | Just (Word w at) -> V.pushFront (V.drop pat 1) (Word "${spec.lexer}.${w}" at)
   | _ -> pat
 
 -- `s` as it goes inside a string literal.
@@ -1059,11 +948,7 @@ fun escape (s : String) : String =
         let c = stringSlice s i (i + 1) in
         if c == "\""
         then "\\\""
-        else if c == "\\"
-        then "\\\\"
-        else if c == "$"
-        then "\\$"
-        else c)
+        else if c == "\\" then "\\\\" else if c == "$" then "\\$" else c)
       (V.range 0 (stringByteLength s)))
 
 -- What the rules' functions share, written once: `counter` holds each piece
@@ -1082,11 +967,7 @@ fun hoisted spec counter (kind : String) (key : String)
                       | Just (_, name, _) -> name
                       | None ->
                           let name = fn spec "${kind}${show (V.len known)}" in
-                          let u =
-                            setRef
-                              counter
-                              (V.pushBack known (key, name, define name))
-                          in
+                          let u = setRef counter (V.pushBack known (key, name, define name)) in
                           name
 
 -- A choice, as a call: which way to go, by the tokens ahead. One that needs
@@ -1097,8 +978,7 @@ fun wayOf spec counter (t : Tree) (otherwise : String) : String ! { Mut | e } =
       let code = wayCode spec counter t otherwise in
       -- A choice every token answers alike is that answer.
       if code == otherwise then code
-      else
-        "(${hoisted spec counter "way" code (\name -> "fun ${name} p = ${code}\n")} p)"
+      else "(${hoisted spec counter "way" code (\name -> "fun ${name} p = ${code}\n")} p)"
   | Tree.Leaf a -> show a
   | Tree.Clash _ alts -> show (V.getOr 0 alts 0)
 
@@ -1119,9 +999,8 @@ fun wayCode spec counter (t : Tree) (otherwise : String)
             then []
             else V.map (\tk -> " | ${kindCode spec tk} -> ${answer}") (fst arm))
           arms in
-        if V.isEmpty written then otherwise
-        else
-          "(match LinguaP.nth p ${show d} with${S.join "" written} | _ -> ${otherwise})"
+      if V.isEmpty written then otherwise
+      else "(match LinguaP.nth p ${show d} with${S.join "" written} | _ -> ${otherwise})"
   | other -> wayOf spec counter other otherwise
 
 -- The pieces the rules share, and the one that reads a token: the token if
@@ -1135,8 +1014,7 @@ fun shared spec counter : String ! { Mut | e } =
 -- after the left side, Pratt style.
 fun ruleFun spec env counter x root d =
   let name = defName d in
-  if isEnum d then enumFun spec env counter x d
-  else if name == root then
+  if isEnum d then enumFun spec env counter x d else if name == root then
     "fun ${fn spec name} p =
   let m = LinguaP.open p in
   let rec go u =
@@ -1146,8 +1024,8 @@ fun ruleFun spec env counter x root d =
   let _ = go () in
   LinguaP.close p m ${kn spec name}
 "
-  else
-    "fun ${fn spec name} p =
+                                                else
+                                                  "fun ${fn spec name} p =
   let m = LinguaP.open p in
   let _ = ${body spec env counter x "" [;] name (defBody d)} in
   LinguaP.close p m ${kn spec name}
@@ -1169,14 +1047,8 @@ fun body spec env counter x self (after : List Rule) (owner : String) (r : Rule)
         ++ "())"
   | Opt y ->
       let t =
-        choose
-          spec
-          x
-          owner
-          Optional
-          [Config 0 (y :: whole :: after) owner, Config 1 after owner]
-      in
-      "(if ${wayOf spec counter t "1"} == 0 then ${sub after y} else ())"
+        choose spec x owner Optional [Config 0 (y :: whole :: after) owner, Config 1 after owner]
+      in "(if ${wayOf spec counter t "1"} == 0 then ${sub after y} else ())"
   | Rep y ->
       let t =
         choose
@@ -1196,29 +1068,22 @@ fun body spec env counter x self (after : List Rule) (owner : String) (r : Rule)
           x
           owner
           Either
-          (V.map
-            (\i -> Config i (V.getOr (Seq []) xs i :: after) owner)
-            (V.range 0 (V.len xs)))
-      in
-      chosen spec counter t
+          (V.map (\i -> Config i (V.getOr (Seq []) xs i :: after) owner) (V.range 0 (V.len xs)))
+      in chosen spec counter t
         (V.map (\y -> sub after y) xs)
         "LinguaP.error p \"expected one of ${escape (S.join ", " (V.map (\y -> S.join " " (fst (firstOf env y))) xs))}\""
 
 fun enumFun spec env counter x d =
   let e = defName d in
   let alts = prefixAlts spec e in
-  let after =
-    if V.isEmpty (ledAlts spec e) then [;] else ledLoop spec e :: [;]
-  in
+  let after = if V.isEmpty (ledAlts spec e) then [;] else ledLoop spec e :: [;] in
   let t =
     choose
       spec
       x
       e
       (Enum alts)
-      (V.map
-        (\i -> Config i (Ref (V.getOr "" alts i) 0 :: after) e)
-        (V.range 0 (V.len alts)))
+      (V.map (\i -> Config i (Ref (V.getOr "" alts i) 0 :: after) e) (V.range 0 (V.len alts)))
   in
   let dispatch =
     chosen
@@ -1227,12 +1092,11 @@ fun enumFun spec env counter x d =
       t
       (V.map (\a -> "${fn spec a} p") alts)
       "(let _ = LinguaP.error p \"expected ${e}\" in 0 - 1)"
-  in
-    if V.isEmpty (ledAlts spec e) then
-      "fun ${fn spec e} p = ${dispatch}
+  in if V.isEmpty (ledAlts spec e) then
+    "fun ${fn spec e} p = ${dispatch}
 "
-    else
-      "fun ${fn spec e} p = ${fn spec ("bp" ++ e)} p 0
+     else
+       "fun ${fn spec e} p = ${fn spec ("bp" ++ e)} p 0
 
 fun ${fn spec ("bp" ++ e)} p (minBp : Int) : Int ! { St s | e } =
   let lhs = ${dispatch} in
@@ -1267,12 +1131,9 @@ fun ledBranches spec env counter x e =
 
 -- The left-recursive alternatives whose trigger is among `ops`.
 fun altsFor spec env e ops =
-  V.filter
-    (\a -> not (V.isEmpty (overlap (trigger spec env a) ops)))
-    (ledAlts spec e)
+  V.filter (\a -> not (V.isEmpty (overlap (trigger spec env a) ops))) (ledAlts spec e)
 
-fun restOf spec a =
-  match lookupDef spec a with | Just d -> rest (defBody d) | None -> []
+fun restOf spec a = match lookupDef spec a with | Just d -> rest (defBody d) | None -> []
 
 fun branch spec env counter x e a triggers lbp rbp =
   "if ${anyOf spec env triggers} and ${show lbp} > minBp then
@@ -1294,16 +1155,7 @@ fun elementAt spec env counter x e xs i rbp =
   | Just y ->
       if i == V.len xs - 1 and leading y == Just e and not (isSeq y) then
         "(let _ = ${fn spec ("bp" ++ e)} p ${show rbp} in ())"
-      else
-        body
-          spec
-          env
-          counter
-          x
-          e
-          (afterElement xs i (ledLoop spec e :: [;]))
-          e
-          y
+      else body spec env counter x e (afterElement xs i (ledLoop spec e :: [;])) e y
   | None -> "()"
 
 fun isSeq x = match x with | Seq _ -> True | _ -> False
@@ -1369,17 +1221,13 @@ fun ${fn spec "lexemes"} (input : String) =
 -- Each given token's kind: by the table, and then -- with `context` -- by
 -- the tokens around it, as a lexed one's is.
 fun tokensEntry spec pub lx =
-  let base =
-    "(LinguaV.map (\\x -> match x with | (t, _, _, _) -> ${fn spec "kindOf"} t) tokens)"
-  in
-  let kinds =
-    if V.isEmpty spec.context then base
-    else
-      "(let ts = LinguaV.map (\\x -> match x with | (t, s, e, _) -> (t, s, e)) tokens in
+  let base = "(LinguaV.map (\\x -> match x with | (t, _, _, _) -> ${fn spec "kindOf"} t) tokens)" in
+  let kinds = if V.isEmpty spec.context then base else
+    "(let ts = LinguaV.map (\\x -> match x with | (t, s, e, _) -> (t, s, e)) tokens in
         let base = ${base} in
         let real = LinguaV.filter (\\i -> not (${fn spec "isTrivia"} (LinguaV.getOr ${kx spec "Unknown"} base i))) (LinguaV.range 0 (LinguaV.len ts)) in
         LinguaV.foldl (\\ks r -> match LinguaV.get real r with | Just i -> LinguaV.set ks i (${fn spec "contextKind"} ts real r (LinguaV.getOr ${kx spec "Unknown"} ks i)) | None -> ks) base (LinguaV.range 0 (LinguaV.len real)))" in
-      "
+    "
 -- `tokens` -- each the lexer's token, the bytes it stands for, and its text,
 -- as a macro writes them -- as a tree, and every error with the byte it is
 -- at: where the token it was said at stands. The tree's text is the tokens',
@@ -1441,23 +1289,17 @@ fun fieldsOf spec (r : Rule) (many : Bool) : [Slot] =
 -- one rule, as many as there may be -- and otherwise its tokens.
 fun labelled spec l x many =
   let inner = fieldsOf spec x many in
-  let nodes =
-    V.filter (\f -> match f with | NodeField _ _ _ -> True | _ -> False) inner
-  in
+  let nodes = V.filter (\f -> match f with | NodeField _ _ _ -> True | _ -> False) inner in
   match V.get nodes 0 with
   | Just (NodeField _ n m) -> [NodeField l n (many or m or V.len nodes > 1)]
   | _ ->
-      let toks =
-        V.concatMap (\f -> match f with | TokField _ ts _ -> ts | _ -> []) inner
-      in
+      let toks = V.concatMap (\f -> match f with | TokField _ ts _ -> ts | _ -> []) inner in
       [TokField
         l
         toks
-        (many
-          or V.any (\f -> match f with | TokField _ _ m -> m | _ -> False) inner)]
+        (many or V.any (\f -> match f with | TokField _ _ m -> m | _ -> False) inner)]
 
-fun fieldsOfDef spec d =
-  if isEnum d then [] else numbered (fieldsOf spec (defBody d) False)
+fun fieldsOfDef spec d = if isEnum d then [] else numbered (fieldsOf spec (defBody d) False)
 
 -- A token written more than once, unlabelled -- the `[` of two lists -- is a
 -- slot each time, each read by its own accessor: `lBrackToken`, then
@@ -1468,9 +1310,7 @@ fun numbered (fs : [Slot]) : [Slot] =
     (\i ->
       match V.get fs i with
       | Just (TokField n ts many) ->
-          let before =
-            V.len (V.filter (\g -> fieldName g == n) (V.take fs i))
-          in
+          let before = V.len (V.filter (\g -> fieldName g == n) (V.take fs i)) in
           if before > 0 and S.endsWith "Token" n
           then TokField "${n}${show (before + 1)}" ts many
           else TokField n ts many
@@ -1498,8 +1338,7 @@ fun sameKind spec (a : Slot) (b : Slot) : Bool =
   | (NodeField _ n _, NodeField _ m _) -> n == m or overlaps spec m n
   | _ -> False
 
-fun isMany (f : Slot) : Bool =
-  match f with | NodeField _ _ m -> m | TokField _ _ m -> m
+fun isMany (f : Slot) : Bool = match f with | NodeField _ _ m -> m | TokField _ _ m -> m
 
 -- How many of the slots before slot `i` hold children of its kind: what an
 -- accessor skips to come to its own.
@@ -1521,8 +1360,7 @@ fun slotsAt (r : Rule) : [(Int, Int)] =
   | Seq xs -> V.concatMap slotsAt xs
   | Alt xs -> V.concatMap slotsAt xs
 
-fun firstRef (r : Rule) : Int =
-  match V.get (refs r) 0 with | Just (_, at) -> at | None -> 0 - 1
+fun firstRef (r : Rule) : Int = match V.get (refs r) 0 with | Just (_, at) -> at | None -> 0 - 1
 
 fun slotsAtDef d = if isEnum d then [] else slotsAt (defBody d)
 
@@ -1614,8 +1452,7 @@ fun typed spec pub root : [TokenTree] =
       [Code "\n-- The typed root of a tree `parse${spec.name}` made.\n${pub}fun ast${spec.name} g : Maybe ${ty spec root} = as${ty spec root} (LinguaR.root g)\n"] ]
 
 -- `name` where rule `d`'s name is.
-fun atRule spec d name =
-  named spec name (defAt d) (stringByteLength (defName d))
+fun atRule spec d name = named spec name (defAt d) (stringByteLength (defName d))
 
 fun nodeType spec pub d : [TokenTree] =
   let r = ty spec (defName d) in
@@ -1667,46 +1504,39 @@ fun synonymOf spec pub d : TokenTree =
         let value =
           (match back with
            | Just g ->
-               (if whole
-                 then "(LinguaV.map ${g} ${read})"
-                 else "(LinguaM.map ${g} ${read})")
+               (if whole then "(LinguaV.map ${g} ${read})" else "(LinguaM.map ${g} ${read})")
            | None -> read)
         in
         -- What is matched, what it binds, and what the answer holds.
         if certain then (value, "(Just lingua_v${show i})", "lingua_v${show i}")
         else (value, "lingua_v${show i}", "lingua_v${show i}"))
       slots in
-    let params =
-      S.join "" (V.map (\i -> " f${show i}") (V.range 0 (V.len slots)))
-    in
-    let answer =
-      (match V.len reads with
-       | 0 -> "True"
-       | 1 ->
-           "[${V.getOr "" (V.map (\x -> match x with | (_, _, v) -> v) reads) 0};]"
-       | _ ->
-           "[(${S.join ", " (V.map (\x -> match x with | (_, _, v) -> v) reads)});]") in
-      let nothing = if V.isEmpty reads then "False" else "[;]" in
-      let shape =
-        (match V.len reads with
-         | 0 -> "True"
-         | 1 -> "[f0;]"
-         | _ ->
-             "[(${S.join ", " (V.map (\i -> "f${show i}") (V.range 0 (V.len reads)))});]") in
-        let matched =
-          (match V.len reads with
-           | 0 -> answer
-           | 1 ->
-               (match V.get reads 0 with
-                | Just (e, pat, _) ->
-                    "(match ${e} with | ${pat} -> ${answer} | _ -> ${nothing})"
-                | None -> answer)
-           | _ ->
-               "(match (${S.join ", " (V.map (\x -> match x with | (e, _, _) -> e) reads)}) with | (${S.join ", " (V.map (\x -> match x with | (_, pat, _) -> pat) reads)}) -> ${answer} | _ -> ${nothing})") in
-          let view =
-            "(\\(lingua_s : Syntax ${kt}) -> if LinguaR.kindOf lingua_s == ${kn spec (defName d)} then (let lingua_x = ${r}.${r}Node lingua_s in ${matched}) else ${nothing})"
-          in
-          Code "${pub}pattern ${r}${params} <- (${view} -> ${shape})\n"
+  let params = S.join "" (V.map (\i -> " f${show i}") (V.range 0 (V.len slots))) in
+  let answer =
+    (match V.len reads with
+     | 0 -> "True"
+     | 1 -> "[${V.getOr "" (V.map (\x -> match x with | (_, _, v) -> v) reads) 0};]"
+     | _ ->
+         "[(${S.join ", " (V.map (\x -> match x with | (_, _, v) -> v) reads)});]") in
+  let nothing = if V.isEmpty reads then "False" else "[;]" in
+  let shape =
+    (match V.len reads with
+     | 0 -> "True"
+     | 1 -> "[f0;]"
+     | _ ->
+         "[(${S.join ", " (V.map (\i -> "f${show i}") (V.range 0 (V.len reads)))});]") in
+  let matched =
+    (match V.len reads with
+     | 0 -> answer
+     | 1 ->
+         (match V.get reads 0 with
+          | Just (e, pat, _) -> "(match ${e} with | ${pat} -> ${answer} | _ -> ${nothing})"
+          | None -> answer)
+     | _ ->
+         "(match (${S.join ", " (V.map (\x -> match x with | (e, _, _) -> e) reads)}) with | (${S.join ", " (V.map (\x -> match x with | (_, pat, _) -> pat) reads)}) -> ${answer} | _ -> ${nothing})") in
+  let view =
+    "(\\(lingua_s : Syntax ${kt}) -> if LinguaR.kindOf lingua_s == ${kn spec (defName d)} then (let lingua_x = ${r}.${r}Node lingua_s in ${matched}) else ${nothing})"
+  in Code "${pub}pattern ${r}${params} <- (${view} -> ${shape})\n"
 
 -- The accessor for field `i` of rule `r`. Two single children of one rule are
 -- told apart by position: `lhs` is the first `Expr`, `rhs` the second. When an
@@ -1725,28 +1555,17 @@ fun accessor spec pub r fs ats i : [TokenTree] =
   let fn = named spec name (fst at) (stringByteLength (fieldBare field)) in
   let cast = \n -> named spec "as${ty spec n}" (snd at) (stringByteLength n) in
   let subject = " ${subject0 r}\n" in
-  let head =
-    \ret -> [Code "\n${pub}fun ", fn, Code " (x : ${r}) : ${ret} = "]
-  in
+  let head = \ret -> [Code "\n${pub}fun ", fn, Code " (x : ${r}) : ${ret} = "] in
   let skip = sameBefore spec fs i in
   match V.get fs i with
   | Just (NodeField _ n True) ->
       if skip == 0
-      then
-        V.concat
-          [
-            head "[${ty spec n}]",
-            [Code "LinguaA.childrenOf ", cast n, Code subject]
-          ]
+      then V.concat [head "[${ty spec n}]", [Code "LinguaA.childrenOf ", cast n, Code subject]]
       else
         V.concat
           [
             head "[${ty spec n}]",
-            [
-              Code "LinguaA.childrenOfFrom ",
-              cast n,
-              Code " ${show skip}${subject}"
-            ]
+            [Code "LinguaA.childrenOfFrom ", cast n, Code " ${show skip}${subject}"]
           ]
   | Just (NodeField _ n False) ->
       let prior = V.take fs i in
@@ -1757,19 +1576,10 @@ fun accessor spec pub r fs ats i : [TokenTree] =
                  | _ -> False)
           prior
       in
-      let single =
-        V.all
-          (\f -> match f with | NodeField _ _ many -> not many | _ -> True)
-          prior
-      in
+      let single = V.all (\f -> match f with | NodeField _ _ many -> not many | _ -> True) prior in
       if overlapping and single then
-        let k =
-          V.len
-            (V.filter
-              (\f -> match f with | NodeField _ _ _ -> True | _ -> False)
-              prior)
-        in
-        V.concat
+        let k = V.len (V.filter (\f -> match f with | NodeField _ _ _ -> True | _ -> False) prior)
+        in V.concat
           [
             head "Maybe ${ty spec n}",
             [Code "LinguaA.nthNodeAs ", cast n, Code " ${show k}${subject}"]
@@ -1782,8 +1592,7 @@ fun accessor spec pub r fs ats i : [TokenTree] =
                      | NodeField _ m False -> m == n
                      | _ -> False)
               prior)
-        in
-        V.concat
+        in V.concat
           [
             head "Maybe ${ty spec n}",
             [Code "LinguaA.nthChild ", cast n, Code " ${show before}${subject}"]
@@ -1810,10 +1619,7 @@ fun subject0 r = "(syntax${r} x)"
 -- names it -- in groups, since a piece of code has to balance its own
 -- brackets.
 fun enumCast spec e (written : [(String, Int)]) : TokenTree =
-  V.foldr
-    (\w acc -> Group Paren (alternative spec e w acc) Nowhere)
-    (Code "None")
-    written
+  V.foldr (\w acc -> Group Paren (alternative spec e w acc) Nowhere) (Code "None") written
 
 fun alternative spec e w acc =
   match w with
@@ -1850,23 +1656,15 @@ fun grammarLang spec : Lang =
   let enums = V.filter isEnum spec.defs in
   let alts = V.concatMap alternatives enums in
   let enumSorts =
-    V.map
-      (\d -> Sort (defName d) (V.map (\a -> prodOf spec a) (alternatives d)))
-      enums
+    V.map (\d -> Sort (defName d) (V.map (\a -> prodOf spec a) (alternatives d))) enums
   in
   let loners =
     V.map
       (\d -> Sort (defName d) [prodOf spec (defName d)])
-      (V.filter
-        (\d -> not (isEnum d) and not (V.elem (defName d) alts))
-        spec.defs)
+      (V.filter (\d -> not (isEnum d) and not (V.elem (defName d) alts)) spec.defs)
   in
-  let root =
-    (match V.get spec.defs 0 with | Just d -> defName d | None -> "File")
-  in
-  let tokenKinds =
-    V.map fst (V.filter (\c -> S.startsWith "Token" (fst c)) (kinds spec))
-  in
+  let root = (match V.get spec.defs 0 with | Just d -> defName d | None -> "File") in
+  let tokenKinds = V.map fst (V.filter (\c -> S.startsWith "Token" (fst c)) (kinds spec)) in
   let trivia = V.map (\p -> "Token${ctorOf p}") spec.trivia in
   let tokenFieldsOf =
     V.concatMap
@@ -1886,14 +1684,14 @@ fun grammarLang spec : Lang =
                    | _ -> [])
             (fieldsOfDef spec d))
       spec.defs in
-    Lang
-      spec.name
-      root
-      (V.append enumSorts loners)
-      spec.name
-      []
-      (AsTrees tokenKinds trivia tokenFieldsOf)
-      []
+  Lang
+    spec.name
+    root
+    (V.append enumSorts loners)
+    spec.name
+    []
+    (AsTrees tokenKinds trivia tokenFieldsOf)
+    []
 
 -- The production of rule `r`: an enum inside an enum is a production holding
 -- that enum's sort.
@@ -1913,20 +1711,12 @@ fun prodOf spec r =
 
 fun fieldOf spec r slot opt =
   let accessorOf = \name -> "${lowerFirst (ty spec r)}${upperFirst name}" in
-  let shape =
-    \many base -> if many then TMany base else if opt then TOpt base else base
-  in
+  let shape = \many base -> if many then TMany base else if opt then TOpt base else base in
   match slot with
-  | Just (NodeField name n many) ->
-      [Field name (shape many (TSort n)) (accessorOf name) False]
+  | Just (NodeField name n many) -> [Field name (shape many (TSort n)) (accessorOf name) False]
   | Just (TokField name ts many) ->
       if kept spec name ts
-      then
-        [Field
-          (fieldBare name)
-          (shape many (TPrim "String"))
-          (accessorOf name)
-          True]
+      then [Field (fieldBare name) (shape many (TPrim "String")) (accessorOf name) True]
       else []
   | None -> []
 
@@ -1941,13 +1731,10 @@ fun unnumbered (name : String) : String =
   let n = stringByteLength name in
   let digits =
     V.foldl
-      (\acc i -> if acc == i and i < n and isDigitAt name (n - 1 - i)
-        then acc + 1
-        else acc)
+      (\acc i -> if acc == i and i < n and isDigitAt name (n - 1 - i) then acc + 1 else acc)
       0
       (V.range 0 n)
-  in
-  stringSlice name 0 (n - digits)
+  in stringSlice name 0 (n - digits)
 
 fun isDigitAt (s : String) (i : Int) : Bool =
   toInt (stringByteAt s i) >= 48 and toInt (stringByteAt s i) <= 57
@@ -1955,9 +1742,7 @@ fun isDigitAt (s : String) (i : Int) : Bool =
 -- `numberToken` is a field `number`, and `numberToken2` one `number2`.
 fun fieldBare name =
   let base = unnumbered name in
-  let number =
-    stringSlice name (stringByteLength base) (stringByteLength name)
-  in
+  let number = stringSlice name (stringByteLength base) (stringByteLength name) in
   let n = stringByteLength base in
   if n > 5 and stringSlice base (n - 5) n == "Token"
   then stringSlice base 0 (n - 5) ++ number

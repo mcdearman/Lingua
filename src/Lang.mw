@@ -55,7 +55,7 @@ use Keeping.*
 -- A language: its name, the sort a whole program is, its sorts, -- when it
 -- was read off a grammar -- which grammar, the type parameters its types take
 -- (`Inferring s`, whose nodes hold types made of cells of a `runSt`'s), how
--- its programs are kept, and what it asked for besides (`with In, set`).
+-- its programs are kept, and what it asked for besides (`with set, modules`).
 @derive(Reflect, PartialEq)
 @pub data Lang
   = Lang String String [Sort] String [String] Keeping [String]
@@ -77,8 +77,8 @@ use Keeping.*
 
 @pub fun langKeeping (l : Lang) : Keeping = match l with | Lang _ _ _ _ _ k _ -> k
 
--- What a language asked for besides its tables: `In`, its readers again for
--- a program being written; `set`, a field written again.
+-- What a language asked for besides its tables: `set`, a field written
+-- again; `modules`, its names by module.
 @pub fun langWith (l : Lang) : [String] = match l with | Lang _ _ _ _ _ _ w -> w
 
 -- Whether a language's programs are trees.

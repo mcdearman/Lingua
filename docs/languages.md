@@ -2,7 +2,8 @@
 
 This covers two things about `lang!` beyond what
 [DESIGN.md §5](DESIGN.md#5-lang-and-pass) introduces: how what it writes is
-named, and the `with` options that ask it to write more.
+named, how its readers read a program that is still being written, and the
+`with` options that ask it to write more.
 
 ## A production belongs to its sort
 
@@ -66,7 +67,6 @@ What each module holds:
 | `Core`        | `newBuilder`, `freeze`, `arena`, `root`, `startOf`, `endOf`                       |
 | `Core.Expr`   | `kind`, `meta`, `view`, `sub`, and any field every production has (`ty`)          |
 | per production| the pattern `Lam`, `newLam`, `newLamSpan`, and a reader per field, `lamBody`      |
-| `with In`     | each reader again suffixed `In`, plus `startIn`, `endIn`                          |
 | `with set`    | `setLamParam` for each field that can be rewritten                                |
 
 Each dotted name is the flat name's other spelling: a pattern synonym of the
@@ -102,34 +102,40 @@ things of by hand; leave it off for one only passes read and write.
 Inside `pass!` neither spelling is written. See
 [passes.md](passes.md#which-production-a-case-is-for).
 
-## Options: `with In, set, modules`
+## Reading a program while it is being written
 
-Options follow what the language extends or is read from, separated by commas:
+A language's tables exist in two states: finished, an **arena**
+(`CoreArena`), and being written, a **builder** (`CoreBuilder`) inside a
+`runSt`. Every reader takes either. `kindCoreExpr a e`, `coreExprLamBody a e`
+and `metaCoreExpr a e` read an arena when given one and a builder when given
+one, and there is one function of each name.
+
+Reading an arena is pure. Reading a builder performs the `St` of the `runSt`
+it is being written in. The reader's type says so through the language's
+`Rows` trait:
 
 ```meadow
-lang! { pub Resolved extends Surface with In … }
-lang! { pub Core extends Resolved with In, modules … }
-lang! { Shapes with modules … }                 -- written out whole
-lang! { pub Surface from Mini with In }         -- read off a grammar
+trait CoreRows r {
+  effect CoreReading r
+  …
+}
+
+impl CoreRows CoreArena { effect CoreReading CoreArena = {} … }
+impl CoreRows (CoreBuilder lst) { effect CoreReading (CoreBuilder lst) = { St lst } … }
+
+-- coreExprLamBody : CoreRows r => r -> Int -> CoreExpr ! CoreReading r
 ```
 
-Each declaration states its own; a language does not inherit the options of
-the one it extends. Anything other than `In`, `set` or `modules` is an error
-that lists the three.
+`lang!` writes the trait and the two `impl`s. Nothing is asked for, and no
+reader has a second spelling.
 
-### `with In`: read a program while it is being written
-
-By default a language's reading functions read finished tables, an arena.
-`with In` writes each of them again, suffixed `In`, reading a **builder**:
-`kindCoreExprIn b e`, `coreExprLamBodyIn b e`, `metaCoreExprIn b e`.
-
-A pass needs this when a case reads nodes of the target that the pass has just
-written. MiniML's type inference does: it translates a child, then reads the
-type off the node that came back.
+A pass uses this when a case reads nodes of the target it has just written.
+MiniML's type inference does: it translates a child, then reads the type off
+the node that came back.
 
 ```meadow
 lang! {
-  pub Inferring s extends Core with In
+  pub Inferring s extends Core
   Expr * { ty : MType s }
 }
 
@@ -143,17 +149,23 @@ pass! {
 }
 ```
 
-In a case the reader is written plainly, `tyInferringExpr b`, with no suffix
-and no builder: the pass turns it into the `In` reader over the target it is
-writing. That only works if the target was declared `with In`. If it was not,
-the error is at the use and says what to write:
+In a case a reader of the target is written with the node alone,
+`tyInferringExpr b`: the pass supplies the builder it is writing. Outside a
+pass, hand a reader the builder yourself: `tyInferringExpr out b`.
 
-```text
-`tyInferringExpr` here reads the `Inferring` being written, and `Inferring` has
-no readers for that: write `with In` after what it extends or is read from
+## Options: `with set, modules`
+
+Options follow what the language extends or is read from, separated by commas:
+
+```meadow
+lang! { pub Core extends Resolved with modules … }
+lang! { Shapes with modules … }                 -- written out whole
+lang! { pub Surface from Mini with set }        -- read off a grammar
 ```
 
-Outside a pass, call the `In` readers yourself with a builder.
+Each declaration states its own; a language does not inherit the options of
+the one it extends. Anything other than `set` or `modules` is an error that
+lists the two.
 
 ### `with set`: write a field again
 
@@ -166,9 +178,9 @@ the names a macro expansion wrote once it is clear which are locals.
 
 ### Why they are opt-in
 
-Most languages want neither `In` nor `set`, and between them they were a third
-of what a declaration wrote. Asking for them by name keeps generated code, and
-compile time, down for every language that does not.
+Few languages need setters, and `with modules` adds about a third to what a
+declaration writes. Asking by name keeps generated code, and compile time,
+down for every language that does not.
 
 ## What is written once for every language
 

@@ -23,7 +23,7 @@ use Std.Maybe as M
 -- `Surface`, with ids where names were: a use is the id of its binder, and a
 -- binder -- a `let`'s name, a parameter -- is its own.
 @pub(pkg) lang! {
-  pub Resolved extends Surface with In
+  pub Resolved extends Surface
   Atom - NameRef
   Atom + NameRef { id : Int }
   Expr - Lam
@@ -93,11 +93,11 @@ fun seenIn (ids : [Int]) (scopes : [Meta]) =
 fun bindAll out (ps : [ResolvedParam]) (ids : [Int]) env =
   V.foldl (\acc p -> (paramIdent out (fst p), snd p) :: acc) env (V.zip ps ids)
 
-fun nameIdent out (n : ResolvedName) = resolvedNameIdentIn out n
+fun nameIdent out (n : ResolvedName) = resolvedNameIdent out n
 
-fun paramIdent out (p : ResolvedParam) = resolvedParamIdentIn out p
+fun paramIdent out (p : ResolvedParam) = resolvedParamIdent out p
 
-fun isLam out (e : ResolvedExpr) = kindResolvedExprIn out e == ResolvedExprKind.Lam
+fun isLam out (e : ResolvedExpr) = kindResolvedExpr out e == ResolvedExprKind.Lam
 
 -- A program resolved, with `imports` -- names another unit exports -- in
 -- scope. Each import is a binder too, entered first: the `i`th is id `i`.

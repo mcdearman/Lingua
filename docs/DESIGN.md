@@ -487,17 +487,17 @@ reference-counted language needs of its trees. For `Core` the code has:
 | `CoreExprLam param body`, matching `(a, e)`   | a production as a pattern: a synonym, of the kind and fields |
 | `subCoreExpr a e`                             | a node and everything under it, as a program of its own      |
 
-Two more families are written for a language that asks for them, after what
-it extends or is read from -- `lang! { pub Typed extends Core with In, set
-… }`. `with In` is each reading function again, suffixed `In`, reading a
-builder while it is written: what a pass's case reads the nodes it has just
-made with, so a pass whose cases read their target needs its target written
-so, and is told where if it was not. `with set` is a field of one thing -- a
-node, a number, a truth, a text -- written again on a node already written,
-`setCoreExprLamParam b e v`: what a pass that fixes up what it wrote needs, such
-as taking the hygiene marks off the names a macro's expansion wrote once it
-is clear which names are locals. Most languages want neither, and between
-them they were a third of what a language's declaration wrote. `with modules`
+Each reading function reads a program finished, an arena, or still being
+written, a builder: it is written once, of either, through a trait the
+language has -- `CoreRows`, whose two `impl`s say what reading performs,
+nothing for an arena and the `St` it is written in for a builder. That is
+what a pass's case reads the nodes it has just made with. One more family is
+written for a language that asks for it, after what it extends or is read
+from -- `lang! { pub Typed extends Core with set … }`: a field of one thing
+-- a node, a number, a truth, a text -- written again on a node already
+written, `setCoreExprLamParam b e v`: what a pass that fixes up what it wrote
+needs, such as taking the hygiene marks off the names a macro's expansion
+wrote once it is clear which names are locals. Most languages do not want it. `with modules`
 is its names by module, above: a third again on what is written, for a
 language a program names things of by hand.
 

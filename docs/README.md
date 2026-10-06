@@ -10,7 +10,7 @@ write, what gets generated, the defaults, the errors and the limits.
 | ---------------------------------- | ---------------------------------------------------------------------- |
 | [drivers.md](drivers.md)           | `newSession`, `batchSession`, `parallelSession`, `sharedSession`: one set of queries as an editor's compiler or a batch compiler, and when threads are used |
 | [build.md](build.md)               | `make!`: units, what the compiler is given, parallel scheduling and `parallel = false` |
-| [languages.md](languages.md)       | `lang!`: names scoped by sort, `Core.Expr.Lam` with `with modules`, and the `with In` and `with set` options |
+| [languages.md](languages.md)       | `lang!`: names scoped by sort, `Core.Expr.Lam` with `with modules`, readers that read a program being written, and `with set` |
 | [passes.md](passes.md)             | `pass!`: what the traversal does on its own, `Sort.Prod` cases, `node`, cases that answer several nodes, and `from` for a pass over part of a program |
 | [format.md](format.md)             | `format!`: rules, layout within a width, indent-only mode, and the next line's indent |
 | [repl.md](repl.md)                 | `repl!`: features, multi-line entries, keys, completion, the finder, themes and `:theme` |
@@ -26,7 +26,7 @@ Most examples in the guides are taken from tested code in
 | a compiler's queries                     | sequential                  | `parallelSession db`                  |
 | a batch's threads and their inputs       | a copy each                 | `sharedSession db`                    |
 | a build's units                          | parallel                    | `\| parallel = false`                 |
-| a language's `In` readers and setters    | not written                 | `with In`, `with set`                 |
+| a language's setters                     | not written                 | `with set`                            |
 | a language's names by module             | not written                 | `with modules`                        |
 | a formatter                              | indents only, 2 spaces      | `width N`, `indent N`                 |
 | a prompt's theme                         | `soft`                      | `\| theme = "…"`, or `:theme` at run time |

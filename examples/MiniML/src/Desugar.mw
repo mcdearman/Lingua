@@ -15,7 +15,7 @@ use Std.Maybe as M
 -- an operator is a primitive, and a literal is its value. A variable, a
 -- parameter and what a `let` binds are ids.
 @pub(pkg) lang! {
-  pub Core extends Resolved with In, modules
+  pub Core extends Resolved with modules
   Expr - Atom
   Expr - App
   Expr - Bin
@@ -69,14 +69,14 @@ fun lambdas out (at : Meta) (params : [Int]) (body : CoreExpr) =
 -- An atom, as the expression it is: read off the atom `out` has just been
 -- given, and written after it.
 fun atomExpr out (a : CoreAtom) =
-  let s = coreStartIn out a in
-  let e = coreEndIn out a in
-  match kindCoreAtomIn out a with
+  let s = coreStart out a in
+  let e = coreEnd out a in
+  match kindCoreAtom out a with
   | CoreAtomKind.Literal ->
-      newCoreExprIntSpan out s e (M.unwrapOr 0 (S.toInt (coreAtomLiteralNumberIn out a)))
-  | CoreAtomKind.BoolLit -> newCoreExprBoolSpan out s e (coreAtomBoolLitValueIn out a == "true")
-  | CoreAtomKind.NameRef -> newCoreExprVarSpan out s e (coreAtomNameRefIdIn out a)
-  | CoreAtomKind.Paren -> coreAtomParenExprIn out a
+      newCoreExprIntSpan out s e (M.unwrapOr 0 (S.toInt (coreAtomLiteralNumber out a)))
+  | CoreAtomKind.BoolLit -> newCoreExprBoolSpan out s e (coreAtomBoolLitValue out a == "true")
+  | CoreAtomKind.NameRef -> newCoreExprVarSpan out s e (coreAtomNameRefId out a)
+  | CoreAtomKind.Paren -> coreAtomParenExpr out a
 
 -- The expression a program is.
 @pub fun programExpr (p : CoreProgram) : CoreExpr = coreFileExpr (coreArena p) (coreRoot p)

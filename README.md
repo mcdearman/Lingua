@@ -7,7 +7,8 @@ lingua writes the parser from it and gives back a lossless tree — every byte
 of the input, whitespace and comments included, and every error where it
 belongs. Intermediate languages and the passes between them come next, as
 declarations, with the plumbing generated. The whole design is in
-[docs/DESIGN.md](docs/DESIGN.md).
+[docs/DESIGN.md](docs/DESIGN.md), and a guide to each part -- what to write,
+what is written for it, its defaults and its limits -- is in [docs/](docs/README.md).
 
 ```meadow
 use Scythe (lexer!)

@@ -15,7 +15,11 @@ text ─Scythe─▶ tokens ─generated LL parser─▶ events ─▶ green tre
 ```
 
 This document is the design. It is written ahead of the code, and each part
-says what milestone builds it (see [Milestones](#milestones)).
+says what milestone builds it (see [Milestones](#milestones)). How to use each
+part -- what to write, the defaults, the errors, the limits -- is in the guides
+beside it: [drivers](drivers.md), [build](build.md), [languages](languages.md),
+[passes](passes.md), [format](format.md), [repl](repl.md) and
+[highlighting](highlighting.md).
 
 ## 1. One grammar: ungrammar
 

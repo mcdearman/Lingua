@@ -15,21 +15,20 @@ use Std.Maybe as M
 -- an operator is a primitive, and a literal is its value. A variable, a
 -- parameter and what a `let` binds are ids.
 @pub(pkg) lang! {
-  pub Core extends Resolved with In,
-  modules Expr
-    - Atom Expr
-    - App Expr
-    - Bin Expr
-    - Lam Expr
-    - Let Expr
-    + Int { value : Int } Expr
-    + Bool { value : Bool } Expr
-    + Var { id : Int } Expr
-    + App { func : Expr, arg : Expr } Expr
-    + Prim { op : String, args : [Expr] } Expr
-    + Lam { param : Int, body : Expr } Expr
-    + Let { id : Int, value : Expr, body : Expr } Expr
-    + LetRec { id : Int, param : Int, value : Expr, body : Expr }
+  pub Core extends Resolved with In, modules
+  Expr - Atom
+  Expr - App
+  Expr - Bin
+  Expr - Lam
+  Expr - Let
+  Expr + Int { value : Int }
+  Expr + Bool { value : Bool }
+  Expr + Var { id : Int }
+  Expr + App { func : Expr, arg : Expr }
+  Expr + Prim { op : String, args : [Expr] }
+  Expr + Lam { param : Int, body : Expr }
+  Expr + Let { id : Int, value : Expr, body : Expr }
+  Expr + LetRec { id : Int, param : Int, value : Expr, body : Expr }
 }
 
 -- `fun x y -> e` is `fun x -> fun y -> e`, and `let f x = e` binds

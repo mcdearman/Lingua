@@ -1,8 +1,8 @@
 -- Lingua: compilers written as their specification.
 --
--- See docs/DESIGN.md. What is here so far is the runtime a generated parser
--- stands on: the green tree, the red view over it, the event parser, and the
--- builder that makes one from the other.
+-- See docs/DESIGN.md for the design and docs/README.md for a guide to each
+-- part. The modules are the runtime what is generated stands on -- the trees,
+-- the parser, the tables, the queries -- and the macros that generate it.
 
 @pub mod Buf
 @pub mod Green

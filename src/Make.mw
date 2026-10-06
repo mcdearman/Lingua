@@ -5,7 +5,6 @@
 --     | sources = ".ml"
 --     | manifest = "Unit"
 --     | compile = compileUnit
---     | interface = Interface
 --   }
 --
 -- A **unit** is a directory with a manifest in it: a file named by
@@ -613,30 +612,19 @@ ${if pub then "@pub " else ""}fun build${name} (root : String) =
 ${if pub then "@pub " else ""}fun given${name} (root : String) (dir : String) =
   LinguaMake.givenOf (${units}) root dir LinguaMake.decodeReflect
 "]
-                       -- --- tests ---------------------------------------------
+-- --- tests ---------------------------------------------
 
-                       use
-                       Std.Test
-                       (assertEq)
-                       @test
-                       fun
-                       aCompilerCanReadOnlyItsUnit
-                       () =
-                       let read =
-                         sandboxed ["src/a.ml"] "target/out" (\() ->
-                           (readToString "src/b.ml", writeString ("elsewhere/x", "y")))
-                       in assertEq
-                            read
-                            (
-                              Err "src/b.ml is not an input of this unit",
-                              Err "elsewhere/x is not an input of this unit"
-                            )
-                            "a read and a write outside it"
-                            @test
-                            fun
-                            unitsAreBuiltInRoundsOfWhatTheyDependOn
-                            () =
-                            assertEq
-                              (rounds [("a", []), ("b", ["a"]), ("c", ["a"]), ("d", ["b", "c"])])
-                              [["a"], ["b", "c"], ["d"]]
-                              "b and c together"
+use Std.Test (assertEq)
+@test fun aCompilerCanReadOnlyItsUnit () =
+  let read =
+    sandboxed ["src/a.ml"] "target/out" (\() ->
+      (readToString "src/b.ml", writeString ("elsewhere/x", "y")))
+  in assertEq
+       read
+       (Err "src/b.ml is not an input of this unit", Err "elsewhere/x is not an input of this unit")
+       "a read and a write outside it"
+@test fun unitsAreBuiltInRoundsOfWhatTheyDependOn () =
+  assertEq
+    (rounds [("a", []), ("b", ["a"]), ("c", ["a"]), ("d", ["b", "c"])])
+    [["a"], ["b", "c"], ["d"]]
+    "b and c together"

@@ -1621,7 +1621,8 @@ fun tablePassCode pub pass ctx from to (starts : [String]) cases : [TokenTree] =
   let fromN = langName from in
   let toN = langName to in
   V.concat [
-    [Code "use Std.Maybe as LinguaM\nuse Std.Collections.Vector as LinguaV\n"],
+    [Code
+       "use Std.Maybe as LinguaM\nuse Std.Collections.Vector as LinguaV\nuse Lingua.Lang as LinguaL\n"],
     V.concatMap (\s -> sortPass pub pass ctx from to cases s) sorts,
     -- A pass that starts part of the way down has no whole to enter.
     if not (V.isEmpty starts) then []

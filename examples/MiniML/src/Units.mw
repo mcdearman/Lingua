@@ -4,7 +4,7 @@
 -- and a unit's interface is what its files export, at their types.
 
 use Lingua (make!)
-use Lingua.Make (Given, unitSources, unitImports, unitOut)
+use Lingua.Make (Given, Linking, unitSources, unitImports, unitOut, linkUnits, linkOut)
 use Lingua.Diagnostic (renderToOutput)
 use MiniML.Types
 use MiniML.Compiler
@@ -100,7 +100,8 @@ fun compiling (u : Given Interface) =
 
 use Std.Test (assertEq)
 use Std.Console (withOutput)
-use Std.Fs (createDirAll, removeDirAll)
+use Std.Fs (Fs, createDirAll, removeDirAll, appendString, readToString)
+use Std.Result as Res
 
 -- Build `root` and say, for each unit, how it went.
 fun built root =
@@ -153,6 +154,61 @@ fun write dir file text =
         (ok, V.getOr "" lines 0, V.getOr "" lines (V.len lines - 1))
         (False, "   Failed lib", "   Blocked app: lib did not build")
         "the failure, and what it stopped"
+
+-- A build with a link: once its units are built, the program is put
+-- together of what they wrote -- here, a line to each unit, and a line more
+-- in a file beside it each time the link runs.
+make! {
+  Linked "miniml"
+    | sources = ".ml"
+    | manifest = "Unit"
+    | compile = compileUnit
+    | link = linkProgram
+}
+
+fun linkProgram (l : Linking Interface) : Result String () ! { Fs | e } =
+  let names = V.map (\u -> match u with | (dir, _, _) -> Path.fileName dir) (linkUnits l) in
+  let a = writeString (Path.join (linkOut l) "program", S.join "\n" names) in
+  let b = appendString (Path.join (linkOut l) "runs", "ran\n") in
+  Ok ()
+
+@test fun aBuildIsLinkedAgainOnlyWhenAUnitWasCompiledFromSomethingElse () =
+  let root = "target/build-link" in
+  let z = removeDirAll root in
+  let lib = Path.join root "lib" in
+  let app = Path.join root "app" in
+  let a = write lib "Unit" "" in
+  let b = write lib "double.ml" "fun x -> x + x" in
+  let d = write app "Unit" "../lib\n" in
+  let e = write app "main.ml" "double 21" in
+  let lines =
+    \r ->
+      match r with
+      | (ok, said) -> (ok, V.filter (\l -> S.startsWith "   " l) (S.lines said))
+  in
+  let first = lines (withOutput (\() -> buildLinked app)) in
+  let second = lines (withOutput (\() -> buildLinked app)) in
+  -- A body changes and no interface does: one unit is compiled, and what
+  -- it wrote is another program's, so the link runs.
+  let f = write lib "double.ml" "fun x -> x * 2" in
+  let third = lines (withOutput (\() -> buildLinked app)) in
+  let out = Path.joinAll [app, "target", "link"] in
+  assertEq
+    (
+      [first, second, third],
+      readToString (Path.join out "program"),
+      M.map (\t -> V.len (S.lines t)) (Res.toMaybe (readToString (Path.join out "runs")))
+    )
+    (
+      [
+        (True, ["   Compiled lib", "   Compiled app", "   Linked app"]),
+        (True, ["   Fresh lib", "   Fresh app", "   Fresh link"]),
+        (True, ["   Compiled lib", "   Fresh app", "   Linked app"])
+      ],
+      Ok "lib\napp",
+      Just 2
+    )
+    "each build, the program, and how often it was put together"
 
 -- The same build with no thread in it: `| parallel = false`.
 make! {

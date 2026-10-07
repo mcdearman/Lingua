@@ -40,6 +40,17 @@
 -- says where they are: `| files = sourcesOf`, a function of a unit's directory
 -- answering its sources' paths.
 --
+-- A language whose program is more than its units' interfaces -- one made by
+-- a back end that is another program, from what every unit wrote -- says how
+-- it is put together: `| link = linkProgram`, a function of a `Linking`: the
+-- root unit, every unit of the build in dependency order -- each with its
+-- interface and the directory it wrote into -- and a directory of the link's
+-- own, `target/link`. It runs once every unit is built, and again only if a
+-- unit was compiled from something else than it was the last time it ran:
+-- what it leaves in its directory is the program until then, so what an
+-- outside back end made is not made again. It may read what any unit wrote
+-- and write only in its own directory.
+--
 -- What is written is `buildBuild root`: build the unit at `root` and every
 -- unit it depends on, say how each went, and answer whether all of them did.
 -- And `givenBuild root dir`: what the unit at `dir` was compiled from in
@@ -83,6 +94,19 @@ use Given.*
 @pub fun unitImports (u : Given i) : [(String, i)] = match u with | Given _ _ i _ -> i
 
 @pub fun unitOut (u : Given i) : String = match u with | Given _ _ _ o -> o
+
+-- What a link is given: the root unit's directory, every unit of the build
+-- in dependency order -- its directory, its interface and the directory it
+-- wrote into -- and the directory the link may write into.
+@pub data Linking i = Linking String [(String, i, String)] String
+
+use Linking.*
+
+@pub fun linkRoot (l : Linking i) : String = match l with | Linking r _ _ -> r
+
+@pub fun linkUnits (l : Linking i) : [(String, i, String)] = match l with | Linking _ us _ -> us
+
+@pub fun linkOut (l : Linking i) : String = match l with | Linking _ _ o -> o
 
 -- --- the graph ---------------------------------------------------------------
 
@@ -165,6 +189,15 @@ use Built.*
 
 fun statePath root = Path.joinAll [root, "target", "lingua-build.json"]
 
+-- What the units were compiled from when the build was last linked, as one
+-- number -- if it was, by this compiler.
+fun loadLinked (root : String) : Maybe Int ! { Fs, Process | e } =
+  match M.andThen (\text -> okOf (J.parse text)) (okOf (readToString (statePath root))) with
+  | None -> None
+  | Just state ->
+      if M.andThen J.asString (J.get "compiler" state) != Just (compilerId ()) then None
+      else M.andThen J.asInt (J.get "linked" state)
+
 fun loadState (root : String) : HashMap String Built ! { Fs, Process | e } =
   match readToString (statePath root) with
   | Err _ -> HashMap.empty
@@ -232,7 +265,7 @@ fun prune (root : String) (owned : [String]) =
     ()
     (M.unwrapOr [] (okOf (readDir units)))
 
-fun saveState (root : String) (state : HashMap String Built) =
+fun saveState (root : String) (state : HashMap String Built) (linked : Maybe Int) =
   let units =
     V.map
       (\p ->
@@ -262,11 +295,16 @@ fun saveState (root : String) (state : HashMap String Built) =
     writeString (
       aside,
       J.render
-        (J.jObject [
-           ("lingua", J.jInt 1),
-           ("compiler", J.jString (compilerId ())),
-           ("units", J.jObject units)
-         ])
+        (J.jObject
+           (V.append
+              [
+                ("lingua", J.jInt 1),
+                ("compiler", J.jString (compilerId ())),
+                ("units", J.jObject units)
+              ]
+              (match linked with
+               | Just f -> [("linked", J.jInt f)]
+               | None -> [])))
     )
   in rename (aside, statePath root)
 
@@ -283,8 +321,9 @@ use Outcome.*
 
 -- The unit at `root`, and every unit it depends on, brought up to date: each
 -- said as it goes, and whether all of them are.
--- `schedule` is when each is compiled: `onThreads`, or `inTurn`.
-@pub fun makeUnits schedule lang us root compile encode decode =
+-- `schedule` is when each is compiled: `onThreads`, or `inTurn`. `link`, if
+-- the language has one, puts the program together once they all are.
+@pub fun makeUnits schedule lang us root compile link encode decode =
   match graph us root with
   | Err why -> (let u = writeOutput "error: ${why}\n" in False)
   | Ok units ->
@@ -322,7 +361,6 @@ use Outcome.*
           kept
           done
       in
-      let u = saveState root state in
       let p = prune root (V.map (outName root) dirs) in
       let counts = \p -> V.len (V.filter (\d -> match d with | (_, o, _, _) -> p o) done) in
       let compiled = counts (\o -> match o with | Compiled -> True | _ -> False) in
@@ -337,7 +375,57 @@ use Outcome.*
       let w =
         writeOutput
           "${lang}: ${show compiled} compiled, ${show fresh} up to date${if failed > 0 then ", ${show failed} failed" else ""}\n"
-      in failed == 0
+      in
+      -- The link, once every unit is built: unless the units are compiled
+      -- from what they were when it last ran, and what it wrote is there.
+      let inOrder = V.concat (rounds units) in
+      let from =
+        hash
+          (V.concatMap
+             (\dir ->
+               match HashMap.lookup dir state with
+               | Just (Built s ds _ _) -> [(dir, s, ds)]
+               | None -> [])
+             inOrder)
+      in
+      let was = loadLinked root in
+      let out = linkDir root in
+      match link with
+      | None -> (let u = saveState root state None in failed == 0)
+      | Just put ->
+          if failed > 0 then (let u = saveState root state was in False)
+          else if was == Just from and exists out then
+            (let u = saveState root state was in
+             let v = writeOutput "   Fresh link\n" in
+             True)
+          else
+            (let linking =
+               Linking
+                 (Path.normalize root)
+                 (V.concatMap
+                    (\dir ->
+                      V.concatMap
+                        (\d ->
+                          match d with
+                          | (n, _, _, Just i) ->
+                              if n == dir then [(dir, i, outDir root dir)] else []
+                          | _ -> [])
+                        done)
+                    inOrder)
+                 out
+             in match linkingIn (V.map (\dir -> outDir root dir) inOrder) out (\() ->
+                  put linking) with
+                | Ok _ ->
+                    (let u = saveState root state (Just from) in
+                     let v = writeOutput "   Linked ${relative root (Path.normalize root)}\n" in
+                     True)
+                | Err report ->
+                    (let u = saveState root state None in
+                     let v = writeOutput "   Failed link\n${report}" in
+                     False))
+
+-- Where a build's link may write: a directory of its own under `target`.
+@pub fun linkDir (root : String) : String = Path.joinAll [Path.normalize root, "target", "link"]
 
 -- A scheduler is given how a unit is planned from what is done so far --
 -- which reads the interfaces of the units it depends on -- how a plan is
@@ -526,6 +614,31 @@ fun carryOut compile encode decode p =
     return x -> x
   }
 
+-- A link, able to read what is under each of `units` -- the directories the
+-- units wrote into -- and under `out`, and to write only under `out`.
+@pub fun linkingIn (units : [String]) (out : String) act =
+  let made = \p -> M.map createDirAll (Path.parent p) in
+  let readable = \p -> under out p or V.any (\d -> under d p) units in
+  let refused = \p -> Err "${p} is not what a unit of this build wrote" in
+  handle act () with {
+    readToString p resume -> resume (if readable p then readToString p else refused p),
+    readBytes p resume -> resume (if readable p then readBytes p else refused p),
+    readDir p resume ->
+      resume (if readable p then (if exists p then readDir p else Ok []) else refused p),
+    writeString w resume ->
+      resume
+        (if under out (fst w) then (let u = made (fst w) in writeString w) else refused (fst w)),
+    writeBytes w resume ->
+      resume
+        (if under out (fst w) then (let u = made (fst w) in writeBytes w) else refused (fst w)),
+    appendString w resume ->
+      resume
+        (if under out (fst w) then (let u = made (fst w) in appendString w) else refused (fst w)),
+    removeFile p resume -> resume (if under out p then removeFile p else refused p),
+    createDirAll p resume -> resume (if under out p then createDirAll p else refused p),
+    return x -> x
+  }
+
 fun under (dir : String) (p : String) : Bool =
   let d = Path.normalize dir in
   let q = Path.normalize p in
@@ -573,7 +686,7 @@ def buildCall : Parser Tokens (Bool, String, String, [BuildSetting]) =
 -- The settings a build needs, and those it may add.
 def settings : [String] = ["sources", "manifest", "compile"]
 
-def optional : [String] = ["dependencies", "files", "parallel"]
+def optional : [String] = ["dependencies", "files", "parallel", "link"]
 
 @macro
 @pub fun make (ts : [TokenTree]) : [TokenTree] ! { Expand | e } =
@@ -606,7 +719,7 @@ def optional : [String] = ["dependencies", "files", "parallel"]
 -- ${lang}'s build: the unit at `root` and every unit it depends on, each
 -- compiled only if what it would be compiled from has changed.
 ${if pub then "@pub " else ""}fun build${name} (root : String) =
-  LinguaMake.makeUnits ${if given "parallel" == Just "false" then "LinguaMake.inTurn" else "LinguaMake.onThreads"} \"${lang}\" (${units}) root (\\u -> ${get "compile"} u) LinguaMake.encodeReflect LinguaMake.decodeReflect
+  LinguaMake.makeUnits ${if given "parallel" == Just "false" then "LinguaMake.inTurn" else "LinguaMake.onThreads"} \"${lang}\" (${units}) root (\\u -> ${get "compile"} u) (${M.unwrapOr "None" (M.map (\f -> "Just (\\l -> ${f} l)") (given "link"))}) LinguaMake.encodeReflect LinguaMake.decodeReflect
 
 -- What the unit at `dir` was compiled from in `root`'s last build.
 ${if pub then "@pub " else ""}fun given${name} (root : String) (dir : String) =

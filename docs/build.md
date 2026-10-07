@@ -19,14 +19,15 @@ the last build, for a tool that wants to ask the compiler about a unit again.
 
 ## Settings
 
-| setting        | required | what it is                                                              |
-| -------------- | -------- | ----------------------------------------------------------------------- |
+| setting        | required | what it is                                                               |
+| -------------- | -------- | ------------------------------------------------------------------------ |
 | `sources`      | yes      | the ending of a unit's source files, `".ml"`                             |
 | `manifest`     | yes      | the file that makes a directory a unit, `"Unit"`                         |
 | `compile`      | yes      | the compiler: a function of a `Given i` answering `Result String i`      |
 | `parallel`     | no       | `false` to compile one unit after another; a build is parallel otherwise |
 | `dependencies` | no       | how to read a manifest, for one that is more than a list of paths        |
 | `files`        | no       | where a unit's sources are, when not beside the manifest                 |
+| `link`         | no       | how the program is put together once every unit is built                 |
 
 A setting the build does not have, a missing required one, or a `parallel` that
 is neither `true` nor `false` is an error where it was written.
@@ -42,12 +43,12 @@ is a function of a unit's directory answering its sources' paths.
 `compile` takes a `Lingua.Make.Given i`, where `i` is the unit's interface
 type:
 
-| function        | answers                                                     |
-| --------------- | ----------------------------------------------------------- |
-| `unitDir u`     | the unit's directory                                        |
-| `unitSources u` | its sources, each a path and its text                       |
-| `unitImports u` | the interface of each unit it depends on, by directory      |
-| `unitOut u`     | a directory of its own to write into, under `target/units`  |
+| function        | answers                                                    |
+| --------------- | ---------------------------------------------------------- |
+| `unitDir u`     | the unit's directory                                       |
+| `unitSources u` | its sources, each a path and its text                      |
+| `unitImports u` | the interface of each unit it depends on, by directory     |
+| `unitOut u`     | a directory of its own to write into, under `target/units` |
 
 It answers `Ok interface` or `Err report`. The interface type is `Reflect`, so
 that it can be kept between runs.
@@ -56,6 +57,31 @@ The compiler runs under a handler for `Fs` that lets it read its unit's sources
 and its own output directory, and write only in that directory. Anything else
 fails with `… is not an input of this unit`, so a read the build did not know
 about is an error rather than a stale answer.
+
+## Linking
+
+A language whose program is more than its units' interfaces -- one a back end
+that is another program makes, from what every unit wrote -- says how it is put
+together: `| link = linkProgram`, a function of a `Lingua.Make.Linking i`
+answering `Result String ()`:
+
+| function      | answers                                                                     |
+| ------------- | --------------------------------------------------------------------------- |
+| `linkRoot l`  | the root unit's directory                                                   |
+| `linkUnits l` | every unit in dependency order: its directory, interface and `unitOut`      |
+| `linkOut l`   | a directory of the link's own to write into, `target/link` (`linkDir root`) |
+
+The link runs once every unit is built, and the build says `Linked`. It runs
+again only if a unit was compiled from something else than it was the last time
+the link ran -- its sources, or an interface it was compiled against -- or what
+it wrote is gone; otherwise the build says `Fresh link` and what is in
+`target/link` is still the program, so what an outside back end made is not
+made again. A link that answers `Err report` fails the build, and runs again
+the next time.
+
+It runs under a handler for `Fs` that lets it read what any unit wrote and its
+own directory, and write only in its own. A unit's compiler writes what the
+link needs -- an object file, say -- into `unitOut`.
 
 ## When a unit is compiled
 
@@ -125,12 +151,12 @@ One line per unit, in the order they finish, then a summary:
 miniml: 1 compiled, 1 up to date, 2 failed
 ```
 
-| line       | meaning                                                  |
-| ---------- | -------------------------------------------------------- |
-| `Compiled` | the unit was compiled                                    |
-| `Fresh`    | nothing it was compiled from changed                     |
-| `Failed`   | `compile` answered `Err`; its report follows             |
-| `Blocked`  | a unit it depends on did not build                       |
+| line       | meaning                                      |
+| ---------- | -------------------------------------------- |
+| `Compiled` | the unit was compiled                        |
+| `Fresh`    | nothing it was compiled from changed         |
+| `Failed`   | `compile` answered `Err`; its report follows |
+| `Blocked`  | a unit it depends on did not build           |
 
 `buildBuild` answers `True` when nothing failed or was blocked. A unit that is
 not one (no manifest), or units that depend on each other in a circle, stop the

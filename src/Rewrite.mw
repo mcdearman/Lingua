@@ -12,28 +12,40 @@
 -- the kind it was: the new tree is as lossless as the old.
 --
 -- The new tree may be of another language, whose kinds are its own: what is
--- kept is converted, a kind at a time, when a node built around it needs it.
+-- kept is converted, a kind at a time, when the tree is written.
+--
+-- And a pass that changes little should *do* little. A piece made anew is
+-- its kind and its pieces, and no tree until one is asked for (`green`): the
+-- whole of what a pass answers is then written once, a slot after another,
+-- where building each node as a tree of its own copied everything under it
+-- again at every node above. And a pass says which kinds it has cases for, so
+-- that a subtree holding none of them is kept without being walked.
 
 use Std.Collections.Vector as V
 use Std.Maybe as M
 use Lingua.Green (Green, kindAt, startAt, endAt, isTokenAt, childSlots, subtree, slots)
 use Lingua.Green as G
+use Lingua.Buf as B
+use Lingua.Buf (Buf)
 use Lingua.Red (Syntax)
 use Lingua.Red.Syntax.*
 
 -- A piece of the new tree, and the bytes of the source it covers: a slot of
--- the source, kept, or a subtree made anew.
-@pub data Part j = Kept Int Int Int | Made (Green j) Int Int
+-- the source, kept, or a node made anew -- its kind, and its pieces in order.
+@pub data Part j = Kept Int Int Int | Made j [Part j] Int Int
 
 use Part.*
 
 -- The tree a pass reads: the tree, its tokens' slots in order -- for the
--- tokens between two pieces to be found without walking it -- and what each of
--- its kinds is in the tree being written.
+-- tokens between two pieces to be found without walking it -- what each of
+-- its kinds is in the tree being written, and, for a pass that said which
+-- kinds it has cases for, how many slots of those kinds come before each
+-- slot: so that whether a subtree holds any is two reads.
 @pub record Origin k j = {
   tree : Green k,
   toks : #[Int],
-  conv : k -> j
+  conv : k -> j,
+  hot : #[Int]
 }
 
 -- A tree, read to write a tree of the same kinds.
@@ -41,7 +53,35 @@ use Part.*
 
 -- A tree, read to write one whose kinds `conv` says.
 @pub fun sourceWith (conv : k -> j) (g : Green k) : Origin k j =
-  Origin { tree = g, toks = V.toArray (V.filter (\i -> isTokenAt g i) (V.range 0 (slots g))), conv }
+  Origin {
+    tree = g,
+    toks = V.toArray (V.filter (\i -> isTokenAt g i) (V.range 0 (slots g))),
+    conv,
+    hot = #[]
+  }
+
+-- The same, for a pass whose cases are for the kinds `cased` holds of: a
+-- subtree with no node of those kinds is kept as it is, unwalked.
+@pub fun sourceFor (conv : k -> j) (cased : k -> Bool) (g : Green k) : Origin k j =
+  let n = slots g in
+  let counts =
+    runSt (\() ->
+      let b = B.bufferFor (n + 1) in
+      let rec go i seen =
+        let _ = B.push b seen in
+        if i >= n then () else go (i + 1) (if cased (kindAt g i) then seen + 1 else seen)
+      in
+      let _ = go 0 0 in
+      B.freeze b)
+  in { sourceWith conv g | hot = counts }
+
+@pub fun sourceOfFor (conv : k -> j) (cased : k -> Bool) (s : Syntax k) : Origin k j =
+  match s with | Syntax g _ -> sourceFor conv cased g
+
+-- Whether nothing under slot `i`, or `i` itself, is of a kind the pass has a
+-- case for. Never, for a pass that did not say which those are.
+fun quiet (src : Origin k j) (i : Int) : Bool =
+  arrayLen src.hot > 0 and arrayGet src.hot (G.after src.tree i) == arrayGet src.hot i
 
 -- The source a node of it is in.
 @pub fun sourceOf (s : Syntax k) : Origin k k = match s with | Syntax g _ -> source g
@@ -54,35 +94,169 @@ use Part.*
   match s with
   | Syntax g i -> Kept i (startAt g i) (endAt g i)
 
-@pub fun from (p : Part j) : Int = match p with | Kept _ a _ -> a | Made _ a _ -> a
+@pub fun from (p : Part j) : Int = match p with | Kept _ a _ -> a | Made _ _ a _ -> a
 
-@pub fun to (p : Part j) : Int = match p with | Kept _ _ b -> b | Made _ _ b -> b
+@pub fun to (p : Part j) : Int = match p with | Kept _ _ b -> b | Made _ _ _ b -> b
 
--- The piece as a tree of its own.
+-- The piece as a tree of its own: written once, a slot after another, when
+-- its pieces are the source's in the source's order -- which is what a pass
+-- that regroups makes -- and grafted together piece by piece when they are
+-- not.
 @pub fun green (src : Origin k j) (p : Part j) : Green j =
   match p with
   | Kept i _ _ -> G.mapKinds src.conv (subtree src.tree i)
-  | Made g _ _ -> g
+  | Made _ _ _ _ ->
+      (match written src p with
+       | Just g -> g
+       | None -> grafted src p)
+
+fun grafted (src : Origin k j) (p : Part j) : Green j =
+  match p with
+  | Kept i _ _ -> G.mapKinds src.conv (subtree src.tree i)
+  | Made k cs _ _ -> G.node k (V.map (grafted src) cs)
+
+-- The tables a tree is written into, where the text written so far ends, and
+-- whether every piece so far began where the one before it ended.
+data Writing s j
+  = Writing
+    (Buf s j)
+    (Buf s Int)
+    (Buf s Int)
+    (Buf s Int)
+    (Buf s Int)
+    (Buf s Int)
+    (Buf s Int)
+    (StRef s Int)
+    (StRef s Bool)
+
+-- `p` as a tree, if its pieces are the source's text in order: the text is
+-- then a slice of the source's, and every slot is written once.
+fun written (src : Origin k j) (p : Part j) : Maybe (Green j) =
+  let base = from p in
+  if base < 0 then None
+  else
+    let g = src.tree in
+    let n = slots g in
+    runSt (\() ->
+      let w =
+        Writing
+          (B.bufferFor n)
+          (B.bufferFor n)
+          (B.bufferFor n)
+          (B.bufferFor n)
+          (B.bufferFor n)
+          (B.buffer ())
+          (B.buffer ())
+          (stNewRef base)
+          (stNewRef True)
+      in
+      let _ = write src base w p (0 - 1) in
+      match w with
+      | Writing ks ss es zs ps os oe at ok ->
+          if not (stGetRef ok) then None
+          else
+            let text = stringSlice (G.text g) base (stGetRef at) in
+            if G.isPlaced g then
+              Just
+                (G.fromTablesAt
+                   text
+                   (B.freeze ks)
+                   (B.freeze ss)
+                   (B.freeze es)
+                   (B.freeze zs)
+                   (B.freeze ps)
+                   (B.freeze os)
+                   (B.freeze oe))
+            else
+              Just
+                (G.fromTables
+                   text
+                   (B.freeze ks)
+                   (B.freeze ss)
+                   (B.freeze es)
+                   (B.freeze zs)
+                   (B.freeze ps)))
+
+-- Piece `p` written under slot `parent`: a kept slot's rows copied, each
+-- kind converted; a made node's row, and then its pieces under it.
+fun write (src : Origin k j) (base : Int) (w : Writing s j) (p : Part j) (parent : Int)
+    : () ! { St s | e } =
+  match w with
+  | Writing ks ss es zs ps os oe at ok ->
+      (match p with
+       | Kept i a b ->
+           let _ = if a != stGetRef at then stSetRef ok False else () in
+           let _ = stSetRef at b in
+           copied src base w i (G.after src.tree i) (B.len ks - i) parent
+       | Made kind cs _ _ ->
+           let slot = B.len ks in
+           let here = stGetRef at - base in
+           let _ = B.push ks kind in
+           let _ = B.push ss here in
+           let _ = B.push es here in
+           let _ = B.push zs 1 in
+           let _ = B.push ps parent in
+           let _ =
+             if G.isPlaced src.tree then
+               (let _ = B.push os (0 - 1) in
+                let _ = B.push oe (0 - 1) in
+                ())
+             else ()
+           in
+           let _ = V.foldl (\u c -> write src base w c slot) () cs in
+           let _ = B.put es slot (stGetRef at - base) in
+           B.put zs slot (B.len ks - slot))
+
+-- The source's slots `i` up to `stop`, written `shift` slots on: the first
+-- under `parent`, the rest under what they were under.
+fun copied
+    (src : Origin k j)
+    (base : Int)
+    (w : Writing s j)
+    (i : Int)
+    (stop : Int)
+    (shift : Int)
+    (parent : Int)
+    : () ! { St s | e } =
+  match w with
+  | Writing ks ss es zs ps os oe _ _ ->
+      let g = src.tree in
+      let placed = G.isPlaced g in
+      let rec go r first =
+        if r >= stop then ()
+        else
+          let _ = B.push ks (src.conv (kindAt g r)) in
+          let _ = B.push ss (startAt g r - base) in
+          let _ = B.push es (endAt g r - base) in
+          let _ = B.push zs (if isTokenAt g r then 0 else G.after g r - r) in
+          let _ = B.push ps (if first then parent else G.parentAt g r + shift) in
+          let _ =
+            if placed then
+              (let _ = B.push os (if G.isPlacedAt g r then G.fromAt g r else 0 - 1) in
+               let _ = B.push oe (if G.isPlacedAt g r then G.toAt g r else 0 - 1) in
+               ())
+            else ()
+          in go (r + 1) False
+      in go i True
 
 -- What kind of node or token a piece is.
 @pub fun kindOf (src : Origin k j) (p : Part j) : j =
   match p with
   | Kept i _ _ -> src.conv (kindAt src.tree i)
-  | Made g _ _ -> G.kind g
+  | Made k _ _ _ -> k
 
 -- The text a piece covers.
 @pub fun textOf (src : Origin k j) (p : Part j) : String =
   match p with
   | Kept i _ _ -> G.textAt src.tree i
-  | Made g _ _ -> G.text g
+  | Made _ _ _ _ -> G.text (green src p)
 
 -- A piece's children, tokens and all, each where it is in the source.
 @pub fun childrenOf (src : Origin k j) (p : Part j) : [Part j] =
   match p with
   | Kept i _ _ ->
       V.map (\c -> Kept c (startAt src.tree c) (endAt src.tree c)) (childSlots src.tree i)
-  | Made g a _ ->
-      V.map (\c -> Made (subtree g c) (a + startAt g c) (a + endAt g c)) (childSlots g 0)
+  | Made _ cs _ _ -> cs
 
 -- A field's pieces, as a node's children are listed: one, maybe one, or
 -- several.
@@ -134,7 +308,7 @@ use Part.*
   let placed = V.filter (\c -> not (isEmpty c)) filled in
   let a = M.unwrapOr (0 - 1) (M.map from (V.get placed 0)) in
   let b = M.unwrapOr (0 - 1) (M.map to (V.get placed (V.len placed - 1))) in
-  Made (G.node kind (V.map (green src) filled)) a b
+  Made kind filled a b
 
 -- Whether a piece covers nothing, and is nowhere.
 fun isEmpty (p : Part j) : Bool = from p < 0
@@ -148,41 +322,52 @@ fun isEmpty (p : Part j) : Bool = from p < 0
     let before = tokensIn src a (if isEmpty p then b else from p) in
     let after = if isEmpty p then [] else tokensIn src (to p) b in
     if V.isEmpty before and V.isEmpty after then p
+    else if isTokenPart src p then p
     else
-      let g = green src p in
-      if G.isToken g then p
-      else
-        let whole = V.concat [before, V.filter (\c -> not (isEmpty c)) [p], after] in
-        Made
-          (G.node
-             (G.kind g)
-             (V.concat [V.map (green src) before, G.children g, V.map (green src) after]))
-          (M.unwrapOr (0 - 1) (M.map from (V.get whole 0)))
-          (M.unwrapOr (0 - 1) (M.map to (V.get whole (V.len whole - 1))))
+      let whole = V.concat [before, V.filter (\c -> not (isEmpty c)) [p], after] in
+      Made
+        (kindOf src p)
+        (V.concat [before, childrenOf src p, after])
+        (M.unwrapOr (0 - 1) (M.map from (V.get whole 0)))
+        (M.unwrapOr (0 - 1) (M.map to (V.get whole (V.len whole - 1))))
+
+-- Whether a piece is a token: only a kept one can be.
+fun isTokenPart (src : Origin k j) (p : Part j) : Bool =
+  match p with
+  | Kept i _ _ -> isTokenAt src.tree i
+  | Made _ _ _ _ -> False
 
 -- Node `x` with each of its node children as `f` answers it, its tokens as
--- they were: kept, if `f` kept every one.
+-- they were: kept, if `f` kept every one -- and kept without asking, if the
+-- pass has no case for anything under it. Nothing is made for a node that is
+-- kept: its pieces are listed only from the first that changed.
 @pub fun rebuild (src : Origin k j) (f : Syntax k -> Part j ! e) (x : Syntax k) : Part j ! e =
   match x with
   | Syntax g i ->
-      let pieces =
-        V.map
-          (\c -> if isTokenAt g c then Kept c (startAt g c) (endAt g c) else f (Syntax g c))
-          (childSlots g i)
-      in
-      let same =
-        V.all
-          (\j ->
-            match (V.get pieces j, V.get (childSlots g i) j) with
-            | (Just (Kept s _ _), Just c) -> s == c
-            | _ -> False)
-          (V.range 0 (V.len pieces))
-      in if same then Kept i (startAt g i) (endAt g i)
-         else
-           Made
-             (G.node (src.conv (kindAt g i)) (V.map (green src) pieces))
-             (startAt g i)
-             (endAt g i)
+      if quiet src i then Kept i (startAt g i) (endAt g i)
+      else
+        let rec go c pieces changed =
+          if c < 0 then (pieces, changed)
+          else
+            let p = if isTokenAt g c then Kept c (startAt g c) (endAt g c) else f (Syntax g c) in
+            let next = G.nextSibling g i c in
+            if changed then go next (V.pushBack pieces p) True
+            else if isSlot c p then go next pieces False
+            else go next (V.pushBack (keptUpTo g i c) p) True
+        in match go (G.firstChild g i) [] False with
+           | (_, False) -> Kept i (startAt g i) (endAt g i)
+           | (pieces, True) -> Made (src.conv (kindAt g i)) pieces (startAt g i) (endAt g i)
+
+-- Whether a piece is the source's slot `c`, kept.
+fun isSlot (c : Int) (p : Part j) : Bool =
+  match p with | Kept s _ _ -> s == c | Made _ _ _ _ -> False
+
+-- The children of `i` before its child `c`, each kept.
+fun keptUpTo (g : Green k) (i : Int) (c : Int) : [Part j] =
+  let rec go d acc =
+    if d < 0 or d >= c then acc
+    else go (G.nextSibling g i d) (V.pushBack acc (Kept d (startAt g d) (endAt g d)))
+  in go (G.firstChild g i) []
 
 -- --- tests -------------------------------------------------------------------
 
@@ -209,11 +394,51 @@ def flat : Green String =
     "Bin\n  Num \"1\"\n  Space \" \"\n  Op \"+\"\n  Space \" \"\n  Bin\n    Num \"2\"\n    Space \" \"\n    Op \"*\"\n    Space \" \"\n    Num \"3\""
     "the product inside the sum"
 
+@test fun aTreeWrittenOnceIsTheTreeGraftedTogether () =
+  -- The two ways a made piece becomes a tree answer the same tree: every
+  -- table, slot for slot.
+  let src = source flat in
+  let at = \i -> Kept i (startAt flat i) (endAt flat i) in
+  let times = node src "Bin" [at 5, at 7, at 9] in
+  let plus = node src "Bin" [at 1, at 3, times] in
+  let a = assertEq (written src plus) (Just (grafted src plus)) "the whole of it" in
+  -- A piece that does not start the text is a tree of its own, from 0.
+  assertEq (written src times) (Just (grafted src times)) "and a part of it"
+
+@test fun piecesOutOfTheSourcesOrderAreGraftedTogether () =
+  -- `2 * 3` before `1`: not the source's text, so nothing of it can be the
+  -- source's text sliced -- the tree is built of its pieces, as written.
+  let src = source flat in
+  let at = \i -> Kept i (startAt flat i) (endAt flat i) in
+  let turned = Made "Chain" [at 5, at 7, at 9, at 1] 0 9 in
+  let a = assertEq (written src turned) None "not written in one go" in
+  assertEq (G.text (green src turned)) "2*31" "but a tree all the same"
+
+@test fun aSubtreeWithNothingThePassHasACaseForIsNotWalked () =
+  let inner = G.node "Paren" [token "(" "(", token "Num" "2", token ")" ")"] in
+  let tree = G.node "Chain" [token "Num" "1", token "Op" "+", inner] in
+  let asked =
+    \src ->
+      runSt (\() ->
+        let n = stNewRef 0 in
+        let p = rebuild src (\c -> let u = stSetRef n (stGetRef n + 1) in kept c) (R.root tree) in
+        stGetRef n)
+  in
+  let a =
+    assertEq
+      (asked (source tree))
+      1
+      "its one node child is asked about, by a pass that said nothing"
+  in assertEq
+       (asked (sourceFor (\k -> k) (\k -> k == "Bin") tree))
+       0
+       "and not by a pass with a case for `Bin` alone, which is nowhere in it"
+
 @test fun aNodeNothingChangedUnderIsKept () =
   let src = source flat in
   match rebuild src (\c -> kept c) (R.root flat) with
   | Kept i _ _ -> assertEq i 0 "the root itself"
-  | Made _ _ _ -> assertEq True False "nothing was made"
+  | Made _ _ _ _ -> assertEq True False "nothing was made"
 
 @test fun aNodeOfNothingCoversTheNodeItStandsFor () =
   let unit = G.node "Unit" [token "(" "(", token ")" ")"] in

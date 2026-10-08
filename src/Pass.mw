@@ -1784,13 +1784,33 @@ fun fieldTyOf p n =
 -- To tables, a node's function answers the row it wrote; to a tree, a piece of
 -- the new tree (`Lingua.Rewrite`).
 
+-- The tree a pass to a tree reads, told which kinds the pass has cases for:
+-- a subtree with no node of those is kept without being walked. A pass that
+-- says what a malformed node answers (`| Stmt _ -> …`) may answer for any
+-- node, and is told nothing.
+fun sourceCode pass from cases : String =
+  let cased =
+    V.foldl
+      (\acc k -> if V.elem k acc then acc else V.pushBack acc k)
+      []
+      (V.concatMap
+         (\s ->
+           V.concatMap
+             (\p -> if V.any (isFor s p) cases then kindsOfProd from p else [])
+             (sortProds s))
+         (langSorts from))
+  in if V.any isOtherwise cases or V.isEmpty cased then
+       "LinguaW.sourceOfWith ${pass}Kind lingua_root"
+     else
+       "LinguaW.sourceOfFor ${pass}Kind (\\lingua_k -> match lingua_k with${S.join "" (V.map (\k -> " | ${k} -> True") cased)} | _ -> False) lingua_root"
+
 fun treePassCode pub pass ctx from to (starts : [String]) cases : [TokenTree] =
   let c = given ctx in
   let root = langRoot from in
   let toN = langName to in
   let entry =
     if isTree to then
-      "\n-- `${pass}`: a `${langName from}` tree as a `${toN}` one, kept where nothing changed.\n${pub}fun ${pass} ${c}lingua_root =\n  let lingua_src = LinguaW.sourceOfWith ${pass}Kind lingua_root in\n  LinguaW.green lingua_src (${pass}${root} lingua_src lingua_src ${c}lingua_root)\n"
+      "\n-- `${pass}`: a `${langName from}` tree as a `${toN}` one, kept where nothing changed.\n${pub}fun ${pass} ${c}lingua_root =\n  let lingua_src = ${sourceCode pass from cases} in\n  LinguaW.green lingua_src (${pass}${root} lingua_src lingua_src ${c}lingua_root)\n"
         ++ kindConvCode pub pass from to
     else
       (if stateful from to then ""

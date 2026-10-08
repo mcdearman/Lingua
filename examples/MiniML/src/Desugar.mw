@@ -39,26 +39,21 @@ use Std.Maybe as M
 pass! {
   pub desugar : Resolved -> Core
     | Atom { atom } -> atomExpr out atom
-    | App { func, arg } -> App { func = func, arg = atomExpr out arg }
-    | Bin { lhs, op, rhs } -> Prim { op = op, args = [lhs, rhs] }
+    | App { func, arg } -> App { func, arg = atomExpr out arg }
+    | Bin { lhs, op, rhs } -> Prim { op, args = [lhs, rhs] }
     | Lam { params, body } -> lambdas out here params body
     | Let { recursive, id, params, value, body } ->
         (match (recursive, V.get params 0) with
          | (True, Just first) ->
-             LetRec {
-               id = id,
-               param = first,
-               value = lambdas out here (V.drop params 1) value,
-               body = body
-             }
+             LetRec { id, param = first, value = lambdas out here (V.drop params 1) value, body }
          | (True, None) ->
              (let u =
                 say
                   (errorAt here "`let rec` needs an argument"
                      |> withNote
                        "a recursive value that is not a function has nothing to stand on: write `let rec f x = …`")
-              in Let { id = id, value = value, body = body })
-         | _ -> Let { id = id, value = lambdas out here params value, body = body })
+              in Let { id, value, body })
+         | _ -> Let { id, value = lambdas out here params value, body })
 }
 
 -- `fun` of each of `params` in turn, around `body`: each where the node

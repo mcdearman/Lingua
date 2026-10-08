@@ -394,7 +394,7 @@ fun finding (f : Finder) : Maybe String ! { Console | e } =
             (from + S.charLength n)
       | None -> Bound.Kept
   in {
-       LE.editor | prompt = prompt,
+       LE.editor | prompt,
        continued = S.repeat " " (S.charLength prompt),
        -- A line for the prompt itself -- `:theme` -- is not the language's
        -- to colour, or to call unfinished.
@@ -592,7 +592,7 @@ fun quoted (s : String) : String =
   | Just tree -> editorOf theme prompt paint tree errorsOf name indentOf completionsOf declsOf
   | None ->
       {
-        LE.editor | prompt = prompt,
+        LE.editor | prompt,
         continued = S.repeat " " (S.charLength prompt),
         highlight =
           \t ->

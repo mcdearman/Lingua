@@ -53,7 +53,7 @@ pass! {
         (match L.lookupAssoc ident env with
          | Just id ->
              (let u = amend id (\(b : Binder) -> { b | uses = V.pushBack b.uses here }) in
-              NameRef { id = id })
+              NameRef { id })
          | None ->
              (let u = say (errorAt here "unbound variable: ${ident}") in NameRef { id = unbound }))
     | Lam { params, later body } ->
@@ -76,14 +76,14 @@ pass! {
          let scopes =
            if rec then [metaResolvedExpr v, metaResolvedExpr b] else [metaResolvedExpr b]
          in
-         let u = amend self (\(x : Binder) -> { x | kind = kind, scopes = scopes }) in
+         let u = amend self (\(x : Binder) -> { x | kind, scopes }) in
          let w = seenIn ids [metaResolvedExpr v] in
          Let { recursive = rec, id = self, params = ids, value = v, body = b })
 }
 
 -- A new binder, seen nowhere and used nowhere yet.
 fun declare (name : String) (at : Meta) (kind : String) : Int ! { Table Binder | e } =
-  enter (Binder { name = name, at = at, kind = kind, scopes = [], uses = [] })
+  enter (Binder { name, at, kind, scopes = [], uses = [] })
 
 fun seenIn (ids : [Int]) (scopes : [Meta]) =
   V.foldl (\u id -> amend id (\(b : Binder) -> { b | scopes = scopes })) () ids

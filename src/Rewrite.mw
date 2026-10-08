@@ -41,11 +41,7 @@ use Part.*
 
 -- A tree, read to write one whose kinds `conv` says.
 @pub fun sourceWith (conv : k -> j) (g : Green k) : Origin k j =
-  Origin {
-    tree = g,
-    toks = V.toArray (V.filter (\i -> isTokenAt g i) (V.range 0 (slots g))),
-    conv = conv
-  }
+  Origin { tree = g, toks = V.toArray (V.filter (\i -> isTokenAt g i) (V.range 0 (slots g))), conv }
 
 -- The source a node of it is in.
 @pub fun sourceOf (s : Syntax k) : Origin k k = match s with | Syntax g _ -> source g

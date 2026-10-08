@@ -536,7 +536,7 @@ cases that change something:
 ```meadow
 pass! {
   pub lower : Surface -> Core
-  | Bin { lhs, op, rhs } -> Prim { op = op, args = [lhs, rhs] }
+  | Bin { lhs, op, rhs } -> Prim { op, args = [lhs, rhs] }
 }
 ```
 
@@ -586,7 +586,7 @@ pass! {
   | Lam { param, later body } ->
       (let a = fresh () in
         let b = body ((param, Forall [] a) :: env) in
-        Lam { param = param, body = b, ty = TFun a (tyTypedExpr b) })
+        Lam { param, body = b, ty = TFun a (tyTypedExpr b) })
   …
 }
 ```
@@ -616,7 +616,7 @@ pass! {
   pub lowerFolding : Surface -> Core
   | Bin { raw lhs, op, rhs } ->
       (if kindSurfaceExpr src lhs == SurfaceExprKind.Literal and surfaceLiteralNumber src lhs == "0" and op == "+" then rhs
-        else Prim { op = op, args = [lowerFoldingExpr src out lhs, rhs] })
+        else Prim { op, args = [lowerFoldingExpr src out lhs, rhs] })
 }
 ```
 
@@ -630,7 +630,7 @@ pass! {
   resolve : Surface -> Resolved with env
   | NameRef { ident } ->
       (match L.lookupAssoc ident env with
-       | Just id -> (let u = amend id (\(b : Binder) -> { b | uses = V.pushBack b.uses here }) in NameRef { id = id })
+       | Just id -> (let u = amend id (\(b : Binder) -> { b | uses = V.pushBack b.uses here }) in NameRef { id })
        | None -> …)
   | Lam { params, later body } ->
       (let ids = V.map (\p -> enter (binderOf p)) params in

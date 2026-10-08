@@ -31,8 +31,8 @@ is:
 ```meadow
 pass! {
   deepen : Shapes -> Depths with depth
-    | Expr.Var { name } -> Var { name = name, depth = depth }
-    | Lam { param, later body } -> Lam { param = param, body = body (depth + 1) }
+    | Expr.Var { name } -> Var { name, depth }
+    | Lam { param, later body } -> Lam { param, body = body (depth + 1) }
 }
 ```
 
@@ -53,15 +53,15 @@ a case. Leaving one out is an error at the pass, naming the production.
 A case names its production bare, and a node written in a body does too:
 
 ```meadow
-| Lam { param, body } -> Lam { param = param, body = body }
+| Lam { param, body } -> Lam { param, body }
 ```
 
 When two sorts each have a production of that name, say which with the sort,
 as a constructor is said of its type:
 
 ```meadow
-| Expr.Var { name } -> Var { name = name, depth = depth }
-| Pat.Var { name }  -> Pat.Var { name = name }
+| Expr.Var { name } -> Var { name, depth }
+| Pat.Var { name }  -> Pat.Var { name }
 ```
 
 The rules:
@@ -101,7 +101,7 @@ when it is tables. Use it when a case needs more of the node than its fields.
 ```meadow
 pass! {
   onlyExprs : Calc -> Core from Expr
-    | Bin { lhs, op, rhs } -> Prim { op = op, args = [lhs, rhs] }
+    | Bin { lhs, op, rhs } -> Prim { op, args = [lhs, rhs] }
     | Literal { number } -> Literal { number = "${number}@${show (R.offset node)}" }
 }
 ```
@@ -123,7 +123,7 @@ pass! {
     | File { stmts } -> V.concat stmts
     | Let { value } -> [value]
     | ExprStmt { expr } -> [expr, expr]
-    | Bin { lhs, op, rhs } -> Prim { op = op, args = [lhs, rhs] }
+    | Bin { lhs, op, rhs } -> Prim { op, args = [lhs, rhs] }
 }
 ```
 

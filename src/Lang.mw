@@ -78,7 +78,7 @@ use Keeping.*
 @pub fun langKeeping (l : Lang) : Keeping = match l with | Lang _ _ _ _ _ k _ -> k
 
 -- What a language asked for besides its tables: `set`, a field written
--- again; `modules`, its names by module.
+-- again; `modules`, its names by module; `reflect`, a program as a `Datum`.
 @pub fun langWith (l : Lang) : [String] = match l with | Lang _ _ _ _ _ _ w -> w
 
 -- Whether a language's programs are trees.
@@ -331,6 +331,52 @@ use Keeping.*
   match x with
   | None -> Just None
   | Just y -> (match f y with | Just z -> Just (Just z) | None -> None)
+
+-- --- a program as a datum ---------------------------------------------------
+--
+-- What a language written `with reflect` is `Reflect` by: its rows here, and
+-- each of its columns as the list it is. A program can then be kept wherever
+-- a `Datum` can -- in a build's interface, between runs.
+
+-- A column, as a datum: the list of what it holds.
+@pub fun columnDatum (xs : #[a]) : Datum = toDatum (V.fromArray xs)
+
+-- A datum, as a column.
+@pub fun datumColumn (d : Datum) : Result String #[a] =
+  match fromDatum d with
+  | Ok xs -> Ok (V.toArray xs)
+  | Err e -> Err e
+
+-- The `i`th of `ds`, read as what it is wanted as; and as a column.
+@pub fun datumAt (ds : [Datum]) (i : Int) : Result String a =
+  match V.get ds i with
+  | Just d -> fromDatum d
+  | None -> Err "a program's datum has no part ${show i}"
+
+@pub fun columnAt (ds : [Datum]) (i : Int) : Result String #[a] =
+  match V.get ds i with
+  | Just d -> datumColumn d
+  | None -> Err "a program's datum has no column ${show i}"
+
+impl Reflect LangTables {
+  fun toDatum t =
+    match t with
+    | LangTables ks ss es fs xs ->
+        Datum.Tag "Rows" [
+          columnDatum ks,
+          columnDatum ss,
+          columnDatum es,
+          columnDatum fs,
+          columnDatum xs
+        ]
+  fun fromDatum d =
+    match d with
+    | Datum.Tag "Rows" ds ->
+        (match (columnAt ds 0, columnAt ds 1, columnAt ds 2, columnAt ds 3, columnAt ds 4) with
+         | (Ok ks, Ok ss, Ok es, Ok fs, Ok xs) -> Ok (LangTables ks ss es fs xs)
+         | _ -> Err "a program's rows are five columns of numbers")
+    | _ -> Err "not a program's rows"
+}
 
 -- --- tests -------------------------------------------------------------------
 

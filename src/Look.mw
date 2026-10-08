@@ -96,10 +96,10 @@ def wholeMark : String = " whole"
   Grammar {
     models = ms,
     uses = us,
-    toks = toks,
+    toks,
     firsts = fs,
     follows = followsOf toks us fs root names,
-    root = root,
+    root,
     ends = newRef H.empty,
     cut = newRef False,
     steps = newRef 0
@@ -132,7 +132,7 @@ type Bits = [Int]
 fun tokensIn (bodies : [Rule]) : Tokens =
   let names = V.foldl (\acc r -> quotedIn r acc) [endOfInput] bodies in
   Tokens {
-    names = names,
+    names,
     index = H.fromVec (V.map (\i -> (V.getOr "" names i, i)) (V.range 0 (V.len names))),
     words = V.len names / 64 + 1
   }

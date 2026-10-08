@@ -10,7 +10,7 @@
 --
 --   pass! {
 --     pub lower : Surface -> Core
---     | Bin { lhs, op, rhs } -> Prim { op = op, args = [lhs, rhs] }
+--     | Bin { lhs, op, rhs } -> Prim { op, args = [lhs, rhs] }
 --   }
 --
 -- A language is written out as tables -- see "a language's code" below: a
@@ -89,7 +89,7 @@
 --     pub elaborate : Core -> Typed with env
 --     | Lam { param, later body } -> (let a = fresh () in
 --         let b = body ((param, a) :: env) in
---         Lam { param = param, body = b, ty = … })
+--         Lam { param, body = b, ty = … })
 --   }
 --
 -- Every function the pass is made of then takes `env` first, and hands it on
@@ -243,9 +243,9 @@ def typeParam : Parser Tokens String =
       | _ -> None)
     []
 
--- `with set, modules`: what a language is written with besides its tables
--- -- `set`, a field written again on a node already written; `modules`, its
--- names by module.
+-- `with set, modules, reflect`: what a language is written with besides its
+-- tables -- `set`, a field written again on a node already written;
+-- `modules`, its names by module; `reflect`, a program of it as a `Datum`.
 def asked : Parser Tokens [(String, Loc)] =
   P.map
     (\o -> M.unwrapOr [] o)
@@ -281,13 +281,13 @@ def langCall : Parser Tokens (Bool, String, [String], Source, [(String, Loc)]) =
   match parseTokens langCall ts with
   | Err failed -> failed
   | Ok (pub, name, params, src, extras) ->
-      match V.find (\w -> not (V.elem (fst w) ["set", "modules"])) extras with
+      match V.find (\w -> not (V.elem (fst w) ["set", "modules", "reflect"])) extras with
       | Just w ->
           [Fail
              (if fst w == "In" then
                 "`with In` is not written any more: every reader of `${name}` reads a program being written as it reads a finished one, so there is nothing to ask for -- and a reader that was called `…In` is called without it"
               else
-                "a language is written `with set` -- a field written again -- `with modules` -- its names by module, `${name}.Expr.Lam` -- or both; not `${fst w}`")
+                "a language is written `with set` -- a field written again -- `with modules` -- its names by module, `${name}.Expr.Lam` -- `with reflect` -- a program of it as a `Datum`, to keep -- or several of them; not `${fst w}`")
              (snd w)]
       | None ->
           match baseOf src with
@@ -301,6 +301,10 @@ def langCall : Parser Tokens (Bool, String, [String], Source, [(String, Loc)]) =
                     [Fail
                        "`${name}` is a tree language: its programs are trees, not tables, and there is nothing of them to write `with`"
                        (M.unwrapOr Nowhere (M.map snd (V.get extras 0)))]
+                  else if V.elem "reflect" (langWith l) and not (V.isEmpty (langParams l)) then
+                    [Fail
+                       "`${name}` takes type parameters, and a program of it holds values of them: it is not written `with reflect` yet"
+                       (M.unwrapOr Nowhere (M.map snd (V.find (\w -> fst w == "reflect") extras)))]
                   else
                     let u = defineAs name l in
                     [Code (langCode (if pub then "@pub " else "") l)]
@@ -659,8 +663,56 @@ fun langCode pub (l : Lang) : String =
          V.map (\s -> patternCode pub l s) (langSorts l),
          V.concatMap (\s -> V.map (\p -> prodCode pub l s p) (sortProds s)) (langSorts l),
          [if langGrammar l == "" then "" else fromCode pub l],
-         [if V.elem "modules" (langWith l) then dotted pub l else ""]
+         [if V.elem "modules" (langWith l) then dotted pub l else ""],
+         [if V.elem "reflect" (langWith l) then reflectCode l else ""]
        ])
+
+-- A language written `with reflect`: its arena and its program are `Reflect`,
+-- the rows as `Lingua.Lang` writes them and each column as the list it is --
+-- so a program can be kept where a `Datum` can, a build's interface say.
+-- What a column holds has to be `Reflect` itself.
+fun reflectCode l : String =
+  let n = langName l in
+  let ks = V.range 0 (V.len (columns l)) in
+  let bound = S.join "" (V.map (\k -> " lingua_c${show k}") ks) in
+  let written = S.join "" (V.map (\k -> ", LinguaL.columnDatum lingua_c${show k}") ks) in
+  let read =
+    S.join
+      ", "
+      (V.pushFront
+         (V.map (\k -> "LinguaL.columnAt lingua_ds ${show (k + 1)}") ks)
+         "LinguaL.datumAt lingua_ds 0")
+  in
+  let got = S.join ", " (V.pushFront (V.map (\k -> "Ok lingua_c${show k}") ks) "Ok lingua_t") in
+  "
+use Std.Macro (Datum, Reflect, toDatum, fromDatum)
+
+impl Reflect ${arenaTy l} {
+  fun toDatum a =
+    match a with
+    | ${n}Arena lingua_t${bound} -> Datum.Tag \"${n}Arena\" [toDatum lingua_t${written}]
+  fun fromDatum d =
+    match d with
+    | Datum.Tag \"${n}Arena\" lingua_ds ->
+        (match (${read}) with
+         | (${got}) -> Ok (${n}Arena lingua_t${bound})
+         | _ -> Err \"not a ${n} program's tables\")
+    | _ -> Err \"not a ${n} program's tables\"
+}
+
+impl Reflect ${programTy l} {
+  fun toDatum p =
+    match p with
+    | ${n}Program lingua_a lingua_r -> Datum.Tag \"${n}Program\" [toDatum lingua_a, Datum.Int lingua_r]
+  fun fromDatum d =
+    match d with
+    | Datum.Tag \"${n}Program\" lingua_ds ->
+        (match (LinguaL.datumAt lingua_ds 0, LinguaL.datumAt lingua_ds 1) with
+         | (Ok lingua_a, Ok lingua_r) -> Ok (${n}Program lingua_a lingua_r)
+         | _ -> Err \"not a ${n} program\")
+    | _ -> Err \"not a ${n} program\"
+}
+"
 
 -- --- a language's names, by module -------------------------------------------
 --

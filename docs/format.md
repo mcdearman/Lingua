@@ -140,7 +140,7 @@ in
 x
 ```
 
-Line breaking is done by [Pretty](https://github.com/mcdearman/MeadowPretty),
+Line breaking is done by [Pretty](https://github.com/meadow-lang/Pretty),
 Wadler's printer.
 
 ### Without a width: indenting only

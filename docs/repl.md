@@ -79,7 +79,7 @@ Alt-Enter and Ctrl-J start a new line whatever the text.
 
 ## Keys
 
-The line is [LineEditor](https://github.com/mcdearman/LineEditor)'s.
+The line is [LineEditor](https://github.com/meadow-lang/LineEditor)'s.
 
 | keys                                   | do                                                |
 | -------------------------------------- | ------------------------------------------------- |
@@ -112,7 +112,7 @@ The prompt converts from the cursor's character position.
 Ctrl-F opens a finder under the line, listing what `declarations` answered.
 
 - Typing narrows the list to the declarations the letters are found in, the
-  likeliest first. Matching is [Fuzzy](https://github.com/mcdearman/Fuzzy)'s,
+  likeliest first. Matching is [Fuzzy](https://github.com/meadow-lang/Fuzzy)'s,
   against the name and what it is, so typing `String` finds a `lines` whose
   type mentions it.
 - The pane beside the list shows the chosen declaration: its name, what it is,
@@ -128,7 +128,7 @@ Ctrl-F opens a finder under the line, listing what `declarations` answered.
 | Enter                        | take the chosen name  |
 | Escape, Ctrl-C, Ctrl-G, Ctrl-F | put the finder away |
 
-It is drawn with [Doodle](https://github.com/mcdearman/Doodle), twelve rows
+It is drawn with [Doodle](https://github.com/meadow-lang/Doodle), twelve rows
 high and up to a hundred columns wide.
 
 ## Colour

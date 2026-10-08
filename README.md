@@ -100,7 +100,7 @@ syntax! {
   input never set, or queries that read each other in a circle -- on one
   thread or across several -- are a `QueryError`.
 - **`Lingua.Diagnostic`**, what a compiler says about a program and where,
-  drawn by [Nettle](https://github.com/mcdearman/Nettle), the port of
+  drawn by [Nettle](https://github.com/meadow-lang/Nettle), the port of
   ariadne. A parse's errors become diagnostics at the tokens they were found
   at; a pass reports with the `Report` effect -- in a `pass!` case, `here` is
   the node being rewritten -- and `collect` gathers what it said, so a query

@@ -100,7 +100,7 @@ fun compiling (u : Given Interface) =
 
 use Std.Test (assertEq)
 use Std.Console (withOutput)
-use Std.Fs (Fs, createDirAll, removeDirAll, appendString, readToString)
+use Std.Fs (Fs, createDirAll, removeDirAll, removeFile, appendString, readToString)
 use Std.Result as Res
 
 -- Build `root` and say, for each unit, how it went.
@@ -139,6 +139,41 @@ fun write dir file text =
       (True, ["   Compiled lib", "   Compiled app"])
     ]
     "each build"
+
+-- What a build keeps: fingerprints in one small file, and each unit's
+-- interface in a file of its own, read only when a unit that depends on it
+-- is compiled again -- here `app`, whose own source changed while `lib` did
+-- not. An interface that has gone missing is its unit compiled again.
+@test fun aUnitsInterfaceIsKeptInAFileOfItsOwn () =
+  let root = "target/build-kept" in
+  let z = removeDirAll root in
+  let lib = Path.join root "lib" in
+  let app = Path.join root "app" in
+  let a = write lib "Unit" "" in
+  let b = write lib "double.ml" "fun x -> x + x" in
+  let c = write app "Unit" "../lib\n" in
+  let d = write app "main.ml" "double 21" in
+  let first = built app in
+  let e = write app "main.ml" "double 4" in
+  let second = built app in
+  let index = Res.unwrapOr "" (readToString (Path.joinAll [app, "target", "lingua-build.json"])) in
+  let kept = Path.joinAll [app, "target", "interfaces", "lib.json"] in
+  let there = Res.isOk (readToString kept) in
+  let f = removeFile kept in
+  let third = built app in
+  let g =
+    assertEq
+      [first, second, third]
+      [
+        (True, ["   Compiled lib", "   Compiled app"]),
+        (True, ["   Fresh lib", "   Compiled app"]),
+        (True, ["   Compiled lib", "   Fresh app"])
+      ]
+      "`app` compiled against the interface `lib` left, and `lib` again when that was gone"
+  in assertEq
+       (S.contains "\"interface\"" index, S.contains "\"fingerprint\"" index, there)
+       (False, True, True)
+       "the index holds fingerprints, and the interface is beside it"
 
 @test fun aUnitThatFailsBlocksWhatDependsOnIt () =
   let root = "target/build-fail" in

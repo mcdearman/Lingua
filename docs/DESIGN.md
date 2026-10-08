@@ -940,9 +940,10 @@ at a unit, and they belong to different owners:
   and leaves no thread in it. That is the other way round from a compiler
   (§6), which is sequential until it asks: a compiler may be used with no
   build around it, and when there is one, the units are where the work
-  divides. What was built is kept in
-  `target/lingua-build.json`, interfaces and all, which are `Reflect` so that
-  they can be.
+  divides. What was built is kept under
+  `target`: fingerprints in `lingua-build.json`, and each unit's interface --
+  `Reflect`, so that it can be -- in a file of its own, read back only when
+  a unit that depends on it is compiled again.
 - **Inside a unit**, the compiler's. `compile` is given the unit's sources,
   the interfaces it depends on, and a directory of its own; how it does the
   work -- its own queries, its own threads, its own cache in that directory --

@@ -89,7 +89,22 @@ A unit is compiled again only if its sources, or an interface it was compiled
 against, are not what they were. A change that leaves a unit's interface as it
 was compiles that unit and nothing that depends on it.
 
-What was built is kept in `target/lingua-build.json`, interfaces included.
+What was built is kept under `target/`:
+
+- `lingua-build.json` holds fingerprints only: for each unit, of its sources,
+  of each interface it was compiled against, and of its own interface. It is
+  small, and every build reads it.
+- `interfaces/<unit>.json` holds one unit's interface, written by the thread
+  that compiled it.
+
+Whether a unit is up to date is decided from fingerprints alone. An interface
+is read back only when something needs it: a unit that depends on it and is
+being compiled again, or the link step when it reruns. A build in which
+nothing was compiled reads no interface and writes nothing. An interface file
+that has gone missing makes its unit compile again.
+
+A build kept by a different compiler binary, or by an older layout of these
+files, is not trusted: every unit is compiled once more.
 
 ## Scheduling
 

@@ -22,8 +22,9 @@
 -- only if its sources, or an interface it was compiled against, are not what
 -- they were -- so a change to a unit that leaves its interface as it was
 -- compiles that unit and nothing that depends on it. What was built is kept
--- between runs in `target/lingua-build.json`, with the interfaces, which are
--- `Reflect` so that they can be. What happens inside a unit is the
+-- between runs under `target`: fingerprints in `lingua-build.json`, and each
+-- unit's interface -- `Reflect`, so that it can be -- in a file of its own
+-- under `interfaces`, read only when something needs it. What happens inside a unit is the
 -- compiler's: its own queries, its own threads, its own cache in the
 -- directory it is given.
 --
@@ -182,10 +183,15 @@ fun roundsFrom units (placed : [String]) =
 -- --- what was built before ---------------------------------------------------
 
 -- For each unit built: the fingerprint of its sources, of each interface it
--- was compiled against, and its own interface and that one's fingerprint.
-data Built = Built Int [(String, Int)] Datum Int
+-- was compiled against, and of its own interface. The interface itself is in
+-- a file of its own (`interfacePath`), read only when something needs it: a
+-- unit that depends on it and is compiled again, or the link.
+data Built = Built Int [(String, Int)] Int
 
 use Built.*
+
+-- How what is kept is laid out: a build by another layout is no build.
+def layout : Int = 2
 
 fun statePath root = Path.joinAll [root, "target", "lingua-build.json"]
 
@@ -195,7 +201,8 @@ fun loadLinked (root : String) : Maybe Int ! { Fs, Process | e } =
   match M.andThen (\text -> okOf (J.parse text)) (okOf (readToString (statePath root))) with
   | None -> None
   | Just state ->
-      if M.andThen J.asString (J.get "compiler" state) != Just (compilerId ()) then None
+      if M.andThen J.asString (J.get "compiler" state) != Just (compilerId ())
+        or M.andThen J.asInt (J.get "lingua" state) != Just layout then None
       else M.andThen J.asInt (J.get "linked" state)
 
 fun loadState (root : String) : HashMap String Built ! { Fs, Process | e } =
@@ -205,8 +212,9 @@ fun loadState (root : String) : HashMap String Built ! { Fs, Process | e } =
       let state = okOf (J.parse text) in
       -- What another compiler built says nothing about what this one would:
       -- an interface is the compiler's as much as the sources'.
-      if M.andThen (\j -> M.andThen J.asString (J.get "compiler" j)) state
-        != Just (compilerId ()) then HashMap.empty
+      if M.andThen (\j -> M.andThen J.asString (J.get "compiler" j)) state != Just (compilerId ())
+        or M.andThen (\j -> M.andThen J.asInt (J.get "lingua" j)) state != Just layout then
+        HashMap.empty
       else
         (match M.andThen J.asObject (M.andThen (J.get "units") state) with
          | None -> HashMap.empty
@@ -236,13 +244,8 @@ fun compilerId () : String ! { Fs, Process | e } =
 
 fun builtOf (j : Json) : Maybe Built =
   let int = \k -> M.andThen J.asInt (J.get k j) in
-  match (
-    int "sources",
-    M.andThen J.asArray (J.get "against" j),
-    M.andThen jsonDatum (J.get "interface" j),
-    int "fingerprint"
-  ) with
-  | (Just s, Just ds, Just i, Just f) ->
+  match (int "sources", M.andThen J.asArray (J.get "against" j), int "fingerprint") with
+  | (Just s, Just ds, Just f) ->
       Just
         (Built
            s
@@ -252,25 +255,53 @@ fun builtOf (j : Json) : Maybe Built =
                 | (Just n, Just h) -> [(n, h)]
                 | _ -> [])
               ds)
-           i
            f)
   | _ -> None
+
+-- Where the interface of unit `dir` is kept: beside the units' own
+-- directories and not in one, so that no compiler can read another's but
+-- through what the build gives it.
+fun interfacePath root dir =
+  Path.joinAll [Path.normalize root, "target", "interfaces", outName root dir ++ ".json"]
+
+-- A unit's interface, as it was written when the unit was last compiled.
+fun readInterface root dir decode =
+  M.andThen
+    (\d -> okOf (decode d))
+    (M.andThen
+       jsonDatum
+       (M.andThen (\text -> okOf (J.parse text)) (okOf (readToString (interfacePath root dir)))))
+
+fun writeInterface (path : String) (d : Datum) =
+  let u = M.map createDirAll (Path.parent path) in
+  let aside = "${path}.${show (currentPid ())}" in
+  let w = writeString (aside, J.render (datumJson d)) in
+  rename (aside, path)
 
 -- Remove what is under `target/units` that no unit of the build owns: a unit
 -- no longer depended on, or one named another way by an older Lingua.
 fun prune (root : String) (owned : [String]) =
   let units = Path.joinAll [Path.normalize root, "target", "units"] in
-  V.foldl
-    (\u name -> if V.elem name owned then u else (let r = removeDirAll (Path.join units name) in u))
-    ()
-    (M.unwrapOr [] (okOf (readDir units)))
+  let interfaces = Path.joinAll [Path.normalize root, "target", "interfaces"] in
+  let a =
+    V.foldl
+      (\u name ->
+        if V.elem name owned then u else (let r = removeDirAll (Path.join units name) in u))
+      ()
+      (M.unwrapOr [] (okOf (readDir units)))
+  in V.foldl
+       (\u name ->
+         if V.any (\o -> name == o ++ ".json") owned then u
+         else (let r = removeFile (Path.join interfaces name) in u))
+       ()
+       (M.unwrapOr [] (okOf (readDir interfaces)))
 
 fun saveState (root : String) (state : HashMap String Built) (linked : Maybe Int) =
   let units =
     V.map
       (\p ->
         match snd p with
-        | Built s ds i f ->
+        | Built s ds f ->
             (
               fst p,
               J.jObject [
@@ -279,7 +310,6 @@ fun saveState (root : String) (state : HashMap String Built) (linked : Maybe Int
                   "against",
                   J.jArray (V.map (\d -> J.jArray [J.jString (fst d), J.jInt (snd d)]) ds)
                 ),
-                ("interface", datumJson i),
                 ("fingerprint", J.jInt f)
               ]
             ))
@@ -289,8 +319,7 @@ fun saveState (root : String) (state : HashMap String Built) (linked : Maybe Int
   -- Written aside and moved into place, so that a build running beside this
   -- one never reads half of it.
   let aside = "${statePath root}.${show (currentPid ())}" in
-  -- Unindented: every build reads all of it, and indenting made it seven
-  -- times as long.
+  -- Unindented: every build reads all of it.
   let w =
     writeString (
       aside,
@@ -298,7 +327,7 @@ fun saveState (root : String) (state : HashMap String Built) (linked : Maybe Int
         (J.jObject
            (V.append
               [
-                ("lingua", J.jInt 1),
+                ("lingua", J.jInt layout),
                 ("compiler", J.jString (compilerId ())),
                 ("units", J.jObject units)
               ]
@@ -337,8 +366,9 @@ use Outcome.*
               before
               done
               dir
-              (M.unwrapOr [] (M.map snd (V.find (\u -> fst u == dir) units))))
-          (\p -> carryOut compile encode decode p)
+              (M.unwrapOr [] (M.map snd (V.find (\u -> fst u == dir) units)))
+              decode)
+          (\p -> carryOut compile encode p)
           (\r ->
             match r with
             | (dir, outcome, b, i) ->
@@ -384,45 +414,47 @@ use Outcome.*
           (V.concatMap
              (\dir ->
                match HashMap.lookup dir state with
-               | Just (Built s ds _ _) -> [(dir, s, ds)]
+               | Just (Built s ds _) -> [(dir, s, ds)]
                | None -> [])
              inOrder)
       in
       let was = loadLinked root in
       let out = linkDir root in
-      match link with
-      | None -> (let u = saveState root state None in failed == 0)
-      | Just put ->
-          if failed > 0 then (let u = saveState root state was in False)
-          else if was == Just from and exists out then
-            (let u = saveState root state was in
-             let v = writeOutput "   Fresh link\n" in
-             True)
-          else
-            (let linking =
-               Linking
-                 (Path.normalize root)
-                 (V.concatMap
-                    (\dir ->
-                      V.concatMap
-                        (\d ->
-                          match d with
-                          | (n, _, _, Just i) ->
-                              if n == dir then [(dir, i, outDir root dir)] else []
-                          | _ -> [])
-                        done)
-                    inOrder)
-                 out
-             in match linkingIn (V.map (\dir -> outDir root dir) inOrder) out (\() ->
-                  put linking) with
-                | Ok _ ->
-                    (let u = saveState root state (Just from) in
-                     let v = writeOutput "   Linked ${relative root (Path.normalize root)}\n" in
-                     True)
-                | Err report ->
-                    (let u = saveState root state None in
-                     let v = writeOutput "   Failed link\n${report}" in
-                     False))
+      -- What is kept is written again only when it is not what was read: a
+      -- build that compiled nothing writes nothing.
+      let same = compiled == 0 and HashMap.size state == HashMap.size before in
+      let keep =
+        \linked ->
+          if same and linked == was then () else (let w = saveState root state linked in ())
+      in match link with
+         | None -> (let u = keep None in failed == 0)
+         | Just put ->
+             if failed > 0 then (let u = keep was in False)
+             else if was == Just from and exists out then
+               (let u = keep was in
+                let v = writeOutput "   Fresh link\n" in
+                True)
+             else
+               (let linking =
+                  Linking
+                    (Path.normalize root)
+                    (V.concatMap
+                       (\dir ->
+                         match interfaceIn root decode done dir with
+                         | Just i -> [(dir, i, outDir root dir)]
+                         | None -> [])
+                       inOrder)
+                    out
+                in match linkingIn (V.map (\dir -> outDir root dir) inOrder) out (\() ->
+                     put linking) with
+                   | Ok _ ->
+                       (let u = keep (Just from) in
+                        let v = writeOutput "   Linked ${relative root (Path.normalize root)}\n" in
+                        True)
+                   | Err report ->
+                       (let u = keep None in
+                        let v = writeOutput "   Failed link\n${report}" in
+                        False))
 
 -- Where a build's link may write: a directory of its own under `target`.
 @pub fun linkDir (root : String) : String = Path.joinAll [Path.normalize root, "target", "link"]
@@ -506,54 +538,95 @@ fun relative root dir =
   else if S.startsWith (base ++ "/") dir then S.drop dir (stringByteLength base + 1)
   else dir
 
--- What a unit needs: its sources read, and the interfaces it depends on --
--- or that something it depends on failed, and it cannot be built.
+-- What is to be done about a unit: nothing can be, since something it
+-- depends on failed; nothing need be, since what it would be compiled from
+-- is what it was; or it is to be compiled -- from its sources, read, and the
+-- interfaces it depends on, each with its fingerprint -- and its interface
+-- written where the build keeps it.
 data Plan i
   = Blocked2 String String
-  | Ready String [(String, String)] Int [(String, i, Int)] (Maybe Built) String
+  | Kept String Built
+  | Ready String [(String, String)] Int [(String, i, Int)] String String
 
 use Plan.*
 
-fun plan us root before done dir deps =
+-- What came of a unit already: its interface's fingerprint, if it was built.
+fun fingerprintIn done (d : String) : Maybe Int =
+  V.get
+    (V.concatMap
+       (\x ->
+         match x with
+         | (n, _, Just (Built _ _ f), _) -> if n == d then [f] else []
+         | _ -> [])
+       done)
+    0
+
+-- The interface of a unit that is done: the one its compiler just answered,
+-- or -- for a unit that was not compiled again -- the one kept from when it
+-- was.
+fun interfaceIn root decode done (d : String) =
+  match V.find (\x -> match x with | (n, _, _, _) -> n == d) done with
+  | Just (_, _, _, Just i) -> Just i
+  | Just (_, _, Just _, None) -> readInterface root d decode
+  | _ -> None
+
+fun plan us root before done dir deps decode =
   let failedDep =
     V.find (\d -> V.any (\x -> match x with | (n, _, None, _) -> n == d | _ -> False) done) deps
   in match failedDep with
      | Just d -> Blocked2 dir "${relative root d} did not build"
      | None ->
          let sources = V.map (\f -> (f, M.unwrapOr "" (okOf (readToString f)))) (filesOf us dir) in
-         let imports =
-           V.concatMap
-             (\d ->
-               V.concatMap
-                 (\x ->
-                   match x with
-                   | (n, _, Just (Built _ _ _ f), Just i) -> if n == d then [(d, i, f)] else []
-                   | _ -> [])
-                 done)
-             deps
-         in Ready dir sources (hash sources) imports (HashMap.lookup dir before) (outDir root dir)
+         let fp = hash sources in
+         let against =
+           V.concatMap (\d -> M.unwrapOr [] (M.map (\f -> [(d, f)]) (fingerprintIn done d))) deps
+         in
+         -- Fresh by fingerprints alone: no interface is read to say so, its
+         -- own or another's -- only that its own is still there to be read.
+         match HashMap.lookup dir before with
+         | Just (Built s ds f) ->
+             if s == fp and ds == against and exists (interfacePath root dir) then
+               Kept dir (Built s ds f)
+             else compiling root decode done dir deps sources fp
+         | None -> compiling root decode done dir deps sources fp
+
+fun compiling root decode done dir deps sources (fp : Int) =
+  let imports =
+    V.map
+      (\d ->
+        match (interfaceIn root decode done d, fingerprintIn done d) with
+        | (Just i, Just f) -> Ok (d, i, f)
+        | _ -> Err d)
+      deps
+  in match V.find (\x -> match x with | Err _ -> True | Ok _ -> False) imports with
+     | Just (Err d) ->
+         Blocked2
+           dir
+           "the interface kept for ${relative root d} cannot be read: remove ${Path.joinAll [root, "target", "interfaces"]} and build again"
+     | _ ->
+         Ready
+           dir
+           sources
+           fp
+           (V.concatMap (\x -> match x with | Ok t -> [t] | Err _ -> []) imports)
+           (outDir root dir)
+           (interfacePath root dir)
 
 -- Compile the unit, unless what it would be compiled from is what it was.
-fun carryOut compile encode decode p =
+-- A unit's interface is written by whoever compiled it, on its thread.
+fun carryOut compile encode p =
   match p with
   | Blocked2 dir why -> (dir, Blocked why, None, None)
-  | Ready dir sources fp imports was out ->
+  | Kept dir b -> (dir, Fresh, Just b, None)
+  | Ready dir sources fp imports out kept ->
       let against = V.map (\x -> match x with | (d, _, f) -> (d, f)) imports in
-      let reuse =
-        (match was with
-         | Just (Built s ds i f) ->
-             if s == fp and ds == against then M.map (\x -> (x, Built s ds i f)) (okOf (decode i))
-             else None
-         | None -> None)
-      in match reuse with
-         | Just (i, b) -> (dir, Fresh, Just b, Just i)
-         | None ->
-             let unit =
-               Given dir sources (V.map (\x -> match x with | (d, i, _) -> (d, i)) imports) out
-             in match sandboxed (V.map fst sources) out (\() -> compile unit) with
-                | Err report -> (dir, Broke report, None, None)
-                | Ok i ->
-                    (dir, Compiled, Just (Built fp against (encode i) (hash (encode i))), Just i)
+      let unit = Given dir sources (V.map (\x -> match x with | (d, i, _) -> (d, i)) imports) out in
+      match sandboxed (V.map fst sources) out (\() -> compile unit) with
+      | Err report -> (dir, Broke report, None, None)
+      | Ok i ->
+          let d = encode i in
+          let w = writeInterface kept d in
+          (dir, Compiled, Just (Built fp against (hash d)), Just i)
 
 -- What the unit at `dir` was compiled from in `root`'s last build: its
 -- sources as they are now, and the interfaces of the units it depends on as
@@ -573,9 +646,7 @@ fun carryOut compile encode decode p =
             match acc with
             | Err e -> Err e
             | Ok is ->
-                (match M.andThen
-                   (\b -> match b with | Built _ _ i _ -> okOf (decode i))
-                   (HashMap.lookup x state) with
+                (match M.andThen (\b -> readInterface r x decode) (HashMap.lookup x state) with
                  | Just i -> Ok (V.pushBack is (x, i))
                  | None -> Err "${relative r x} has not been built"))
           (Ok [])

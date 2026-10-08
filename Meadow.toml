@@ -3,9 +3,9 @@ name = "Lingua"
 version = "0.1.0"
 
 [dependencies]
-Scythe = { git = "https://github.com/mcdearman/Scythe.git", branch = "master" }
-Nettle = { git = "https://github.com/mcdearman/Nettle.git", branch = "master" }
-Pretty = { git = "https://github.com/mcdearman/MeadowPretty.git", version = "0.2.0" }
-Fuzzy = { git = "https://github.com/mcdearman/Fuzzy", version = "0.1.0" }
-Doodle = { git = "https://github.com/mcdearman/Doodle", version = "0.1.1" }
-LineEditor = { git = "https://github.com/mcdearman/LineEditor", version = "0.2.0" }
+Scythe = { git = "https://github.com/meadow-lang/Scythe.git", branch = "master" }
+Nettle = { git = "https://github.com/meadow-lang/Nettle.git", branch = "master" }
+Pretty = { git = "https://github.com/meadow-lang/Pretty.git", version = "0.2.0" }
+Fuzzy = { git = "https://github.com/meadow-lang/Fuzzy", version = "0.1.0" }
+Doodle = { git = "https://github.com/meadow-lang/Doodle", version = "0.1.1" }
+LineEditor = { git = "https://github.com/meadow-lang/LineEditor", version = "0.2.0" }

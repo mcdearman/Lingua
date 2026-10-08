@@ -38,7 +38,7 @@
 -- What laying out changes is the space between tokens, and nothing else:
 -- every token that was in the text is in it after, a child the rule did not
 -- name -- something the parser could not place -- written where it was.
--- Lines are broken by [Pretty](https://github.com/mcdearman/MeadowPretty).
+-- Lines are broken by [Pretty](https://github.com/meadow-lang/Pretty).
 --
 -- **Without one**, it only indents: where lines break is as the program was
 -- written, and each line is set in by what the rules say of the place it

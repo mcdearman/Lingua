@@ -791,7 +791,7 @@ inputs' keys, are `Reflect`.
 What a compiler says about a program is a value, `Lingua.Diagnostic`: how
 serious, what it says, the `Meta` it is about -- the bytes every node carries
 -- and further labelled spans and notes. It is drawn by
-[Nettle](https://github.com/mcdearman/Nettle), the port of ariadne, only when
+[Nettle](https://github.com/meadow-lang/Nettle), the port of ariadne, only when
 someone asks: `renderAll path text diagnostics`.
 
 - **The parser**'s errors are offsets and messages; `parseErrors` makes each
@@ -861,9 +861,9 @@ colours, while `:theme quiet` turns one on. What is written is `runRepl ()`.
 
 The line, the finder's matching and its drawing are packages of their own,
 which a compiler not written with Lingua can use as well:
-[LineEditor](https://github.com/mcdearman/LineEditor),
-[Fuzzy](https://github.com/mcdearman/Fuzzy) and
-[Doodle](https://github.com/mcdearman/Doodle), over `Std.Terminal`. The
+[LineEditor](https://github.com/meadow-lang/LineEditor),
+[Fuzzy](https://github.com/meadow-lang/Fuzzy) and
+[Doodle](https://github.com/meadow-lang/Doodle), over `Std.Terminal`. The
 editor and the finder are each a state and a function of a key, so a prompt
 is tested by giving it keys. Where the input is not a terminal, entries are
 read a line at a time and nothing is drawn.
@@ -903,7 +903,7 @@ functions of a tree:
   -- something the parser could not place -- is written where it was, so a
   broken program loses nothing. Given to `lsp!` as `format`, it is the
   editor's formatting. Lines are broken by
-  [Pretty](https://github.com/mcdearman/MeadowPretty), Wadler's printer.
+  [Pretty](https://github.com/meadow-lang/Pretty), Wadler's printer.
 - `indentStyle`, what the line after an *unfinished* text opens with: a
   level for each line on which a node began that is still open at the end,
   in its indented part -- there and running to the end, `let x = 1 +`, or

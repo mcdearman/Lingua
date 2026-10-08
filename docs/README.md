@@ -35,9 +35,9 @@ Most examples in the guides are taken from tested code in
 
 The prompt is built on three packages that work without Lingua:
 
-- [LineEditor](https://github.com/mcdearman/LineEditor): reading an entry, with
+- [LineEditor](https://github.com/meadow-lang/LineEditor): reading an entry, with
   history, completion and multi-line editing.
-- [Fuzzy](https://github.com/mcdearman/Fuzzy): ranking texts by a few typed
+- [Fuzzy](https://github.com/meadow-lang/Fuzzy): ranking texts by a few typed
   letters.
-- [Doodle](https://github.com/mcdearman/Doodle): drawing in a terminal, a cell
+- [Doodle](https://github.com/meadow-lang/Doodle): drawing in a terminal, a cell
   at a time.

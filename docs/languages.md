@@ -144,7 +144,7 @@ pass! {
     | Lam { param, later body } ->
         (let a = fresh ctx in
          let b = body (bind ctx param a) in
-         Lam { param = param, body = b, ty = MType.Fun a (tyInferringExpr b) })
+         Lam { param, body = b, ty = MType.Fun a (tyInferringExpr b) })
     …
 }
 ```
@@ -153,7 +153,7 @@ In a case a reader of the target is written with the node alone,
 `tyInferringExpr b`: the pass supplies the builder it is writing. Outside a
 pass, hand a reader the builder yourself: `tyInferringExpr out b`.
 
-## Options: `with set, modules`
+## Options: `with set, modules, reflect`
 
 Options follow what the language extends or is read from, separated by commas:
 
@@ -164,8 +164,8 @@ lang! { pub Surface from Mini with set }        -- read off a grammar
 ```
 
 Each declaration states its own; a language does not inherit the options of
-the one it extends. Anything other than `set` or `modules` is an error that
-lists the two.
+the one it extends. Anything other than `set`, `modules` or `reflect` is an
+error that lists the three.
 
 ### `with set`: write a field again
 
@@ -176,10 +176,44 @@ cannot be rewritten in place.
 It is for a pass that fixes up what it wrote, such as taking hygiene marks off
 the names a macro expansion wrote once it is clear which are locals.
 
+### `with reflect`: a program as a `Datum`
+
+`with reflect` makes the language's arena and program `Reflect`
+(`Std.Macro`), so a program can be kept wherever a `Datum` can: in the
+interface a [`make!`](build.md) unit exports, in a `persisted` query's answer,
+in a file between runs.
+
+```meadow
+lang! {
+  Shapes with modules, reflect
+  Expr + Var { name : String }
+  …
+}
+
+let d : Datum = toDatum program
+let back : Result String ShapesProgram = fromDatum d
+```
+
+A program is written as its tables are kept: five lists of numbers for its
+rows, and one list for each column of values that are not numbers. It is a
+list per column and a number per slot, not a datum per node, so its size
+follows the program's and no more.
+
+What it needs:
+
+- Every field type kept in a column of its own (anything but a node, an `Int`
+  or a `Bool`) has to be `Reflect` itself.
+- The language may not take type parameters. `Inferring s` holds values of
+  `s`, and is refused with a message saying so.
+
+To keep only part of a program, copy that part into a program of its own
+first: `subCoreExpr a e` for one node and what is under it, or a pass rooted
+at the sorts wanted ([passes.md](passes.md#a-pass-over-part-of-a-program-from)).
+
 ### Why they are opt-in
 
-Few languages need setters, and `with modules` adds about a third to what a
-declaration writes. Asking by name keeps generated code, and compile time,
+Few languages need setters or to be kept as data, and `with modules` adds
+about a third to what a declaration writes. Asking by name keeps generated code, and compile time,
 down for every language that does not.
 
 ## What is written once for every language

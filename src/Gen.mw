@@ -201,7 +201,7 @@ fun written name sections =
           | Ok names ->
               let spec =
                 {
-                  name = name,
+                  name,
                   lexer = lx,
                   public = V.any (\s -> match s with | Public -> True | _ -> False) sections,
                   trivia = V.concatMap (\s -> match s with | Trivia ps -> ps | _ -> []) sections,
@@ -213,7 +213,7 @@ fun written name sections =
                          (V.map
                             (\e -> match e with | (s, at, ts, n) -> (s, at, basePattern ts, n))
                             contextual)),
-                  names = names,
+                  names,
                   context =
                     V.map
                       (\e ->
@@ -230,8 +230,8 @@ fun written name sections =
                       (\acc s -> match s with | Lookahead k -> k | _ -> acc)
                       lookaheadDefault
                       sections,
-                  defs = defs,
-                  start = start
+                  defs,
+                  start
                 }
               in
               -- What each rule can begin with and be followed by, and how the
@@ -712,7 +712,7 @@ fun generate spec (env : Grammar) : [TokenTree] ! { Mut | e } =
           context = [],
           prec = None,
           lookahead = k,
-          defs = defs,
+          defs,
           start = 0 - 1
         }
       in
@@ -721,7 +721,7 @@ fun generate spec (env : Grammar) : [TokenTree] ! { Mut | e } =
          | Just d -> defName d
          | None -> "File")
       in
-      let x = Deciding { g = lookGrammar spec root, problems = newRef [], k = k } in
+      let x = Deciding { g = lookGrammar spec root, problems = newRef [], k } in
       let env = x.g in
       let counter = newRef [] in
       let costs =

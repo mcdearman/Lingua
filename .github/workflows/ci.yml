@@ -1,0 +1,65 @@
+# What `master` has to pass: Lingua's own tests and both example compilers',
+# on each of Meadow's runtimes, and the formatter with nothing to change.
+#
+# It runs on every pull request, and on the merge queue's own commit -- the
+# branch as it will be once it is on `master` -- so nothing reaches `master`
+# that was not built and tested as `master` will have it. `master` takes pull
+# requests only, and this check is required of them.
+#
+# Meadow is the nightly build: Lingua uses what `master` of Meadow has.
+
+name: ci
+
+on:
+  pull_request:
+  merge_group:
+  push:
+    branches: [master]
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    name: check
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Meadow (nightly)
+        run: |
+          curl -fsSL https://raw.githubusercontent.com/meadow-lang/meadow/master/scripts/meadowup-init.sh | sh -s -- --version nightly
+          echo "$HOME/.meadow/bin" >> "$GITHUB_PATH"
+
+      - name: Versions
+        run: |
+          meadow --version
+          clang --version
+
+      - name: Format
+        run: meadow fmt --check src examples/MiniML/src examples/Calc/src
+
+      - name: Lingua (Glade)
+        run: meadow test
+      - name: Lingua (Silo)
+        run: meadow test --runtime silo
+
+      - name: MiniML (Glade)
+        working-directory: examples/MiniML
+        run: meadow test
+      - name: MiniML (Silo)
+        working-directory: examples/MiniML
+        run: meadow test --runtime silo
+
+      - name: Calc (Glade)
+        working-directory: examples/Calc
+        run: meadow test
+      - name: Calc (Silo)
+        working-directory: examples/Calc
+        run: meadow test --runtime silo

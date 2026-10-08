@@ -252,7 +252,7 @@ lang! {
 -- Everything but `Bin` is copied, its children lowered first.
 pass! {
   pub lower : Surface -> Core
-    | Bin { lhs, op, rhs } -> Prim { op = op, args = [lhs, rhs] }
+    | Bin { lhs, op, rhs } -> Prim { op, args = [lhs, rhs] }
 }
 
 use Std.Maybe as M
@@ -321,7 +321,7 @@ pass! {
         (if kindSurfaceExpr src lhs == SurfaceExprKind.Literal
            and surfaceExprLiteralNumber src lhs == "0"
            and op == "+" then rhs
-         else Prim { op = op, args = [lowerFoldingExpr src out lhs, rhs] })
+         else Prim { op, args = [lowerFoldingExpr src out lhs, rhs] })
 }
 
 @test fun aTablePassCaseMayTakeAChildRaw () =
@@ -346,7 +346,7 @@ pass! {
 -- The same, read straight off the tree: no `Surface` tables in between.
 pass! {
   pub lowerTree : Calc -> Core
-    | Bin { lhs, op, rhs } -> Prim { op = op, args = [lhs, rhs] }
+    | Bin { lhs, op, rhs } -> Prim { op, args = [lhs, rhs] }
 }
 
 @test fun aPassReadsATreeAsItIs () =
@@ -371,7 +371,7 @@ pass! {
   pub pairUp : Calc -> Paired
     | Bin { lhs, raw op, rhs } ->
         (if R.text op == "+" then Pair { left = lhs, right = rhs }
-         else Bin { lhs = lhs, op = LinguaW.kept op, rhs = rhs })
+         else Bin { lhs, op = LinguaW.kept op, rhs })
 }
 
 @test fun aPassWritesATreeKeepingEveryByte () =
@@ -404,7 +404,7 @@ fun tick () = put (get () + 1)
 
 pass! {
   pub lowerCounting : Surface -> Core
-    | Bin { lhs, op, rhs } -> (let u = tick () in Prim { op = op, args = [lhs, rhs] })
+    | Bin { lhs, op, rhs } -> (let u = tick () in Prim { op, args = [lhs, rhs] })
 }
 
 @test fun aPassMayPerformEffects () =
@@ -531,7 +531,7 @@ fun twoFiles () =
 use Lingua.Lang (noMeta)
 
 lang! {
-  Shapes with modules
+  Shapes with modules, reflect
   Expr + Var { name : String }
   Expr + Lam { param : Pat, body : Expr }
   Pat + Var { name : String }
@@ -549,8 +549,8 @@ lang! {
 -- expression's; and a pattern's `Var`, which no case is for, is copied.
 pass! {
   deepen : Shapes -> Depths with depth
-    | Expr.Var { name } -> Var { name = name, depth = depth }
-    | Lam { param, later body } -> Lam { param = param, body = body (depth + 1) }
+    | Expr.Var { name } -> Var { name, depth }
+    | Lam { param, later body } -> Lam { param, body = body (depth + 1) }
 }
 
 -- `fun x -> fun _ -> x`, written with the language's names by module:
@@ -596,6 +596,21 @@ fun bound (a : ShapesArena) (p : ShapesPat) : [String] =
         "a field, read either way"
   | _ -> assertEq "a lam" "" "the root"
 
+-- `with reflect`: a program is a `Datum` and back -- its rows and its column
+-- of names -- so it can be kept where one can, a build's interface say.
+@test fun aProgramSurvivesItsTripThroughADatum () =
+  let p = nested () in
+  let back : Result String ShapesProgram = fromDatum (toDatum p) in
+  match back with
+  | Err why -> assertEq why "" "read back"
+  | Ok q ->
+      let a = assertEq (names (Shapes.arena q) (Shapes.root q)) ["x", "_", "x"] "the same names" in
+      let wrong : Result String ShapesProgram = fromDatum (Datum.Int 1) in
+      assertEq
+        (M.isSome (match wrong with | Err e -> Just e | Ok _ -> None))
+        True
+        "and a number is no program"
+
 @test fun twoSortsEachHaveAProductionOfOneName () =
   let p = nested () in
   let a = shapesArena p in
@@ -634,7 +649,7 @@ fun bound (a : ShapesArena) (p : ShapesPat) : [String] =
 
 pass! {
   onlyExprs : Calc -> Core from Expr
-    | Bin { lhs, op, rhs } -> Prim { op = op, args = [lhs, rhs] }
+    | Bin { lhs, op, rhs } -> Prim { op, args = [lhs, rhs] }
     | Literal { number } -> Literal { number = "${number}@${show (R.offset node)}" }
 }
 
@@ -677,7 +692,7 @@ pass! {
     | File { stmts } -> V.concat stmts
     | Let { value } -> [value]
     | ExprStmt { expr } -> [expr, expr]
-    | Bin { lhs, op, rhs } -> Prim { op = op, args = [lhs, rhs] }
+    | Bin { lhs, op, rhs } -> Prim { op, args = [lhs, rhs] }
 }
 
 @test fun aCaseMayAnswerSeveralNodes () =

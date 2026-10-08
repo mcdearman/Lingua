@@ -184,25 +184,25 @@ lang! {
 -- node's type is worked out from its children's, which it already holds.
 pass! {
   pub infer : Core -> Inferring with ctx
-    | Int { value } -> Int { value = value, ty = MType.Int }
-    | Bool { value } -> Bool { value = value, ty = MType.Bool }
+    | Int { value } -> Int { value, ty = MType.Int }
+    | Bool { value } -> Bool { value, ty = MType.Bool }
     | Var { id } ->
         (match L.lookupAssoc id (envOf ctx) with
-         | Just t -> Var { id = id, ty = instantiate ctx t }
+         | Just t -> Var { id, ty = instantiate ctx t }
          | None -> raise (errorAt here "no type for binder ${show id}: it was not resolved"))
     | Lam { param, later body } ->
         (let a = fresh ctx in
          let b = body (bind ctx param a) in
-         Lam { param = param, body = b, ty = MType.Fun a (tyInferringExpr b) })
+         Lam { param, body = b, ty = MType.Fun a (tyInferringExpr b) })
     | App { func, arg } ->
         (let out = fresh ctx in
          let u = unify here (tyInferringExpr func) (MType.Fun (tyInferringExpr arg) out) in
-         App { func = func, arg = arg, ty = out })
+         App { func, arg, ty = out })
     | Let { id, later value, later body } ->
         (let v = value (deeper ctx) in
          let u = generalize ctx (tyInferringExpr v) in
          let b = body (bind ctx id (tyInferringExpr v)) in
-         Let { id = id, value = v, body = b, ty = tyInferringExpr b })
+         Let { id, value = v, body = b, ty = tyInferringExpr b })
     | LetRec { id, param, later value, later body } ->
         (let inner = deeper ctx in
          let tf = fresh inner in
@@ -211,19 +211,19 @@ pass! {
          let u = unify here tf (MType.Fun ta (tyInferringExpr v)) in
          let w = generalize ctx tf in
          let b = body (bind ctx id tf) in
-         LetRec { id = id, param = param, value = v, body = b, ty = tyInferringExpr b })
+         LetRec { id, param, value = v, body = b, ty = tyInferringExpr b })
     | If { cond, yes, no } ->
         (let u = unify (metaInferringExpr cond) (tyInferringExpr cond) MType.Bool in
          let w = unify (metaInferringExpr no) (tyInferringExpr yes) (tyInferringExpr no) in
-         If { cond = cond, yes = yes, no = no, ty = tyInferringExpr yes })
+         If { cond, yes, no, ty = tyInferringExpr yes })
     | Prim { op, args } ->
         (if V.len args != 2 then raise (errorAt here "`${op}` wants two operands")
          else
            let u =
              V.foldl (\acc a -> unify (metaInferringExpr a) (tyInferringExpr a) MType.Int) () args
            in Prim {
-                op = op,
-                args = args,
+                op,
+                args,
                 ty = if V.elem op ["+", "-", "*", "/"] then MType.Int else MType.Bool
               })
 }
@@ -232,16 +232,15 @@ pass! {
 -- node was made. Once every one is written, each is read.
 pass! {
   pub settle : Inferring -> Typed
-    | Int { value, ty } -> Int { value = value, ty = frozen ty }
-    | Bool { value, ty } -> Bool { value = value, ty = frozen ty }
-    | Var { id, ty } -> Var { id = id, ty = frozen ty }
-    | Lam { param, body, ty } -> Lam { param = param, body = body, ty = frozen ty }
-    | App { func, arg, ty } -> App { func = func, arg = arg, ty = frozen ty }
-    | Let { id, value, body, ty } -> Let { id = id, value = value, body = body, ty = frozen ty }
-    | LetRec { id, param, value, body, ty } ->
-        LetRec { id = id, param = param, value = value, body = body, ty = frozen ty }
-    | If { cond, yes, no, ty } -> If { cond = cond, yes = yes, no = no, ty = frozen ty }
-    | Prim { op, args, ty } -> Prim { op = op, args = args, ty = frozen ty }
+    | Int { value, ty } -> Int { value, ty = frozen ty }
+    | Bool { value, ty } -> Bool { value, ty = frozen ty }
+    | Var { id, ty } -> Var { id, ty = frozen ty }
+    | Lam { param, body, ty } -> Lam { param, body, ty = frozen ty }
+    | App { func, arg, ty } -> App { func, arg, ty = frozen ty }
+    | Let { id, value, body, ty } -> Let { id, value, body, ty = frozen ty }
+    | LetRec { id, param, value, body, ty } -> LetRec { id, param, value, body, ty = frozen ty }
+    | If { cond, yes, no, ty } -> If { cond, yes, no, ty = frozen ty }
+    | Prim { op, args, ty } -> Prim { op, args, ty = frozen ty }
 }
 
 -- Every expression in `e`, outermost first.

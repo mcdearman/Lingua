@@ -174,6 +174,9 @@ fun settledAt (g : Green k) (i : Int) : Green k =
   match g with
   | Green _ _ _ _ _ _ os _ -> arrayLen os > 0 and arrayGet os i >= 0
 
+-- Whether the tree's slots have origins at all: it was parsed from tokens.
+@pub fun isPlaced (g : Green k) : Bool = match g with | Green _ _ _ _ _ _ os _ -> arrayLen os > 0
+
 @pub fun isTokenAt (g : Green k) (i : Int) : Bool =
   match g with | Green _ _ _ _ zs _ _ _ -> arrayGet zs i == 0
 

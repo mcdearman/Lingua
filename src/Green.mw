@@ -202,6 +202,22 @@ fun settledAt (g : Green k) (i : Int) : Green k =
   let rec go c acc = if c >= stop then acc else go (after g c) (V.pushBack acc c) in
   go (i + 1) []
 
+-- The slots under `i` -- its children, theirs, and so on, not `i` itself --
+-- whose kind `p` holds of, in order. A subtree's slots are the ones after
+-- its own up to `after`, so this is one walk along the kinds, and makes
+-- nothing but its answer.
+@pub fun slotsWhere (p : k -> Bool) (g : Green k) (i : Int) : [Int] =
+  let stop = after g i in
+  let rec go r acc =
+    if r >= stop then acc else go (r + 1) (if p (kindAt g r) then V.pushBack acc r else acc)
+  in go (i + 1) []
+
+-- How many there are, with no list made of them.
+@pub fun countWhere (p : k -> Bool) (g : Green k) (i : Int) : Int =
+  let stop = after g i in
+  let rec go r n = if r >= stop then n else go (r + 1) (if p (kindAt g r) then n + 1 else n) in
+  go (i + 1) 0
+
 -- The text of slot `i`.
 @pub fun textAt (g : Green k) (i : Int) : String =
   match g with
@@ -259,6 +275,14 @@ fun dumpLines show g (i : Int) (depth : Int) =
 -- --- tests -------------------------------------------------------------------
 
 use Std.Test (assertEq)
+
+@test fun theSlotsUnderANodeAreFoundByKind () =
+  let inner = node "Paren" [token "(" "(", token "Num" "2", token ")" ")"] in
+  let tree = node "Chain" [token "Num" "1", token "Op" "+", inner, token "Num" "3"] in
+  let a = assertEq (slotsWhere (\k -> k == "Num") tree 0) [1, 5, 7] "at any depth, in order" in
+  let b = assertEq (slotsWhere (\k -> k == "Num") tree 3) [5] "and only under the node asked of" in
+  let c = assertEq (slotsWhere (\k -> k == "Chain") tree 0) [] "which is not itself one of them" in
+  assertEq (countWhere (\k -> k == "Num") tree 0) 3 "counted, the same"
 
 @test fun aNodeIsAsWideAsItsChildren () =
   let g = node "Sum" [token "Num" "12", token "Space" " ", token "Plus" "+"] in

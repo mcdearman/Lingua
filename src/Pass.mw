@@ -645,6 +645,7 @@ fun isWord t =
 fun header = "use Lingua.Lang (Meta, LangTables, LangWriting)
 use Lingua.Lang as LinguaL
 use Lingua.Red as LinguaR
+use Lingua.Green as LinguaG
 use Lingua.Buf as LinguaBuf
 use Lingua.Buf (Buf)
 use Std.Maybe as LinguaM
@@ -893,7 +894,13 @@ ${S.join "" (V.map (\k -> "  type ${n}Col${show k} ${builderTy l} = ${V.getOr ""
 ${S.join "" (V.map (\k -> "  fun lingua${n}_col${show k} b i = LinguaBuf.at (lingua${n}_b${show k} b) i\n") ks)}}
 
 -- Empty tables, to write a program into.
-${pub}fun new${n}Builder () = ${n}Builder (LinguaL.writing ())${bufs}
+${pub}fun new${n}Builder () = new${n}BuilderFor 0
+
+-- The same, for a program of about `rows` nodes.
+${pub}fun new${n}BuilderFor (lingua_rows : Int) = ${n}Builder (LinguaL.writingFor lingua_rows)${bufs}
+
+-- How many nodes a program's tables hold.
+${pub}fun ${lower}Size (a : ${arenaTy l}) : Int = LinguaL.rowCount (lingua${n}_t a)
 
 -- What has been written, as a program's tables.
 ${pub}fun freeze${n} (b : ${builderTy l}) = match b with | ${n}Builder lingua_w${bound} -> ${n}Arena (LinguaL.frozen lingua_w)${frozen}
@@ -1160,7 +1167,7 @@ fun fromCode pub l =
 -- The `${n}` program a tree `parse${g}` made, if nothing is missing from it.
 ${pub}fun ${lower}From${g} lingua_g : Maybe ${programTy l} =
   runSt (\\() ->
-    let lingua_out = new${n}Builder () in
+    let lingua_out = new${n}BuilderFor (LinguaG.slots lingua_g / 3) in
     match ast${g} lingua_g with
     | Just lingua_f -> (let lingua_r = ${lower}Of${langRoot l} lingua_out lingua_f in if lingua_r < 0 then None else Just (${n}Program (freeze${n} lingua_out) lingua_r))
     | None -> None)
@@ -1686,7 +1693,7 @@ fun tablePassCode pub pass ctx from to (starts : [String]) cases : [TokenTree] =
            else
              "\n-- `${pass}`: a `${fromN}` program as a `${toN}` one, written into tables of its own.\n${pub}fun ${pass} ${c}lingua_p = runSt (\\() -> ${pass}St ${c}lingua_p)\n"),
         Code
-          "\n-- `${pass}`, writing its tables inside the caller's `runSt`: for a pass whose cases\n-- use the caller's state too. A function using two `runSt`s' state at once is\n-- not one Meadow can type, so a `runSt` of its own would be one too many.\n${pub}fun ${pass}St ${c}lingua_p =\n  match lingua_p with\n  | ${fromN}Program lingua_a lingua_r ->\n      let lingua_out = new${toN}Builder () in\n      let lingua_root = ${pass}${langRoot from} lingua_a lingua_out ${c}lingua_r in\n      ${toN}Program (freeze${toN} lingua_out) lingua_root\n"
+          "\n-- `${pass}`, writing its tables inside the caller's `runSt`: for a pass whose cases\n-- use the caller's state too. A function using two `runSt`s' state at once is\n-- not one Meadow can type, so a `runSt` of its own would be one too many.\n${pub}fun ${pass}St ${c}lingua_p =\n  match lingua_p with\n  | ${fromN}Program lingua_a lingua_r ->\n      let lingua_out = new${toN}BuilderFor (${lowerOf from}Size lingua_a) in\n      let lingua_root = ${pass}${langRoot from} lingua_a lingua_out ${c}lingua_r in\n      ${toN}Program (freeze${toN} lingua_out) lingua_root\n"
       ]
   ]
 

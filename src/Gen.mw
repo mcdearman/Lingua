@@ -1257,7 +1257,7 @@ fun ${fn spec "lexemes"} (input : String) =
       let real = LinguaV.filter (\\i -> not (${fn spec "isTrivia"} (LinguaV.getOr ${kx spec "Unknown"} base i))) (LinguaV.range 0 (LinguaV.len ts)) in
       let kinds = LinguaV.foldl (\\ks r -> match LinguaV.get real r with | Just i -> LinguaV.set ks i (${fn spec "contextKind"} ts real r (LinguaV.getOr ${kx spec "Unknown"} ks i)) | None -> ks) base (LinguaV.range 0 (LinguaV.len real)) in
       runSt (\\() ->
-        let l = LinguaB.lexing ${kx spec "Unknown"} in
+        let l = LinguaB.lexingFor ${kx spec "Unknown"} (stringByteLength input) in
         let n = stringByteLength input in
         let last =
           LinguaV.foldl
@@ -1280,7 +1280,7 @@ fun streamed spec lx =
 -- byte of `input`, in order -- as tables, a token at a time, keeping none.
 fun ${fn spec "lexemes"} (input : String) =
   runSt (\\() ->
-    let l = LinguaB.lexing ${kx spec "Unknown"} in
+    let l = LinguaB.lexingFor ${kx spec "Unknown"} (stringByteLength input) in
     let n = stringByteLength input in
     let step = \\at t s e ->
       let _ = if s > at then LinguaB.lexed l ${kx spec "Unknown"} s True else () in

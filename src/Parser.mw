@@ -122,9 +122,10 @@ def fuelMax : Int = 256
     kinds
     (stNewRef 0)
     (stNewRef fuelMax)
-    (B.buffer ())
-    (B.buffer ())
-    (B.buffer ())
+    -- About three events to a token: it is read, and a node opens and closes.
+    (B.bufferFor (3 * arrayLen kinds))
+    (B.bufferFor (3 * arrayLen kinds))
+    (B.bufferFor (3 * arrayLen kinds))
     (B.buffer ())
     eof
     errorKind

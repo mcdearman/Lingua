@@ -14,37 +14,46 @@
 -- A buffer starts with no array at all, and the value that first finds it
 -- full is what the new slots hold until they are written: so a buffer of any
 -- type can be made, with nothing to make its slots of beforehand.
+--
+-- Whoever knows about how many slots a buffer will come to says so
+-- (`bufferFor`), and its first array is that size: a tree of a hundred
+-- thousand tokens is then written into arrays made once, where doubling from
+-- nothing copies every slot once more on the way there.
 
-@pub data Buf s a = Buf (StRef s (StArray s a)) (StRef s Int)
+@pub data Buf s a = Buf (StRef s (StArray s a)) (StRef s Int) Int
 
 -- An empty buffer.
-@pub fun buffer () : Buf s a ! { St s | e } = Buf (stNewRef (stThaw #[])) (stNewRef 0)
+@pub fun buffer () : Buf s a ! { St s | e } = Buf (stNewRef (stThaw #[])) (stNewRef 0) 0
+
+-- An empty buffer that will come to hold about `slots`.
+@pub fun bufferFor (slots : Int) : Buf s a ! { St s | e } =
+  Buf (stNewRef (stThaw #[])) (stNewRef 0) slots
 
 -- How many slots have been pushed.
-@pub fun len (b : Buf s a) : Int ! { St s | e } = match b with | Buf _ n -> stGetRef n
+@pub fun len (b : Buf s a) : Int ! { St s | e } = match b with | Buf _ n _ -> stGetRef n
 
 -- Slot `i`, which must have been pushed.
 @pub fun at (b : Buf s a) (i : Int) : a ! { St s | e } =
-  match b with | Buf xs _ -> stGetArray (stGetRef xs) i
+  match b with | Buf xs _ _ -> stGetArray (stGetRef xs) i
 
 -- Write slot `i`, which must have been pushed.
 @pub fun put (b : Buf s a) (i : Int) (x : a) : () ! { St s | e } =
-  match b with | Buf xs _ -> stSetArray (stGetRef xs) i x
+  match b with | Buf xs _ _ -> stSetArray (stGetRef xs) i x
 
 -- `x` in the next slot; its index.
 @pub fun push (b : Buf s a) (x : a) : Int ! { St s | e } =
   match b with
-  | Buf xs n ->
+  | Buf xs n hint ->
       let arr = stGetRef xs in
       let i = stGetRef n in
       let cap = stArrayLen arr in
-      let room = if i < cap then arr else grown xs arr cap x in
+      let room = if i < cap then arr else grown xs arr cap hint x in
       let _ = stSetArray room i x in
       let _ = stSetRef n (i + 1) in
       i
 
-fun grown xs arr (cap : Int) fill =
-  let bigger = stNewArray (if cap < 32 then 64 else 2 * cap) fill in
+fun grown xs arr (cap : Int) (hint : Int) fill =
+  let bigger = stNewArray (max hint (if cap < 32 then 64 else 2 * cap)) fill in
   let _ = copyInto arr bigger 0 cap in
   let _ = stSetRef xs bigger in
   bigger
@@ -55,7 +64,7 @@ fun copyInto from to (i : Int) (n : Int) =
 -- What has been pushed, as an `Array`.
 @pub fun freeze (b : Buf s a) : #[a] ! { St s | e } =
   match b with
-  | Buf xs n -> arraySlice (stFreeze (stGetRef xs)) 0 (stGetRef n)
+  | Buf xs n _ -> arraySlice (stFreeze (stGetRef xs)) 0 (stGetRef n)
 
 -- --- tests -------------------------------------------------------------------
 

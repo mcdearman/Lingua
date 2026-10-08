@@ -48,8 +48,13 @@ use Lexing.*
 @pub data Lexing s k
   = Lexing (Buf s k) (Buf s Int) (Buf s Bool) (Buf s k) (Buf s Int) (Buf s Int)
 
-@pub fun lexing (filler : k) : Lexing s k ! { St s | e } =
-  Lexing (B.buffer ()) (B.buffer ()) (B.buffer ()) (B.buffer ()) (B.buffer ()) (B.buffer ())
+@pub fun lexing (filler : k) : Lexing s k ! { St s | e } = lexingFor filler 0
+
+-- The same, for a text of `bytes`: its tables made about the size they will
+-- come to, at a token to every four bytes or so.
+@pub fun lexingFor (filler : k) (bytes : Int) : Lexing s k ! { St s | e } =
+  let n = bytes / 4 in
+  Lexing (B.bufferFor n) (B.bufferFor n) (B.bufferFor n) (B.bufferFor n) (B.buffer ()) (B.buffer ())
 
 -- One more token, of kind `k`, ending at byte `stop`.
 @pub fun lexed (l : Lexing s k) (k : k) (stop : Int) (trivia : Bool) : () ! { St s | e } =
@@ -157,13 +162,16 @@ data Builder s k
   match lexemes with
   | Lexemes text _ _ _ _ los loe ->
       runSt (\() ->
+        -- A slot for every token, and one for every node: about half of the
+        -- events that are not a token read.
+        let n = lexemeCount lexemes + eventCount events / 2 in
         let b =
           Builder
-            (B.buffer ())
-            (B.buffer ())
-            (B.buffer ())
-            (B.buffer ())
-            (B.buffer ())
+            (B.bufferFor n)
+            (B.bufferFor n)
+            (B.bufferFor n)
+            (B.bufferFor n)
+            (B.bufferFor n)
             (stNewRef 0)
             (stNewRef 0)
             (B.buffer ())

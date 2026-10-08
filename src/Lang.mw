@@ -166,8 +166,20 @@ use Keeping.*
   = LangWriting (Buf s Int) (Buf s Int) (Buf s Int) (Buf s Int) (Buf s Int)
 
 -- Empty rows, to write a program into.
-@pub fun writing () : LangWriting s ! { St s | e } =
-  LangWriting (B.buffer ()) (B.buffer ()) (B.buffer ()) (B.buffer ()) (B.buffer ())
+@pub fun writing () : LangWriting s ! { St s | e } = writingFor 0
+
+-- The same, for a program of about `rows` nodes: its tables made about the
+-- size they will come to, at two slots to a node or so.
+@pub fun writingFor (rows : Int) : LangWriting s ! { St s | e } =
+  LangWriting
+    (B.bufferFor rows)
+    (B.bufferFor rows)
+    (B.bufferFor rows)
+    (B.bufferFor rows)
+    (B.bufferFor (2 * rows))
+
+-- How many nodes a program has.
+@pub fun rowCount (t : LangTables) : Int = match t with | LangTables ks _ _ _ _ -> arrayLen ks
 
 -- What has been written, as a program's.
 @pub fun frozen (w : LangWriting s) : LangTables ! { St s | e } =

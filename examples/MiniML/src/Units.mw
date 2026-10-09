@@ -283,6 +283,7 @@ make! {
     | profile debug {}
     | profile release { level = High, twice = True }
     | overrides = tunedOverrides
+    | pinned = tunedPinned
 }
 
 fun compileTuned (o : TunedOptions) (u : Given Interface) =
@@ -303,6 +304,12 @@ fun compileTuned (o : TunedOptions) (u : Given Interface) =
 fun tunedOverrides (root : String) (dir : String) (manifest : String) (profile : String)
     : [(String, String)] =
   if S.contains "# gently" manifest then [("level", "Low")] else []
+
+-- And one whose manifest says `# never twice` is checked once whatever the
+-- build is told, the command line included: what is pinned is applied last.
+fun tunedPinned (root : String) (dir : String) (manifest : String) (profile : String)
+    : [(String, String)] =
+  if S.contains "# never twice" manifest then [("twice", "false")] else []
 
 fun tuned profile set root =
   match withOutput (\() -> buildTuned profile set root) with
@@ -345,6 +352,10 @@ fun tuned profile set root =
   let b = write lib "double.ml" "fun x -> x + x" in
   let first = tuned "debug" [] lib in
   let named = tuned "debug" [("label", "mine"), ("jobs", "4")] lib in
+  -- Told to check twice, a unit pinned to once is what it was: not compiled.
+  let pinned =
+    (let u = write lib "Unit" "# never twice\n" in tuned "debug" [("twice", "true")] lib)
+  in
   let flagged = tuned "debug" [("flags", "fast, gpu")] lib in
   let again = tuned "debug" [("flags", "fast, gpu")] lib in
   let got =
@@ -352,9 +363,10 @@ fun tuned profile set root =
   in
   let c =
     assertEq
-      [first, named, flagged, again]
+      [first, named, pinned, flagged, again]
       [
         (True, ["   Compiled lib"]),
+        (True, ["   Fresh lib"]),
         (True, ["   Fresh lib"]),
         (True, ["   Compiled lib"]),
         (True, ["   Fresh lib"])

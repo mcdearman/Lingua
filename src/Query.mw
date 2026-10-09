@@ -297,6 +297,23 @@ fun setLive (db : Live k v) (key : k) (value : v) : () ! { Thread | e } =
         let u = T.writeTVar (logVar live) [] in
         ran)
 
+-- Let go of everything `db` holds: its inputs, its answers, what it shared.
+-- The database is as it was made, and may be set and asked again.
+--
+-- A database is a value, and what it holds goes when nothing refers to it
+-- any more. This says so sooner, at the point a compiler is done with one
+-- -- and for certain, where a runtime that counts references is slow to
+-- notice that a thread which has ended no longer refers to anything.
+@pub fun close (db : Db k v) : () ! { Thread, Mut | e } =
+  match db with
+  | Db.Batch o -> emptied o
+  | Db.Incremental live ->
+      T.atomically (\() ->
+        let a = T.writeTVar (inputsVar live) HashMap.empty in
+        let b = T.writeTVar (slotsVar live) HashMap.empty in
+        let c = T.writeTVar (waitsVar live) HashMap.empty in
+        T.writeTVar (logVar live) [])
+
 -- --- a batch -----------------------------------------------------------------
 
 -- `key`'s answer: an input as it was set, a derived key's as it was worked
@@ -380,7 +397,18 @@ fun onceSpread (o : Once k v) (stack : [k]) (keys : [k]) (own : () -> Once k v !
     \k -> HashMap.member k (getRef (onceInputs o)) or HashMap.member k (getRef (onceMemo o))
   in
   let todo = V.filter (\k -> not (known k)) (noting [] keys) in
-  let tasks = V.map (\k -> Thread.spawn (\() -> onceGet (own ()) stack k)) todo in
+  -- A thread's batch is emptied before the thread ends: what it worked out
+  -- on the way to its answer is let go of there and then.
+  let tasks =
+    V.map
+      (\k ->
+        Thread.spawn (\() ->
+          let mine = own () in
+          let answer = onceGet mine stack k in
+          let u = emptied mine in
+          answer))
+      todo
+  in
   let results = Thread.awaitAll tasks in
   let failed =
     V.foldl
@@ -394,6 +422,14 @@ fun onceSpread (o : Once k v) (stack : [k]) (keys : [k]) (own : () -> Once k v !
   in match failed with
      | Just e -> Err e
      | None -> onceInTurn o stack keys
+
+-- A batch with nothing in it: its inputs, its answers and the region its
+-- inputs were shared in, all let go of.
+fun emptied (o : Once k v) : () ! { Mut | e } =
+  let a = setRef (onceInputs o) HashMap.empty in
+  let b = setRef (onceMemo o) HashMap.empty in
+  let c = setRef (onceShared o) None in
+  setRef (onceLog o) []
 
 -- The inputs as a compact region, made the first time a thread needs them.
 fun sharedInputs (o : Once k v) : Compact (HashMap k v) ! { Mut | e } =
@@ -1191,6 +1227,17 @@ fun batch () =
     (takeLog db)
     [K.Len 1, K.Len 2, K.Total, K.Lens [2, 1]]
     "the lengths once, however often they are read"
+
+@test fun aClosedDatabaseHoldsNothingAndCanBeUsedAgain () =
+  let db = batch () in
+  let a = toResult (\() -> total db) in
+  let u = close db in
+  let b = assertEq (toResult (\() -> total db)) (Err (Unset (K.Cell 1))) "its inputs gone" in
+  let c = set db (K.Cell 1) (Val.Text "abcd") in
+  let d = set db (K.Cell 2) (Val.Text "ef") in
+  let l = takeLog db in
+  let e = assertEq (toResult (\() -> total db)) (Ok 6) "set again, it answers again" in
+  assertEq (V.len (takeLog db)) 3 "working each key out anew"
 
 @test fun aBatchForgetsWhenAnInputIsSet () =
   let db = batch () in

@@ -28,6 +28,7 @@ the last build, for a tool that wants to ask the compiler about a unit again.
 | `options { … }`| no       | what the build can be told; see [Options and profiles](#options-and-profiles) |
 | `profile n { … }` | no    | a named set of options                                                   |
 | `overrides`    | no       | a unit's own options, read from its manifest                             |
+| `pinned`       | no       | a unit's own options that nothing overrides, the command line included   |
 | `dependencies` | no       | how to read a manifest, for one that is more than a list of paths        |
 | `files`        | no       | where a unit's sources are, when not beside the manifest                 |
 | `link`         | no       | how the program is put together once every unit is built                 |
@@ -243,7 +244,10 @@ A unit's options are worked out in this order, each over the one before:
    profile section, and it is per unit: a standard library can be compiled
    the same way under every profile, so that one compile of it serves them
    all;
-4. the pairs `buildUnits` was given, which is the command line's place.
+4. the pairs `buildUnits` was given, which is the command line's place;
+5. `pinned`, if the build has one: the same kind of function as `overrides`,
+   applied last. What it sets for a unit holds whatever the build was told,
+   so a unit that must always be compiled one way is.
 
 A build with options and no `profile` has one, `debug`: the defaults.
 

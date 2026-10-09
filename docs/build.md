@@ -95,7 +95,10 @@ What was built is kept under `target/`:
   of each interface it was compiled against, and of its own interface. It is
   small, and every build reads it.
 - `interfaces/<unit>.json` holds one unit's interface, written by the thread
-  that compiled it.
+  that compiled it, after its answer has gone to the units waiting for it:
+  they need the interface, not the file. The build is not done until every
+  such file is written, and a unit whose interface could not be written
+  counts as failed.
 
 Whether a unit is up to date is decided from fingerprints alone. An interface
 is read back only when something needs it: a unit that depends on it and is

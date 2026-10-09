@@ -175,6 +175,26 @@ fun write dir file text =
        (False, True, True)
        "the index holds fingerprints, and the interface is beside it"
 
+-- A unit's interface is kept after its answer has gone to what waits for it,
+-- and a build is not done until it is: one that could not be kept -- here,
+-- a file stands where the directory of interfaces should -- is a unit that
+-- did not build, to be compiled again by the build after.
+@test fun aUnitWhoseInterfaceCouldNotBeKeptIsNotBuilt () =
+  let root = "target/build-unkept" in
+  let z = removeDirAll root in
+  let lib = Path.join root "lib" in
+  let a = write lib "Unit" "" in
+  let b = write lib "double.ml" "fun x -> x + x" in
+  let c = write (Path.join lib "target") "interfaces" "in the way" in
+  let first = built lib in
+  let d = removeFile (Path.joinAll [lib, "target", "interfaces"]) in
+  let second = built lib in
+  let third = built lib in
+  assertEq
+    (fst first, V.map (\l -> S.startsWith "   Failed lib" l) (V.take (snd first) 2), second, third)
+    (False, [False, True], (True, ["   Compiled lib"]), (True, ["   Fresh lib"]))
+    "said compiled as its compiler answered, then failed; and built by the build after"
+
 @test fun aUnitThatFailsBlocksWhatDependsOnIt () =
   let root = "target/build-fail" in
   let lib = Path.join root "lib" in

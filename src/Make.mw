@@ -66,6 +66,7 @@ use Std.Path as Path
 use Std.Json as J
 use Std.Json (Json)
 use Std.Thread as Thread
+use Std.Compact as Compact
 use Std.Fs (
   Fs, FileMeta, readToString, readBytes, writeString, writeBytes, appendString, removeFile,
   removeDirAll, createDirAll, readDir, isDir, exists, metadata, rename
@@ -373,7 +374,8 @@ use Outcome.*
               dir
               (M.unwrapOr [] (M.map snd (V.find (\u -> fst u == dir) units)))
               decode)
-          (\p -> carryOut compile encode p)
+          (\p -> carryOut compile p)
+          (\r -> keeping root encode r)
           (\r ->
             match r with
             | (dir, outcome, b, i) ->
@@ -446,7 +448,7 @@ use Outcome.*
                     (V.concatMap
                        (\dir ->
                          match interfaceIn root decode done dir with
-                         | Just i -> [(dir, i, outDir root dir)]
+                         | Just c -> [(dir, Compact.get c, outDir root dir)]
                          | None -> [])
                        inOrder)
                     out
@@ -474,22 +476,18 @@ use Outcome.*
 -- A thread says what came of its unit on a channel, and each answer starts
 -- whatever it was the last thing in the way of. What a build does unless it
 -- is told not to.
-@pub fun onThreads planOf work report units =
+@pub fun onThreads planOf work keep report units =
   let ch = Thread.newChannel () in
-  running ch planOf work report units [] [] []
+  running ch planOf work keep report units [] [] [] []
 
-fun running ch planOf work report units started tasks done =
+fun running ch planOf work keep report units started tasks keepers done =
   let finished = \d -> V.any (\x -> match x with | (n, _, _, _) -> n == d) done in
   let ready = V.filter (\u -> not (V.elem (fst u) started) and V.all finished (snd u)) units in
   let begun =
     V.map
       (\u ->
         let p = planOf done (fst u) in
-        -- The answer first, to whoever waits for it; then what is left to
-        -- do about the unit, on this thread, beside them.
-        Thread.spawn (\() ->
-          match work p with
-          | (r, after) -> (let _ = Thread.send ch r in (dirOf r, after ()))))
+        Thread.spawn (\() -> Thread.send ch (work p)))
       ready
   in
   let started2 = V.append started (V.map fst ready) in
@@ -498,9 +496,10 @@ fun running ch planOf work report units started tasks done =
   -- left waits for itself, which `graph` has already refused.
   if V.len started2 == V.len done then
     -- Every thread is waited for: a build is not done while a unit's
-    -- interface is still being written, and a unit whose could not be is not
+    -- interface is still being kept, and a unit whose could not be is not
     -- built.
-    (let ends = Thread.awaitAll tasks2 in
+    (let u = Thread.awaitAll tasks2 in
+     let ends = Thread.awaitAll keepers in
      V.map
        (\d ->
          match V.find (\e -> fst e == dirOf d) ends with
@@ -508,26 +507,25 @@ fun running ch planOf work report units started tasks done =
          | _ -> d)
        done)
   else
-    running
-      ch
-      planOf
-      work
-      report
-      units
-      started2
-      tasks2
-      (V.pushBack done (report (Thread.receive ch)))
+    -- What came of a unit goes on to whatever waited for it at once; what is
+    -- left to do about it is done on a thread of its own, beside them. The
+    -- thread that compiled it is over by then, and so is all it held.
+    let r = report (Thread.receive ch) in
+    let keepers2 =
+      (match keep r with
+       | Just later -> V.pushBack keepers (Thread.spawn (\() -> (dirOf r, later ())))
+       | None -> keepers)
+    in running ch planOf work keep report units started2 tasks2 keepers2 (V.pushBack done r)
 
 -- The units one after another, in an order that has each after the units it
 -- depends on: `| parallel = false`.
-@pub fun inTurn planOf work report units =
+@pub fun inTurn planOf work keep report units =
   V.foldl
     (\done dir ->
-      match work (planOf done dir) with
-      | (r, after) ->
-          (match after () with
-           | Ok _ -> V.pushBack done (report r)
-           | Err why -> V.pushBack done (report (unkept dir why))))
+      let r = work (planOf done dir) in
+      match M.map (\later -> later ()) (keep r) with
+      | Just (Err why) -> V.pushBack done (report (unkept dir why))
+      | _ -> V.pushBack done (report r))
     []
     (V.concat (rounds units))
 
@@ -570,7 +568,7 @@ fun relative root dir =
 data Plan i
   = Blocked2 String String
   | Kept String Built
-  | Ready String [(String, String)] Int [(String, i, Int)] String String
+  | Ready String [(String, String)] Int [(String, Compact i, Int)] String
 
 use Plan.*
 
@@ -590,8 +588,8 @@ fun fingerprintIn done (d : String) : Maybe Int =
 -- was.
 fun interfaceIn root decode done (d : String) =
   match V.find (\x -> match x with | (n, _, _, _) -> n == d) done with
-  | Just (_, _, _, Just i) -> Just i
-  | Just (_, _, Just _, None) -> readInterface root d decode
+  | Just (_, _, _, Just c) -> Just c
+  | Just (_, _, Just _, None) -> M.map Compact.make (readInterface root d decode)
   | _ -> None
 
 fun plan us root before done dir deps decode =
@@ -634,32 +632,42 @@ fun compiling root decode done dir deps sources (fp : Int) =
            fp
            (V.concatMap (\x -> match x with | Ok t -> [t] | Err _ -> []) imports)
            (outDir root dir)
-           (interfacePath root dir)
 
--- Compile the unit, unless what it would be compiled from is what it was:
--- what came of it, and what is still to do about it once that is known.
+-- Compile the unit, unless what it would be compiled from is what it was.
 --
--- A unit that depends on this one needs its interface and that interface's
--- fingerprint, and both are there the moment its compiler answers. Keeping
--- the interface -- as a `Datum`, as text, in its file -- is for the next
--- build, and is the slower part: so it is handed back to be done after the
--- answer has gone to whoever waits for it, not before. The fingerprint is of
--- the interface itself, not of what it is kept as, for the same reason.
-fun carryOut compile encode p =
-  let nothing = \() -> Ok () in
+-- An interface is held once. The thread that compiled a unit puts its
+-- interface in a compact region, which belongs to no thread: sending it to
+-- the scheduler copies nothing, each unit that depends on it is given the
+-- same region to read, and so is whoever keeps it for the next build. Held
+-- as an ordinary value it was copied onto every thread it was handed to --
+-- once for the scheduler and once more for each unit that imported it. So an
+-- interface holds data alone: a region refuses a function or anything that
+-- can change.
+--
+-- The fingerprint is of the interface itself, not of what it is kept as:
+-- a unit that depends on this one needs both the moment its compiler
+-- answers, and neither should wait for a `Datum` to be made.
+fun carryOut compile p =
   match p with
-  | Blocked2 dir why -> ((dir, Blocked why, None, None), nothing)
-  | Kept dir b -> ((dir, Fresh, Just b, None), nothing)
-  | Ready dir sources fp imports out kept ->
+  | Blocked2 dir why -> (dir, Blocked why, None, None)
+  | Kept dir b -> (dir, Fresh, Just b, None)
+  | Ready dir sources fp imports out ->
       let against = V.map (\x -> match x with | (d, _, f) -> (d, f)) imports in
-      let unit = Given dir sources (V.map (\x -> match x with | (d, i, _) -> (d, i)) imports) out in
-      match sandboxed (V.map fst sources) out (\() -> compile unit) with
-      | Err report -> ((dir, Broke report, None, None), nothing)
-      | Ok i ->
-          (
-            (dir, Compiled, Just (Built fp against (hash i)), Just i),
-            \() -> writeInterface kept (encode i)
-          )
+      let unit =
+        Given dir sources (V.map (\x -> match x with | (d, c, _) -> (d, Compact.get c)) imports) out
+      in match sandboxed (V.map fst sources) out (\() -> compile unit) with
+         | Err report -> (dir, Broke report, None, None)
+         | Ok i -> (dir, Compiled, Just (Built fp against (hash i)), Just (Compact.make i))
+
+-- What is left to do about a unit once what came of it is known: keep its
+-- interface for the next build -- as a `Datum`, as text, in its file -- if
+-- it was compiled. The slower part, and nothing waits for it but the end of
+-- the build: so it is done after the answer has gone to whoever waited.
+fun keeping root encode r =
+  match r with
+  | (dir, Compiled, _, Just c) ->
+      Just (\() -> writeInterface (interfacePath root dir) (encode (Compact.get c)))
+  | _ -> None
 
 -- What came of a unit whose interface could not be kept: it is not built,
 -- whatever its compiler answered, since the next build could not read it.

@@ -51,7 +51,13 @@ type:
 | `unitOut u`     | a directory of its own to write into, under `target/units` |
 
 It answers `Ok interface` or `Err report`. The interface type is `Reflect`, so
-that it can be kept between runs.
+that it can be kept between runs, and it holds data alone: no function, `Ref`
+or mutable array.
+
+An interface is held once however many units import it. The build puts it in
+a compact region (`Std.Compact`) as soon as its compiler answers; the units
+that depend on it read that region where they are, and so does the thread
+that writes it to its file. Nothing is copied from thread to thread.
 
 The compiler runs under a handler for `Fs` that lets it read its unit's sources
 and its own output directory, and write only in that directory. Anything else
@@ -94,9 +100,10 @@ What was built is kept under `target/`:
 - `lingua-build.json` holds fingerprints only: for each unit, of its sources,
   of each interface it was compiled against, and of its own interface. It is
   small, and every build reads it.
-- `interfaces/<unit>.json` holds one unit's interface, written by the thread
-  that compiled it, after its answer has gone to the units waiting for it:
-  they need the interface, not the file. The build is not done until every
+- `interfaces/<unit>.json` holds one unit's interface, written on a thread of
+  its own after the unit's answer has gone to the units waiting for it: they
+  need the interface, not the file. The thread that compiled the unit has
+  ended by then, and what it held with it. The build is not done until every
   such file is written, and a unit whose interface could not be written
   counts as failed.
 

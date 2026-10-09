@@ -753,6 +753,9 @@ fun dirOf r = match r with | (dir, _, _, _) -> dir
 -- them.
 @pub def noOptions = { resolve = \dir manifest -> Ok (), compileKey = \o -> 0, linkKey = \o -> 0 }
 
+-- Say that a build cannot be made, as `makeUnits` says it.
+@pub fun sayError (why : String) : () ! { Console | e } = writeOutput "error: ${why}\n"
+
 -- A truth, as an option is given one on a command line or in a manifest.
 @pub fun asBool (value : String) : Maybe Bool =
   if V.elem value ["true", "True", "yes", "on", "1"] then Just True
@@ -840,10 +843,11 @@ fun under (dir : String) (p : String) : Bool =
 
 -- --- make! -------------------------------------------------------------------
 
-use Std.Macro (TokenTree, Loc, isPunct)
+use Std.Macro (TokenTree, Loc, isPunct, spaced)
 use Std.Macro.TokenTree.*
 use Std.Macro.Loc.*
-use Std.Macro.Parse (Tokens, parseTokens, ident, keyword, punct, stringLit)
+use Std.Macro.Parse (Tokens, parseTokens, ident, keyword, punct, stringLit, group, treesUntil)
+use Std.Macro.Delim.*
 use Std.String.Parse as P
 use Std.String.Parse (Parser)
 use Std.String.Parse (keep, skip)
@@ -853,65 +857,457 @@ use Std.Collections.HashMap (HashMap)
 
 -- `| sources = ".ml"` or `| compile = compileUnit`: a setting, where it was
 -- written, and what it is.
-def setting : Parser Tokens ((String, Loc), String) =
-  P.pure (\k v -> (k, v))
+def setting : Parser Tokens Item =
+  P.pure (\k v -> Setting k v)
     |> skip (punct "|")
     |> keep named
     |> skip (punct "=")
     |> keep (P.alt stringLit ident)
 
--- A setting as it is read: its name, where that was written, and its value.
-type BuildSetting = ((String, Loc), String)
+-- `| options { … }`: the options a build has.
+def optionsItem : Parser Tokens Item =
+  P.pure (\at body -> Options (snd at) body)
+    |> skip (punct "|")
+    |> keep
+      (P.label
+         "`options`"
+         (P.token
+            (\t ->
+              match t with
+              | Word "options" at -> Just ("", at)
+              | _ -> None)
+            []))
+    |> keep (group Brace (treesUntil (\t -> False)))
 
-def buildCall : Parser Tokens (Bool, String, String, [BuildSetting]) =
+-- `| profile release { opt = O2 }`: a named set of them.
+def profileItem : Parser Tokens Item =
+  P.pure (\n body -> Profile n body)
+    |> skip (punct "|")
+    |> skip (keyword "profile")
+    |> keep named
+    |> keep (group Brace (treesUntil (\t -> False)))
+
+-- What a build's declaration is made of.
+data Item
+  = Setting (String, Loc) String
+  | Options Loc [TokenTree]
+  | Profile (String, Loc) [TokenTree]
+
+use Item.*
+
+def buildCall : Parser Tokens (Bool, String, String, [Item]) =
   P.pure (\pub name lang ss -> (M.isSome pub, name, lang, ss))
     |> keep (P.optional (keyword "pub"))
     |> keep ident
     |> keep stringLit
-    |> keep (P.some setting)
+    |> keep (P.some (P.choice [P.try optionsItem, P.try profileItem, setting]))
 
 -- The settings a build needs, and those it may add.
 def settings : [String] = ["sources", "manifest", "compile"]
 
-def optional : [String] = ["dependencies", "files", "parallel", "link"]
+def optional : [String] = ["dependencies", "files", "parallel", "link", "overrides"]
+
+-- An option's type: a truth, a number, a text, maybe one of the last two,
+-- several texts, or one of the names written.
+data Kind
+  = Truth
+  | Number
+  | Text
+  | MaybeNumber
+  | MaybeText
+  | Texts
+  | Choice [String]
+
+use Kind.*
+
+-- An option as it is declared: its name and where that was written, its
+-- type, what it is unless something says otherwise -- an expression, as it
+-- was written -- what help says of it, and what depends on it: `compile`,
+-- `link` or `nothing`.
+data Opt = Opt String Loc Kind [TokenTree] String String
+
+fun optName o = match o with | Opt n _ _ _ _ _ -> n
+fun optKind o = match o with | Opt _ _ k _ _ _ -> k
+fun optAffects o = match o with | Opt _ _ _ _ _ a -> a
+
+fun kindOf (ts : [TokenTree]) : Maybe Kind =
+  match (V.get ts 0, V.get ts 1, V.len ts) with
+  | (Just (Word "Bool" _), _, 1) -> Just Truth
+  | (Just (Word "Int" _), _, 1) -> Just Number
+  | (Just (Word "String" _), _, 1) -> Just Text
+  | (Just (Word "Maybe" _), Just (Word "Int" _), 2) -> Just MaybeNumber
+  | (Just (Word "Maybe" _), Just (Word "String" _), 2) -> Just MaybeText
+  | (Just (Group Bracket inner _), _, 1) ->
+      (match (V.get inner 0, V.len inner) with
+       | (Just (Word "String" _), 1) -> Just Texts
+       | _ -> None)
+  | _ ->
+      -- `O0 | O1 | O2`: names, a `|` between each two.
+      let names = V.concatMap (\t -> match t with | Word w _ -> [w] | _ -> []) ts in
+      let bars = V.len (V.filter (isPunct "|") ts) in
+      if V.len names >= 2 and bars == V.len names - 1 and V.len ts == V.len names + bars then
+        Just (Choice names)
+      else None
+
+-- Where the entry that starts at `i` ends: at the next name with a `:` after
+-- it, or at the end.
+fun entryEnd (ts : [TokenTree]) (i : Int) : Int =
+  match (V.get ts i, V.get ts (i + 1)) with
+  | (None, _) -> i
+  | (Just (Word _ _), Just t) -> if isPunct ":" t then i else entryEnd ts (i + 1)
+  | _ -> entryEnd ts (i + 1)
+
+fun firstWhere (p : TokenTree -> Bool) (ts : [TokenTree]) (i : Int) (stop : Int) : Int =
+  if i >= stop then stop
+  else
+    match V.get ts i with
+    | Just t -> if p t then i else firstWhere p ts (i + 1) stop
+    | None -> stop
+
+def optionShape : String =
+  "an option is `name : Type = default \"what it is\"`, and may end `for link` or `for nothing`; a type is `Bool`, `Int`, `String`, `Maybe Int`, `Maybe String`, `[String]` or names with `|` between"
+
+-- The options a `{ … }` declares, or what is wrong with one.
+fun optionsOf (ts : [TokenTree]) (i : Int) (acc : [Opt]) : Result [TokenTree] [Opt] =
+  match (V.get ts i, V.get ts (i + 1)) with
+  | (None, _) -> Ok acc
+  | (Just (Word name at), Just colon) ->
+      if not (isPunct ":" colon) then Err [Fail optionShape at]
+      else
+        let stop = entryEnd ts (i + 2) in
+        let eq = firstWhere (isPunct "=") ts (i + 2) stop in
+        -- `for link`, if the entry ends with it.
+        let marked =
+          (match (V.get ts (stop - 2), V.get ts (stop - 1)) with
+           | (Just (Word "for" _), Just (Word w _)) -> Just w
+           | _ -> None)
+        in
+        let last = if M.isSome marked then stop - 2 else stop in
+        (match (kindOf (V.take (V.drop ts (i + 2)) (eq - i - 2)), V.get ts (last - 1)) with
+         | (None, _) -> Err [Fail optionShape at]
+         | (Just kind, Just (Str help _)) ->
+             let affects = M.unwrapOr "compile" marked in
+             if eq >= last - 1 then
+               Err [Fail "`${name}` needs what it is by default, after its `=`" at]
+             else if not (V.elem affects ["compile", "link", "nothing"]) then
+               Err
+                 [Fail
+                    "an option is `for link` or `for nothing`, or for compiling, which is not said; not `for ${affects}`"
+                    at]
+             else if V.any (\o -> optName o == name) acc then
+               Err [Fail "there is an option `${name}` already" at]
+             else
+               optionsOf
+                 ts
+                 stop
+                 (V.pushBack
+                    acc
+                    (Opt
+                       name
+                       at
+                       kind
+                       (V.take (V.drop ts (eq + 1)) (last - 1 - eq - 1))
+                       help
+                       affects))
+         | _ -> Err [Fail optionShape at])
+  | (Just (Word _ at), None) -> Err [Fail optionShape at]
+  | _ -> Err [Fail optionShape Nowhere]
+
+-- `opt = O2, strict = True`: the fields a profile sets, each with its value
+-- as it was written.
+fun fieldsOf (ts : [TokenTree]) : [(String, Loc, [TokenTree])] =
+  let parts =
+    (match V.foldl
+       (\acc t ->
+         match acc with
+         | (done, cur) ->
+             (if isPunct "," t then (V.pushBack done cur, []) else (done, V.pushBack cur t)))
+       ([], [])
+       ts with
+     | (done, cur) -> if V.isEmpty cur then done else V.pushBack done cur)
+  in V.concatMap
+       (\part ->
+         match (V.get part 0, V.get part 1) with
+         | (Just (Word n at), Just t) -> if isPunct "=" t then [(n, at, V.drop part 2)] else []
+         | _ -> [])
+       parts
+
+fun capital (s : String) : String =
+  S.toUpper (stringSlice s 0 1) ++ stringSlice s 1 (stringByteLength s)
+
+fun small (s : String) : String =
+  S.toLower (stringSlice s 0 1) ++ stringSlice s 1 (stringByteLength s)
+
+-- The type an option's choice is: the build's name and the option's.
+fun choiceTy (name : String) o : String = "${name}${capital (optName o)}"
+
+fun kindTy (name : String) o : String =
+  match optKind o with
+  | Truth -> "Bool"
+  | Number -> "Int"
+  | Text -> "String"
+  | MaybeNumber -> "Maybe Int"
+  | MaybeText -> "Maybe String"
+  | Texts -> "[String]"
+  | Choice _ -> choiceTy name o
+
+fun kindSaid o : String =
+  match optKind o with
+  | Truth -> "true or false"
+  | Number -> "a number"
+  | Text -> "a text"
+  | MaybeNumber -> "a number, or none"
+  | MaybeText -> "a text, or none"
+  | Texts -> "texts, with commas between"
+  | Choice names -> "one of ${S.join ", " names}"
+
+-- A value as it was written, as code: a choice's name by its type.
+fun valueCode (name : String) o (ts : [TokenTree]) : String =
+  match (optKind o, V.get ts 0, V.len ts) with
+  | (Choice names, Just (Word w _), 1) ->
+      if V.elem w names then "${choiceTy name o}.${w}" else spaced ts
+  | _ -> spaced ts
+
+-- How option `o` of a record `lingua_o` is set from a text `lingua_v`.
+fun setCode (name : String) o : String =
+  let n = optName o in
+  let wrong = "Err \"`${n}` is ${kindSaid o}, not `\${lingua_v}`\"" in
+  match optKind o with
+  | Truth ->
+      "(match LinguaMake.asBool lingua_v with | Just lingua_x -> Ok { lingua_o | ${n} = lingua_x } | None -> ${wrong})"
+  | Number ->
+      "(match LinguaS.toInt lingua_v with | Just lingua_x -> Ok { lingua_o | ${n} = lingua_x } | None -> ${wrong})"
+  | Text -> "Ok { lingua_o | ${n} = lingua_v }"
+  | MaybeNumber ->
+      "(if lingua_v == \"none\" or lingua_v == \"\" then Ok { lingua_o | ${n} = None } else (match LinguaS.toInt lingua_v with | Just lingua_x -> Ok { lingua_o | ${n} = Just lingua_x } | None -> ${wrong}))"
+  | MaybeText ->
+      "Ok { lingua_o | ${n} = (if lingua_v == \"none\" or lingua_v == \"\" then None else Just lingua_v) }"
+  | Texts -> "Ok { lingua_o | ${n} = LinguaMake.asList lingua_v }"
+  | Choice names ->
+      "(match lingua_v with${S.join "" (V.map (\c -> " | \"${c}\" -> Ok { lingua_o | ${n} = ${choiceTy name o}.${c} }") names)} | _ -> ${wrong})"
+
+-- What a build's options are written as: a type for each choice, the record
+-- of them, what they are by default, each profile, how one is set from a
+-- text, and what compiling and linking each depend on.
+fun optionsCode
+    (pub : String)
+    (name : String)
+    (lang : String)
+    (opts : [Opt])
+    (profiles : [((String, Loc), [(String, Loc, [TokenTree])])])
+    : [TokenTree] =
+  let lower = small name in
+  let choices =
+    S.join
+      ""
+      (V.concatMap
+         (\o ->
+           match optKind o with
+           | Choice names ->
+               ["\n@derive(Debug, PartialEq)\n${pub}data ${choiceTy name o} = ${S.join " | " names}\n"]
+           | _ -> [])
+         opts)
+  in
+  let fields = S.join ", " (V.map (\o -> "${optName o} : ${kindTy name o}") opts) in
+  let defaults =
+    S.join
+      ", "
+      (V.map
+         (\o ->
+           match o with
+           | Opt n _ _ d _ _ -> "${n} = (${valueCode name o d})")
+         opts)
+  in
+  let valueOf =
+    \f ->
+      match f with
+      | (fn, _, value) ->
+          (match V.find (\o -> optName o == fn) opts with
+           | Just o -> "${fn} = (${valueCode name o value})"
+           | None -> "${fn} = (${spaced value})")
+  in
+  let profileArm =
+    \pr ->
+      match pr with
+      | ((pn, _), fs) ->
+          let made =
+            if V.isEmpty fs then "lingua_d" else "{ lingua_d | ${S.join ", " (V.map valueOf fs)} }"
+          in " | \"${pn}\" -> Just (let lingua_d = ${lower}Defaults () in ${made})"
+  in
+  let keyOf =
+    \what ->
+      let mine = V.filter (\o -> optAffects o == what) opts in
+      if V.isEmpty mine then "0"
+      else "hash [${S.join ", " (V.map (\o -> "hash lingua_o.${optName o}") mine)}]"
+  in
+  let names = S.join ", " (V.map (\o -> "`${optName o}`") opts) in
+  [Code "use Lingua.Make as LinguaMake
+use Std.Collections.Vector as LinguaV
+use Std.String as LinguaS
+${choices}
+-- ${lang}'s options: what a build of it can be told.
+${pub}record ${name}Options = { ${fields} }
+
+-- What each is unless a profile, a manifest or the command line says.
+${pub}fun ${lower}Defaults () = ${name}Options { ${defaults} }
+
+-- The profiles a build can be made as.
+${pub}def ${lower}Profiles : [String] = [${S.join ", " (V.map (\pr -> "\"${fst (fst pr)}\"") profiles)}]
+
+-- A profile's options, by its name.
+${pub}fun ${lower}Profile (lingua_p : String) =
+  match lingua_p with${S.join "" (V.map profileArm profiles)} | _ -> None
+
+-- `lingua_o` with the option called `lingua_n` set from a text -- as a
+-- command line or a manifest gives one -- or what is wrong with that.
+${pub}fun ${lower}Set (lingua_o : ${name}Options) (lingua_n : String) (lingua_v : String) : Result String ${name}Options =
+  match lingua_n with${S.join "" (V.map (\o -> "\n  | \"${optName o}\" -> ${setCode name o}") opts)}
+  | _ -> Err \"${lang} has no option `\${lingua_n}`: it has ${names}\"
+
+-- The same, of several in turn.
+${pub}fun ${lower}With (lingua_o : ${name}Options) (lingua_ps : [(String, String)]) : Result String ${name}Options =
+  LinguaMake.withAll ${lower}Set lingua_o lingua_ps
+
+-- Each option's name, what it may be, and what help says of it.
+${pub}def ${lower}OptionHelp : [(String, String, String)] =
+  [${S.join ", " (V.map (\o -> match o with | Opt n _ _ _ h _ -> "(\"${n}\", \"${kindSaid o}\", ${textCode h})") opts)}]
+
+fun lingua${name}_compileKey (lingua_o : ${name}Options) : Int = ${keyOf "compile"}
+
+fun lingua${name}_linkKey (lingua_o : ${name}Options) : Int = ${keyOf "link"}
+"]
+
+-- A text as code: in quotes, what would end it or splice into it escaped.
+fun textCode (s : String) : String =
+  "\""
+    ++ S.join
+      ""
+      (V.map
+         (\i ->
+           let c = stringSlice s i (i + 1) in
+           if c == "\"" then "\\\""
+           else if c == "\\" then "\\\\"
+           else if c == "$" then "\\$"
+           else c)
+         (V.range 0 (stringByteLength s)))
+    ++ "\""
 
 @macro
 @pub fun make (ts : [TokenTree]) : [TokenTree] ! { Expand | e } =
   match parseTokens buildCall ts with
   | Err failed -> failed
-  | Ok (pub, name, lang, ss) ->
-      match V.find (\s -> not (V.elem (fst (fst s)) (V.append settings optional))) ss with
-      | Just s ->
-          [Fail
-             "a build has no setting `${fst (fst s)}`: they are ${S.join ", " (V.map (\x -> "`${x}`") (V.append settings optional))}"
-             (snd (fst s))]
-      | None ->
-          match V.find (\k -> not (V.any (\s -> fst (fst s) == k) ss)) settings with
-          | Just k -> [Fail "a build needs `${k}`" Nowhere]
-          | None ->
-              match V.find
-                (\s -> fst (fst s) == "parallel" and not (V.elem (snd s) ["true", "false"]))
-                ss with
-              | Just s ->
+  | Ok (pub, name, lang, items) ->
+      let ss = V.concatMap (\x -> match x with | Setting k v -> [(k, v)] | _ -> []) items in
+      let declared =
+        V.concatMap (\x -> match x with | Options at body -> [(at, body)] | _ -> []) items
+      in
+      let profiles =
+        V.concatMap
+          (\x ->
+            match x with
+            | Profile n body -> [(n, fieldsOf body)]
+            | _ -> [])
+          items
+      in match V.find (\s -> not (V.elem (fst (fst s)) (V.append settings optional))) ss with
+         | Just s ->
+             [Fail
+                "a build has no setting `${fst (fst s)}`: they are ${S.join ", " (V.map (\x -> "`${x}`") (V.append settings optional))}, and `options { … }` and `profile name { … }`"
+                (snd (fst s))]
+         | None ->
+             match V.find (\k -> not (V.any (\s -> fst (fst s) == k) ss)) settings with
+             | Just k -> [Fail "a build needs `${k}`" Nowhere]
+             | None ->
+                 match V.find
+                   (\s -> fst (fst s) == "parallel" and not (V.elem (snd s) ["true", "false"]))
+                   ss with
+                 | Just s ->
+                     [Fail
+                        "`parallel` is `true` or `false`: whether units that do not depend on each other are compiled at once, which they are unless it says `false`"
+                        (snd (fst s))]
+                 | None ->
+                     match optionsOf (M.unwrapOr [] (M.map snd (V.get declared 0))) 0 [] with
+                     | Err failed -> failed
+                     | Ok opts -> written pub name lang ss declared profiles opts
+
+-- What a build's declaration writes, once its settings and options are read.
+fun written (pub : Bool) (name : String) (lang : String) ss declared profiles (opts : [Opt])
+    : [TokenTree] =
+  let get = \k -> M.unwrapOr "" (M.map snd (V.find (\s -> fst (fst s) == k) ss)) in
+  let given = \k -> M.map snd (V.find (\s -> fst (fst s) == k) ss) in
+  let vis = if pub then "@pub " else "" in
+  let schedule =
+    if given "parallel" == Just "false" then "LinguaMake.inTurn" else "LinguaMake.onThreads"
+  in
+  let unitsIn =
+    \sub ->
+      "{ manifest = \"${get "manifest"}\", ext = \"${get "sources"}\", sub = ${sub}, deps = ${M.unwrapOr "None" (M.map (\f -> "Just (\\r d t -> ${f} r d t)") (given "dependencies"))}, files = ${M.unwrapOr "None" (M.map (\f -> "Just (\\d -> ${f} d)") (given "files"))} }"
+  in
+  let unknown =
+    V.concatMap
+      (\pr ->
+        V.concatMap
+          (\f ->
+            match f with
+            | (fn, at, _) ->
+                if V.any (\o -> optName o == fn) opts then []
+                else
                   [Fail
-                     "`parallel` is `true` or `false`: whether units that do not depend on each other are compiled at once, which they are unless it says `false`"
-                     (snd (fst s))]
-              | None ->
-                  let get = \k -> M.unwrapOr "" (M.map snd (V.find (\s -> fst (fst s) == k) ss)) in
-                  let given = \k -> M.map snd (V.find (\s -> fst (fst s) == k) ss) in
-                  let units =
-                    "{ manifest = \"${get "manifest"}\", ext = \"${get "sources"}\", sub = \"\", deps = ${M.unwrapOr "None" (M.map (\f -> "Just (\\r d t -> ${f} r d t)") (given "dependencies"))}, files = ${M.unwrapOr "None" (M.map (\f -> "Just (\\d -> ${f} d)") (given "files"))} }"
-                  in [Code "use Lingua.Make as LinguaMake
+                     "${lang} has no option `${fn}`: a profile sets the options the build has"
+                     at])
+          (snd pr))
+      profiles
+  in if V.len declared > 1 then
+       [Fail
+          "a build's options are one `options { … }`"
+          (M.unwrapOr Nowhere (M.map fst (V.get declared 1)))]
+     else if V.isEmpty declared and not (V.isEmpty profiles) then
+       [Fail
+          "a profile sets a build's options, and this build has none: say them in `options { … }`"
+          (M.unwrapOr Nowhere (M.map (\pr -> snd (fst pr)) (V.get profiles 0)))]
+     else if V.isEmpty declared and M.isSome (given "overrides") then
+       [Fail
+          "`overrides` says what a unit's options are, and this build has none: say them in `options { … }`"
+          Nowhere]
+     else if not (V.isEmpty unknown) then V.take unknown 1
+     else if V.isEmpty declared then [Code "use Lingua.Make as LinguaMake
 
 -- ${lang}'s build: the unit at `root` and every unit it depends on, each
 -- compiled only if what it would be compiled from has changed.
-${if pub then "@pub " else ""}fun build${name} (root : String) =
-  LinguaMake.makeUnits ${if given "parallel" == Just "false" then "LinguaMake.inTurn" else "LinguaMake.onThreads"} \"${lang}\" (${units}) root LinguaMake.noOptions (\\o u -> ${get "compile"} u) (${M.unwrapOr "None" (M.map (\f -> "Just (\\o l -> ${f} l)") (given "link"))}) LinguaMake.encodeReflect LinguaMake.decodeReflect
+${vis}fun build${name} (root : String) =
+  LinguaMake.makeUnits ${schedule} \"${lang}\" (${unitsIn "\"\""}) root LinguaMake.noOptions (\\o u -> ${get "compile"} u) (${M.unwrapOr "None" (M.map (\f -> "Just (\\o l -> ${f} l)") (given "link"))}) LinguaMake.encodeReflect LinguaMake.decodeReflect
 
 -- What the unit at `dir` was compiled from in `root`'s last build.
-${if pub then "@pub " else ""}fun given${name} (root : String) (dir : String) =
-  LinguaMake.givenOf (${units}) root dir LinguaMake.decodeReflect
+${vis}fun given${name} (root : String) (dir : String) =
+  LinguaMake.givenOf (${unitsIn "\"\""}) root dir LinguaMake.decodeReflect
 "]
+     else
+       -- A build with options and no profile written has one, `debug`: what
+       -- the options are by default.
+       let named = if V.isEmpty profiles then [(("debug", Nowhere), [])] else profiles in
+       let lower = small name in
+       let over =
+         (match given "overrides" with
+          | Just f -> "(${f} root lingua_dir lingua_manifest lingua_profile)"
+          | None -> "[]")
+       in V.concat [optionsCode vis name lang opts named, [Code "
+-- ${lang}'s build, as profile `lingua_profile` and with `lingua_set` over
+-- it: the unit at `root` and every unit it depends on, each compiled with
+-- its own options and only if what it would be compiled from -- those
+-- among it -- has changed. What it builds is under `target/<profile>`.
+${vis}fun build${name} (lingua_profile : String) (lingua_set : [(String, String)]) (root : String) =
+  match ${lower}Profile lingua_profile with
+  | None -> (let lingua_u = LinguaMake.sayError \"${lang} has no profile `\${lingua_profile}`: it has \${LinguaS.join \", \" ${lower}Profiles}\" in False)
+  | Just lingua_base ->
+      LinguaMake.makeUnits ${schedule} \"${lang}\" (${unitsIn "lingua_profile"}) root
+        { resolve = \\lingua_dir lingua_manifest -> (match ${lower}With lingua_base ${over} with | Err lingua_e -> Err lingua_e | Ok lingua_o -> ${lower}With lingua_o lingua_set), compileKey = lingua${name}_compileKey, linkKey = lingua${name}_linkKey }
+        (\\o u -> ${get "compile"} o u) (${M.unwrapOr "None" (M.map (\f -> "Just (\\o l -> ${f} o l)") (given "link"))}) LinguaMake.encodeReflect LinguaMake.decodeReflect
+
+-- What the unit at `dir` was compiled from in `root`'s last build as that
+-- profile.
+${vis}fun given${name} (lingua_profile : String) (root : String) (dir : String) =
+  LinguaMake.givenOf (${unitsIn "lingua_profile"}) root dir LinguaMake.decodeReflect
+"]]
+
 -- --- tests ---------------------------------------------
 
 use Std.Test (assertEq)

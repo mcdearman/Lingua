@@ -25,6 +25,9 @@ the last build, for a tool that wants to ask the compiler about a unit again.
 | `manifest`     | yes      | the file that makes a directory a unit, `"Unit"`                         |
 | `compile`      | yes      | the compiler: a function of a `Given i` answering `Result String i`      |
 | `parallel`     | no       | `false` to compile one unit after another; a build is parallel otherwise |
+| `options { … }`| no       | what the build can be told; see [Options and profiles](#options-and-profiles) |
+| `profile n { … }` | no    | a named set of options                                                   |
+| `overrides`    | no       | a unit's own options, read from its manifest                             |
 | `dependencies` | no       | how to read a manifest, for one that is more than a list of paths        |
 | `files`        | no       | where a unit's sources are, when not beside the manifest                 |
 | `link`         | no       | how the program is put together once every unit is built                 |
@@ -155,6 +158,118 @@ fun compiling (u : Given Interface) =
   let a = setSessionImports db 0 (V.concatMap (\i -> exports (snd i)) (unitImports u)) in
   …
 ```
+
+## Options and profiles
+
+A build may say what it can be told. Each option has a name, a type, what it
+is by default and a line of help; a profile is a named set of them.
+
+```meadow
+make! {
+  pub Units "meadow"
+    | sources = ".mw"
+    | manifest = "Meadow.toml"
+    | compile = compileUnit
+    | link = linkProgram
+    | options {
+        opt : O0 | O1 | O2 | O3 = O1       "how hard to optimise"
+        strict : Bool = False              "a match must be exhaustive"
+        flags : [String] = []              "what `@cfg` holds of"
+        entry : Maybe String = None        "a value run in place of main"
+        runtime : Glade | Silo = Glade     "what the program runs on"     for link
+        threads : Maybe Int = None         "threads the program runs on"  for nothing
+      }
+    | profile debug { }
+    | profile release { opt = O2, strict = True }
+    | overrides = profileOf
+}
+```
+
+**Types.** `Bool`, `Int`, `String`, `Maybe Int`, `Maybe String`, `[String]`,
+or a choice written in place as names with `|` between. A choice becomes a
+data type named for the build and the option: `UnitsOpt` with `UnitsOpt.O0`
+and the rest.
+
+**Defaults** are ordinary Meadow expressions of the option's type, so one may
+come from code: `os : String = hostOs ()`. A choice's name is written bare.
+
+**What an option is for.** Unmarked, compiling depends on it. `for link`
+means only the link does; `for nothing` means neither, such as how many
+threads the built program runs on.
+
+### What is written
+
+For a build `Units`:
+
+| name                  | what it is                                                     |
+| --------------------- | -------------------------------------------------------------- |
+| `UnitsOptions`        | a record with a field per option                               |
+| `unitsDefaults ()`    | each option at its default                                     |
+| `unitsProfiles`       | the profiles' names                                            |
+| `unitsProfile name`   | a profile's options, or `None`                                 |
+| `unitsSet o name text`| `o` with one option set from a text, or what is wrong          |
+| `unitsWith o pairs`   | the same for several `(name, text)` pairs in turn              |
+| `unitsOptionHelp`     | each option's name, what it may be, and its help               |
+| `buildUnits profile pairs root` | the build                                            |
+| `givenUnits profile root dir`   | what a unit was compiled from, as that profile       |
+
+A text sets an option the way a command line or a manifest would give it:
+`true`/`false` for a `Bool`, a number, a choice's name, `none` for a `Maybe`,
+and texts with commas between for a `[String]`. What is wrong is said:
+
+```text
+`opt` is one of O0, O1, O2, O3, not `fast`
+meadow has no option `speed`: it has `opt`, `strict`, `flags`, …
+```
+
+### What the compiler is handed
+
+With options, `compile` and `link` take them first, as the typed record:
+
+```meadow
+fun compileUnit (o : UnitsOptions) (u : Given Interface) : Result String Interface = …
+fun linkProgram (o : UnitsOptions) (l : Linking Interface) : Result String () = …
+```
+
+### Layers
+
+A unit's options are worked out in this order, each over the one before:
+
+1. the defaults in the declaration;
+2. the profile the build was asked for;
+3. `overrides`, if the build has one: a function of the root unit, the unit's
+   directory, its manifest's text and the profile's name, answering
+   `(name, text)` pairs. This is where a language reads its own manifest's
+   profile section, and it is per unit: a standard library can be compiled
+   the same way under every profile, so that one compile of it serves them
+   all;
+4. the pairs `buildUnits` was given, which is the command line's place.
+
+A build with options and no `profile` has one, `debug`: the defaults.
+
+### What a change rebuilds
+
+A unit's options are part of what it is compiled from. Its fingerprint takes
+in the options compiling depends on, as that unit has them, so:
+
+- changing a compile option recompiles the units whose own value of it
+  changed, and through their interfaces whatever depends on them;
+- changing a `for link` option reruns the link and compiles nothing;
+- changing a `for nothing` option does nothing.
+
+### Where a profile's build is kept
+
+Each profile has a directory of its own, `target/<profile>/`, holding its
+`lingua-build.json`, `interfaces/`, `units/` and `link/`. A build as one
+profile leaves another's where it was, so going from debug to release and
+back compiles nothing the second time. A build with no options keeps
+everything directly under `target/`, as before.
+
+### On the command line
+
+`make!` writes no flags of its own. A compiler's `cli!` declares what it
+likes, for instance `--profile`, `-O` and a repeated `--set name=value`, and
+hands the profile's name and the pairs to `buildUnits`.
 
 ## Why the build is not a query database
 

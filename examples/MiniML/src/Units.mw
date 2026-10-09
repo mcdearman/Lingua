@@ -265,6 +265,146 @@ fun linkProgram (l : Linking Interface) : Result String () ! { Fs | e } =
     )
     "each build, the program, and how often it was put together"
 
+-- A build with options: what a build can be told, each with what it is
+-- unless something says otherwise, and profiles, named sets of them. The
+-- compiler is handed a unit's own, typed, and writes down what it got.
+make! {
+  Tuned "miniml"
+    | sources = ".ml"
+    | manifest = "Unit"
+    | compile = compileTuned
+    | options {
+      level : Low | High = Low "how hard to try"
+      twice : Bool = False "check each file twice"
+      flags : [String] = [] "what is turned on"
+      label : String = "plain" "what the build is called" for nothing
+      jobs : Maybe Int = None "how many at once" for nothing
+    }
+    | profile debug {}
+    | profile release { level = High, twice = True }
+    | overrides = tunedOverrides
+}
+
+fun compileTuned (o : TunedOptions) (u : Given Interface) =
+  let level =
+    (match o.level with
+     | TunedLevel.Low -> "low"
+     | TunedLevel.High -> "high")
+  in
+  let w =
+    writeString (
+      Path.join (unitOut u) "got",
+      "${level} ${if o.twice then "twice" else "once"} [${S.join "," o.flags}]"
+    )
+  in compileUnit u
+
+-- A unit whose manifest says `# gently` is compiled at the low level
+-- whatever the profile: a unit's options are its own.
+fun tunedOverrides (root : String) (dir : String) (manifest : String) (profile : String)
+    : [(String, String)] =
+  if S.contains "# gently" manifest then [("level", "Low")] else []
+
+fun tuned profile set root =
+  match withOutput (\() -> buildTuned profile set root) with
+  | (ok, said) -> (ok, V.filter (\l -> S.startsWith "   " l) (S.lines said))
+
+@test fun aBuildIsMadeAsAProfileAndKeptApartFromAnother () =
+  let root = "target/build-tuned" in
+  let z = removeDirAll root in
+  let lib = Path.join root "lib" in
+  let app = Path.join root "app" in
+  let a = write lib "Unit" "# gently\n" in
+  let b = write lib "double.ml" "fun x -> x + x" in
+  let c = write app "Unit" "../lib\n" in
+  let d = write app "main.ml" "double 21" in
+  let both = [(True, ["   Compiled lib", "   Compiled app"])] in
+  let neither = [(True, ["   Fresh lib", "   Fresh app"])] in
+  let got =
+    \profile unit ->
+      Res.unwrapOr "" (readToString (Path.joinAll [app, "target", profile, "units", unit, "got"]))
+  in
+  let e =
+    assertEq
+      [tuned "debug" [] app, tuned "debug" [] app]
+      (V.append both neither)
+      "built, and then up to date"
+  in
+  let f = assertEq [tuned "release" [] app] both "as another profile, built again" in
+  let g =
+    assertEq [tuned "debug" [] app] neither "and what was built as the first is where it was"
+  in assertEq
+       (got "debug" "app", got "release" "app", got "release" "lib")
+       ("low once []", "high twice []", "low twice []")
+       "each unit compiled with its own: the profile's, and under it what its manifest says"
+
+@test fun anOptionRebuildsWhatDependsOnItAndNothingElse () =
+  let root = "target/build-options" in
+  let z = removeDirAll root in
+  let lib = Path.join root "lib" in
+  let a = write lib "Unit" "" in
+  let b = write lib "double.ml" "fun x -> x + x" in
+  let first = tuned "debug" [] lib in
+  let named = tuned "debug" [("label", "mine"), ("jobs", "4")] lib in
+  let flagged = tuned "debug" [("flags", "fast, gpu")] lib in
+  let again = tuned "debug" [("flags", "fast, gpu")] lib in
+  let got =
+    Res.unwrapOr "" (readToString (Path.joinAll [lib, "target", "debug", "units", "lib", "got"]))
+  in
+  let c =
+    assertEq
+      [first, named, flagged, again]
+      [
+        (True, ["   Compiled lib"]),
+        (True, ["   Fresh lib"]),
+        (True, ["   Compiled lib"]),
+        (True, ["   Fresh lib"])
+      ]
+      "an option nothing depends on changes nothing; one compiling does, compiles"
+  in assertEq got "low once [fast,gpu]" "with what the command line set"
+
+@test fun whatIsWrongWithAnOptionIsSaid () =
+  let o = tunedDefaults () in
+  let said = \r -> (match r with | Err why -> why | Ok _ -> "") in
+  let a =
+    assertEq
+      (said (tunedWith o [("level", "Medium")]))
+      "`level` is one of Low, High, not `Medium`"
+      "a choice that is not one of them"
+  in
+  let b =
+    assertEq
+      (said (tunedWith o [("twice", "maybe")]))
+      "`twice` is true or false, not `maybe`"
+      "a truth that is not one"
+  in
+  let c =
+    assertEq
+      (said (tunedWith o [("speed", "9")]))
+      "miniml has no option `speed`: it has `level`, `twice`, `flags`, `label`, `jobs`"
+      "an option there is not"
+  in
+  let d =
+    assertEq
+      (match tunedWith o [("jobs", "8"), ("jobs", "none"), ("twice", "yes")] with
+       | Ok x -> (x.jobs, x.twice)
+       | Err _ -> (Just 0, False))
+      (None, True)
+      "several, in turn, the last standing"
+  in
+  let e = assertEq tunedProfiles ["debug", "release"] "the profiles there are" in
+  let f =
+    assertEq
+      (
+        fst (withOutput (\() -> buildTuned "fast" [] "target/build-options/lib")),
+        V.len tunedOptionHelp
+      )
+      (False, 5)
+      "and a profile there is not is no build"
+  in assertEq
+       (fst (tuned "debug" [("level", "Medium")] "target/build-options/lib"))
+       False
+       "nor is a build told something that is wrong"
+
 -- The same build with no thread in it: `| parallel = false`.
 make! {
   InTurn "miniml"

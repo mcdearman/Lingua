@@ -905,7 +905,7 @@ def buildCall : Parser Tokens (Bool, String, String, [Item]) =
 -- The settings a build needs, and those it may add.
 def settings : [String] = ["sources", "manifest", "compile"]
 
-def optional : [String] = ["dependencies", "files", "parallel", "link", "overrides"]
+def optional : [String] = ["dependencies", "files", "parallel", "link", "overrides", "pinned"]
 
 -- An option's type: a truth, a number, a text, maybe one of the last two,
 -- several texts, or one of the names written.
@@ -1264,9 +1264,9 @@ fun written (pub : Bool) (name : String) (lang : String) ss declared profiles (o
        [Fail
           "a profile sets a build's options, and this build has none: say them in `options { … }`"
           (M.unwrapOr Nowhere (M.map (\pr -> snd (fst pr)) (V.get profiles 0)))]
-     else if V.isEmpty declared and M.isSome (given "overrides") then
+     else if V.isEmpty declared and (M.isSome (given "overrides") or M.isSome (given "pinned")) then
        [Fail
-          "`overrides` says what a unit's options are, and this build has none: say them in `options { … }`"
+          "`overrides` and `pinned` say what a unit's options are, and this build has none: say them in `options { … }`"
           Nowhere]
      else if not (V.isEmpty unknown) then V.take unknown 1
      else if V.isEmpty declared then [Code "use Lingua.Make as LinguaMake
@@ -1289,6 +1289,14 @@ ${vis}fun given${name} (root : String) (dir : String) =
          (match given "overrides" with
           | Just f -> "(${f} root lingua_dir lingua_manifest lingua_profile)"
           | None -> "[]")
+       in
+       -- What a unit's options are whatever the build was told: applied
+       -- last, over the command line's.
+       let last =
+         (match given "pinned" with
+          | Just f ->
+              "(match lingua_r with | Err lingua_e -> Err lingua_e | Ok lingua_o -> ${lower}With lingua_o (${f} root lingua_dir lingua_manifest lingua_profile))"
+          | None -> "lingua_r")
        in V.concat [optionsCode vis name lang opts named, [Code "
 -- ${lang}'s build, as profile `lingua_profile` and with `lingua_set` over
 -- it: the unit at `root` and every unit it depends on, each compiled with
@@ -1299,7 +1307,7 @@ ${vis}fun build${name} (lingua_profile : String) (lingua_set : [(String, String)
   | None -> (let lingua_u = LinguaMake.sayError \"${lang} has no profile `\${lingua_profile}`: it has \${LinguaS.join \", \" ${lower}Profiles}\" in False)
   | Just lingua_base ->
       LinguaMake.makeUnits ${schedule} \"${lang}\" (${unitsIn "lingua_profile"}) root
-        { resolve = \\lingua_dir lingua_manifest -> (match ${lower}With lingua_base ${over} with | Err lingua_e -> Err lingua_e | Ok lingua_o -> ${lower}With lingua_o lingua_set), compileKey = lingua${name}_compileKey, linkKey = lingua${name}_linkKey }
+        { resolve = \\lingua_dir lingua_manifest -> (let lingua_r = (match ${lower}With lingua_base ${over} with | Err lingua_e -> Err lingua_e | Ok lingua_o -> ${lower}With lingua_o lingua_set) in ${last}), compileKey = lingua${name}_compileKey, linkKey = lingua${name}_linkKey }
         (\\o u -> ${get "compile"} o u) (${M.unwrapOr "None" (M.map (\f -> "Just (\\o l -> ${f} o l)") (given "link"))}) LinguaMake.encodeReflect LinguaMake.decodeReflect
 
 -- What the unit at `dir` was compiled from in `root`'s last build as that

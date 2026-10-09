@@ -138,6 +138,18 @@ with it:
 - on a session that is not a batch it is the same as `parallelSession`, since
   a session already shares what it holds.
 
+## Letting go of a database
+
+A database is a value, and what it holds goes when nothing refers to it any
+more. `closeSession db` says so sooner: it lets go of every input and every
+answer at the point a compiler is done with them. The database is then as it
+was made, and may be set and asked again.
+
+Call it when a database's answers are large and the program goes on after:
+a unit's compiler under `make!`, for instance, once it has its interface.
+On Silo it also makes certain of what would otherwise wait on the runtime
+noticing that a thread which has ended refers to nothing.
+
 ## Choosing
 
 | the program                                   | use                                     |

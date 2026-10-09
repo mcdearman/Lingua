@@ -191,7 +191,7 @@ data Built = Built Int [(String, Int)] Int
 use Built.*
 
 -- How what is kept is laid out: a build by another layout is no build.
-def layout : Int = 2
+def layout : Int = 3
 
 fun statePath root = Path.joinAll [root, "target", "lingua-build.json"]
 
@@ -272,11 +272,16 @@ fun readInterface root dir decode =
        jsonDatum
        (M.andThen (\text -> okOf (J.parse text)) (okOf (readToString (interfacePath root dir)))))
 
-fun writeInterface (path : String) (d : Datum) =
+-- Whether it was written: `Err` says why not.
+fun writeInterface (path : String) (d : Datum) : Result String () ! { Fs, Process | e } =
   let u = M.map createDirAll (Path.parent path) in
   let aside = "${path}.${show (currentPid ())}" in
-  let w = writeString (aside, J.render (datumJson d)) in
-  rename (aside, path)
+  match writeString (aside, J.render (datumJson d)) with
+  | Err why -> Err "could not write ${path}: ${why}\n"
+  | Ok _ ->
+      (match rename (aside, path) with
+       | Err why -> Err "could not write ${path}: ${why}\n"
+       | Ok _ -> Ok ())
 
 -- Remove what is under `target/units` that no unit of the build owns: a unit
 -- no longer depended on, or one named another way by an older Lingua.
@@ -480,14 +485,28 @@ fun running ch planOf work report units started tasks done =
     V.map
       (\u ->
         let p = planOf done (fst u) in
-        Thread.spawn (\() -> Thread.send ch (work p)))
+        -- The answer first, to whoever waits for it; then what is left to
+        -- do about the unit, on this thread, beside them.
+        Thread.spawn (\() ->
+          match work p with
+          | (r, after) -> (let _ = Thread.send ch r in (dirOf r, after ()))))
       ready
   in
   let started2 = V.append started (V.map fst ready) in
   let tasks2 = V.append tasks begun in
   -- Nothing running and nothing to start: every unit is done -- or what is
   -- left waits for itself, which `graph` has already refused.
-  if V.len started2 == V.len done then (let u = Thread.awaitAll tasks2 in done)
+  if V.len started2 == V.len done then
+    -- Every thread is waited for: a build is not done while a unit's
+    -- interface is still being written, and a unit whose could not be is not
+    -- built.
+    (let ends = Thread.awaitAll tasks2 in
+     V.map
+       (\d ->
+         match V.find (\e -> fst e == dirOf d) ends with
+         | Just (dir, Err why) -> report (unkept dir why)
+         | _ -> d)
+       done)
   else
     running
       ch
@@ -503,7 +522,12 @@ fun running ch planOf work report units started tasks done =
 -- depends on: `| parallel = false`.
 @pub fun inTurn planOf work report units =
   V.foldl
-    (\done dir -> V.pushBack done (report (work (planOf done dir))))
+    (\done dir ->
+      match work (planOf done dir) with
+      | (r, after) ->
+          (match after () with
+           | Ok _ -> V.pushBack done (report r)
+           | Err why -> V.pushBack done (report (unkept dir why))))
     []
     (V.concat (rounds units))
 
@@ -612,21 +636,36 @@ fun compiling root decode done dir deps sources (fp : Int) =
            (outDir root dir)
            (interfacePath root dir)
 
--- Compile the unit, unless what it would be compiled from is what it was.
--- A unit's interface is written by whoever compiled it, on its thread.
+-- Compile the unit, unless what it would be compiled from is what it was:
+-- what came of it, and what is still to do about it once that is known.
+--
+-- A unit that depends on this one needs its interface and that interface's
+-- fingerprint, and both are there the moment its compiler answers. Keeping
+-- the interface -- as a `Datum`, as text, in its file -- is for the next
+-- build, and is the slower part: so it is handed back to be done after the
+-- answer has gone to whoever waits for it, not before. The fingerprint is of
+-- the interface itself, not of what it is kept as, for the same reason.
 fun carryOut compile encode p =
+  let nothing = \() -> Ok () in
   match p with
-  | Blocked2 dir why -> (dir, Blocked why, None, None)
-  | Kept dir b -> (dir, Fresh, Just b, None)
+  | Blocked2 dir why -> ((dir, Blocked why, None, None), nothing)
+  | Kept dir b -> ((dir, Fresh, Just b, None), nothing)
   | Ready dir sources fp imports out kept ->
       let against = V.map (\x -> match x with | (d, _, f) -> (d, f)) imports in
       let unit = Given dir sources (V.map (\x -> match x with | (d, i, _) -> (d, i)) imports) out in
       match sandboxed (V.map fst sources) out (\() -> compile unit) with
-      | Err report -> (dir, Broke report, None, None)
+      | Err report -> ((dir, Broke report, None, None), nothing)
       | Ok i ->
-          let d = encode i in
-          let w = writeInterface kept d in
-          (dir, Compiled, Just (Built fp against (hash d)), Just i)
+          (
+            (dir, Compiled, Just (Built fp against (hash i)), Just i),
+            \() -> writeInterface kept (encode i)
+          )
+
+-- What came of a unit whose interface could not be kept: it is not built,
+-- whatever its compiler answered, since the next build could not read it.
+fun unkept dir (why : String) = (dir, Broke why, None, None)
+
+fun dirOf r = match r with | (dir, _, _, _) -> dir
 
 -- What the unit at `dir` was compiled from in `root`'s last build: its
 -- sources as they are now, and the interfaces of the units it depends on as

@@ -457,26 +457,35 @@ def flat : Green String =
 -- between the children a field holds several of. What a tree
 -- language's patterns read a node with.
 @pub fun slotsOf (trivia : k -> Bool) (wants : [(k -> Bool, Bool)]) (s : Syntax k) : [[Syntax k]] =
-  let cs = V.filter (\c -> not (trivia (R.kindOf c))) (R.children s) in
-  let n = V.len cs in
-  let later =
-    \i c ->
-      V.any
-        (\j -> M.unwrapOr False (M.map (\w -> fst w (R.kindOf c)) (V.get wants j)))
-        (V.range (i + 1) (V.len wants))
-  in
-  let rec field i at acc =
-    match V.get wants i with
-    | None -> acc
-    | Just (accepts, many) ->
-        let rec take j got =
-          match V.get cs j with
-          | None -> (got, j)
-          | Just c ->
-              if accepts (R.kindOf c) then
-                (if many then take (j + 1) (V.pushBack got c) else (V.pushBack got c, j + 1))
-              else if later i c then (got, j)
-              else take (j + 1) got
-        in (match take at [] with
-            | (got, next) -> field (i + 1) next (V.pushBack acc got))
-  in if n == 0 then V.map (\w -> []) wants else field 0 0 []
+  match s with
+  | Syntax g i ->
+      let fields = V.len wants in
+      -- Whether a field after `f` could hold a child of kind `k`.
+      let rec later f k =
+        if f >= fields then False
+        else
+          match V.get wants f with
+          | Just w -> if fst w k then True else later (f + 1) k
+          | None -> False
+      in
+      -- The child at or after `c` that is not trivia: -1 if there is none.
+      let rec solid c =
+        if c < 0 then c else if trivia (kindAt g c) then solid (G.nextSibling g i c) else c
+      in
+      let next = \c -> solid (G.nextSibling g i c) in
+      let rec field f at acc =
+        match V.get wants f with
+        | None -> acc
+        | Just (accepts, many) ->
+            let rec take c got =
+              if c < 0 then (got, c)
+              else
+                let k = kindAt g c in
+                if accepts k then
+                  (if many then take (next c) (V.pushBack got (Syntax g c))
+                   else (V.pushBack got (Syntax g c), next c))
+                else if later (f + 1) k then (got, c)
+                else take (next c) got
+            in (match take at [] with
+                | (got, after) -> field (f + 1) after (V.pushBack acc got))
+      in field 0 (solid (G.firstChild g i)) []

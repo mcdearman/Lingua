@@ -305,7 +305,10 @@ fun prune (root : String) (sub : String) (owned : [String]) =
       (M.unwrapOr [] (okOf (readDir units)))
   in V.foldl
        (\u name ->
-         if V.any (\o -> name == o ++ ".json") owned then u
+         -- A unit's interface, or one being written beside it -- by this
+         -- build or by another of the same units running now, whose file is
+         -- not this build's to take from under it.
+         if V.any (\o -> S.startsWith (o ++ ".json") name) owned then u
          else (let r = removeFile (Path.join interfaces name) in u))
        ()
        (M.unwrapOr [] (okOf (readDir interfaces)))

@@ -159,6 +159,16 @@ fun write dir file text =
   let index = Res.unwrapOr "" (readToString (Path.joinAll [app, "target", "lingua-build.json"])) in
   let kept = Path.joinAll [app, "target", "interfaces", "lib.json"] in
   let there = Res.isOk (readToString kept) in
+  -- Another build of the same units, running now, writes an interface
+  -- beside where it goes before moving it there: this build leaves that be,
+  -- and removes what no unit of it owns.
+  let beside = Path.joinAll [app, "target", "interfaces", "lib.json.4242"] in
+  let stray = Path.joinAll [app, "target", "interfaces", "gone.json"] in
+  let w = writeString (beside, "being written") in
+  let x = writeString (stray, "of a unit no longer built") in
+  let between = built app in
+  let left = (Res.isOk (readToString beside), Res.isOk (readToString stray)) in
+  let y = removeFile beside in
   let f = removeFile kept in
   let third = built app in
   let g =
@@ -170,10 +180,16 @@ fun write dir file text =
         (True, ["   Compiled lib", "   Fresh app"])
       ]
       "`app` compiled against the interface `lib` left, and `lib` again when that was gone"
+  in
+  let h =
+    assertEq
+      (S.contains "\"interface\"" index, S.contains "\"fingerprint\"" index, there)
+      (False, True, True)
+      "the index holds fingerprints, and the interface is beside it"
   in assertEq
-       (S.contains "\"interface\"" index, S.contains "\"fingerprint\"" index, there)
-       (False, True, True)
-       "the index holds fingerprints, and the interface is beside it"
+       (between, left)
+       ((True, ["   Fresh lib", "   Fresh app"]), (True, False))
+       "a file another build is writing is left, and a unit's that is gone is removed"
 
 -- A unit's interface is kept after its answer has gone to what waits for it,
 -- and a build is not done until it is: one that could not be kept -- here,
